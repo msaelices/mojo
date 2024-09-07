@@ -166,6 +166,7 @@ struct SIMD[type: DType, size: Int](
     CeilDivable,
     CollectionElement,
     CollectionElementNew,
+    Floatable,
     Floorable,
     Formattable,
     Hashable,
@@ -1345,6 +1346,21 @@ struct SIMD[type: DType, size: Int](
                 _type = __mlir_type.`!pop.scalar<index>`
             ](rebind[Scalar[type]](self).value)
 
+    @always_inline("nodebug")
+    fn __float__(self) -> Float64:
+        """Casts the value to a float.
+
+        Constraints:
+            The size of the SIMD vector must be 1.
+
+        Returns:
+            The value as a float.
+        """
+        constrained[size == 1, "expected a scalar type"]()
+        return __mlir_op.`pop.cast`[_type = __mlir_type.`!pop.scalar<f64>`](
+            rebind[Scalar[type]](self).value
+        )
+
     @no_inline
     fn __str__(self) -> String:
         """Get the SIMD as a string.
@@ -1528,9 +1544,7 @@ struct SIMD[type: DType, size: Int](
                     constraints="=r,f,f",
                     has_side_effect=False,
                 ](rebind[Float32](self[i + 1]), rebind[Float32](self[i]))
-                var val = bitcast[target, 2](bf16x2_as_uint32)
-                res[i] = val[0]
-                res[i + 1] = val[1]
+                res = res.insert[offset=i](bitcast[target, 2](bf16x2_as_uint32))
 
             return res
 
@@ -1592,14 +1606,14 @@ struct SIMD[type: DType, size: Int](
         # Print an opening `[`.
         @parameter
         if size > 1:
-            writer.write_str["["]()
+            writer.write_str("[")
 
         # Print each element.
         for i in range(size):
             var element = self[i]
             # Print separators between each element.
             if i != 0:
-                writer.write_str[", "]()
+                writer.write_str(", ")
 
             @parameter
             if triple_is_nvidia_cuda():
@@ -1646,7 +1660,7 @@ struct SIMD[type: DType, size: Int](
         # Print a closing `]`.
         @parameter
         if size > 1:
-            writer.write_str["]"]()
+            writer.write_str("]")
 
     @always_inline
     fn _bits_to_float[dest_type: DType](self) -> SIMD[dest_type, size]:
@@ -1980,7 +1994,7 @@ struct SIMD[type: DType, size: Int](
             "llvm.vector.extract",
             SIMD[type, output_width],
             has_side_effect=False,
-        ](self, offset)
+        ](self, Int64(offset))
 
     @always_inline("nodebug")
     fn insert[*, offset: Int = 0](self, value: SIMD[type, _]) -> Self:
@@ -2026,7 +2040,7 @@ struct SIMD[type: DType, size: Int](
 
         return llvm_intrinsic[
             "llvm.vector.insert", Self, has_side_effect=False
-        ](self, value, offset)
+        ](self, value, Int64(offset))
 
     @always_inline("nodebug")
     fn join(self, other: Self) -> SIMD[type, 2 * size]:

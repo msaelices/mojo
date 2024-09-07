@@ -34,6 +34,7 @@ from builtin.error import Error
 from builtin.file import open, FileHandle
 from builtin.file_descriptor import FileDescriptor
 from builtin.float_literal import FloatLiteral
+from builtin.floatable import Floatable, FloatableRaising, float
 from builtin.format_int import bin, hex, oct
 from builtin.hash import hash, Hashable
 from builtin.identifiable import Identifiable, StringableIdentifiable
@@ -47,7 +48,7 @@ from builtin.int import (
     int,
 )
 from builtin.int_literal import IntLiteral
-from builtin.io import print
+from builtin.io import print, input
 from builtin.len import Sized, UIntSized, SizedRaising, len
 from builtin.math import (
     Absable,

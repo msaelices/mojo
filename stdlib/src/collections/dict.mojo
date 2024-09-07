@@ -72,10 +72,6 @@ struct _DictEntryIter[
         forward: The iteration direction. `False` is backwards.
     """
 
-    alias imm_dict_lifetime = __mlir_attr[
-        `#lit.lifetime.mutcast<`, dict_lifetime, `> : !lit.lifetime<1>`
-    ]
-
     var index: Int
     var seen: Int
     var src: Reference[Dict[K, V], dict_lifetime]
@@ -1181,7 +1177,7 @@ struct OwnedKwargsDict[V: CollectionElement](
 
     fn __iter__(
         ref [_]self: Self,
-    ) -> _DictKeyIter[Self.key_type, V, __lifetime_of(self)]:
+    ) -> _DictKeyIter[Self.key_type, V, __lifetime_of(self._dict)]:
         """Iterate over the keyword dict's keys as immutable references.
 
         Returns:
@@ -1193,7 +1189,7 @@ struct OwnedKwargsDict[V: CollectionElement](
 
     fn keys(
         ref [_]self: Self,
-    ) -> _DictKeyIter[Self.key_type, V, __lifetime_of(self)]:
+    ) -> _DictKeyIter[Self.key_type, V, __lifetime_of(self._dict)]:
         """Iterate over the keyword dict's keys as immutable references.
 
         Returns:
@@ -1205,7 +1201,7 @@ struct OwnedKwargsDict[V: CollectionElement](
 
     fn values(
         ref [_]self: Self,
-    ) -> _DictValueIter[Self.key_type, V, __lifetime_of(self)]:
+    ) -> _DictValueIter[Self.key_type, V, __lifetime_of(self._dict)]:
         """Iterate over the keyword dict's values as references.
 
         Returns:
@@ -1217,7 +1213,7 @@ struct OwnedKwargsDict[V: CollectionElement](
 
     fn items(
         ref [_]self: Self,
-    ) -> _DictEntryIter[Self.key_type, V, __lifetime_of(self)]:
+    ) -> _DictEntryIter[Self.key_type, V, __lifetime_of(self._dict)]:
         """Iterate over the keyword dictionary's entries as immutable references.
 
         These can't yet be unpacked like Python dict items, but you can

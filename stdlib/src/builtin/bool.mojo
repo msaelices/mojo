@@ -101,17 +101,24 @@ trait ImplicitlyBoolable(Boolable):
 struct Bool(
     CollectionElementNew,
     ComparableCollectionElement,
+    Defaultable,
     ImplicitlyBoolable,
     Indexer,
     Intable,
     Representable,
     Stringable,
     Formattable,
+    Floatable,
 ):
     """The primitive Bool scalar value used in Mojo."""
 
     var value: __mlir_type.i1
     """The underlying storage of the boolean value."""
+
+    @always_inline("nodebug")
+    fn __init__(inout self):
+        """Construct a default, `False` Bool."""
+        self = False
 
     @always_inline("nodebug")
     fn __init__(inout self, *, other: Self):
@@ -241,6 +248,15 @@ struct Bool(
             1 if the Bool is True, 0 otherwise.
         """
         return _select_register_value(self.value, Int(1), Int(0))
+
+    @always_inline("nodebug")
+    fn __float__(self) -> Float64:
+        """Convert this Bool to a float.
+
+        Returns:
+            1.0 if True else 0.0 otherwise.
+        """
+        return _select_register_value(self.value, Float64(1.0), Float64(0.0))
 
     @always_inline("nodebug")
     fn __index__(self) -> Int:

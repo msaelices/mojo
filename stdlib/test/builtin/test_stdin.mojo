@@ -10,37 +10,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
-# RUN: %mojo %s
-from testing import assert_equal, assert_true
+# REQUIRES: !windows
+# RUN: echo "Hello, World" | %mojo %s
+
+from builtin.io import _fdopen
+from testing import testing
 
 
-def test_copy_reference_explicitly():
-    var a = List[Int](1, 2, 3)
-
-    var b = Reference(a)
-
-    var c = Reference(other=b)
-
-    c[][0] = 4
-    assert_equal(a[0], 4)
-    assert_equal(b[][0], 4)
-    assert_equal(c[][0], 4)
+fn test_stdin() raises:
+    # "Hello, World" piped from RUN command above
+    var stdin = _fdopen["r"](0)
+    testing.assert_equal(stdin.read_until_delimiter(","), "Hello")
+    testing.assert_equal(stdin.readline(), " World")
 
 
-def test_equality():
-    var a = List[Int](1, 2, 3)
-    var b = List[Int](4, 5, 6)
-
-    assert_true(Reference(a) != Reference(b))
-
-
-def test_str():
-    var a = Int(42)
-    var a_ref = Reference(a)
-    assert_true(str(a_ref).startswith("0x"))
-
-
-def main():
-    test_copy_reference_explicitly()
-    test_equality()
-    test_str()
+fn main() raises:
+    test_stdin()
