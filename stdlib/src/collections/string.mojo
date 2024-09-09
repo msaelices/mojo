@@ -1526,36 +1526,7 @@ struct String(
         ```
         .
         """
-        var output = List[String]()
-
-        var str_byte_len = self.byte_length() - 1
-        var lhs = 0
-        var rhs = 0
-        var items = 0
-        var sep_len = sep.byte_length()
-        if sep_len == 0:
-            raise Error("ValueError: empty separator")
-        if str_byte_len < 0:
-            output.append("")
-
-        while lhs <= str_byte_len:
-            rhs = self.find(sep, lhs)
-            if rhs == -1:
-                output.append(self[lhs:])
-                break
-
-            if maxsplit > -1:
-                if items == maxsplit:
-                    output.append(self[lhs:])
-                    break
-                items += 1
-
-            output.append(self[lhs:rhs])
-            lhs = rhs + sep_len
-
-        if self.endswith(sep) and (len(output) <= maxsplit or maxsplit == -1):
-            output.append("")
-        return output
+        return self.as_string_slice().split(sep.as_string_slice(), maxsplit)
 
     fn split(self, sep: NoneType = None, maxsplit: Int = -1) -> List[String]:
         """Split the string by every Whitespace separator.

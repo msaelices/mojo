@@ -790,3 +790,70 @@ struct StringSlice[
             current_offset += eol_location + eol_length
 
         return output^
+
+    fn split(self, sep: StringSlice, maxsplit: Int = -1) raises -> List[String]:
+        """Split the string by a separator.
+        Args:
+            sep: The string to split on.
+            maxsplit: The maximum amount of items to split from String.
+                Defaults to unlimited.
+        Returns:
+            A List of Strings containing the input split by the separator.
+        Raises:
+            If the seperator is empty.
+        """
+        var output = List[String]()
+
+        var str_len = self.byte_length()
+        var sep_len = sep.byte_length()
+        var current_offset = 0
+        var split_count = 0
+
+        if sep_len == 0:
+            raise Error("Seperator cannot be empty.")
+
+        if str_len == 0:
+            output.append("")
+            return output
+
+        var ptr = self.unsafe_ptr()
+        var sep_ptr = sep.unsafe_ptr()
+
+        while current_offset < str_len:
+            var found_at = str_len
+            var curr_ptr = ptr.offset(current_offset)
+
+            for i in range(current_offset, str_len):
+                if i + sep_len > str_len:
+                    break
+
+                if memcmp(ptr.offset(i), sep_ptr, sep_len) == 0:
+                    found_at = i
+                    break
+
+            if maxsplit > -1:
+                if split_count == maxsplit:
+                    output.append(
+                        String(
+                            Self(
+                                unsafe_from_utf8_ptr=curr_ptr,
+                                len=str_len - current_offset,
+                            )
+                        )
+                    )
+                    break
+                split_count += 1
+
+            var split_len = found_at - current_offset
+            output.append(
+                String(Self(unsafe_from_utf8_ptr=curr_ptr, len=split_len))
+            )
+
+            current_offset = found_at + sep_len
+
+        if current_offset == str_len and (
+            len(output) <= maxsplit or maxsplit == -1
+        ):
+            output.append("")
+
+        return output^
