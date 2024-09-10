@@ -140,7 +140,7 @@ struct reader:
         self.dialect.validate()
 
         # TODO: Implement streaming to prevent loading the entire file into memory
-        self.lines = csvfile.read().splitlines()
+        self.lines = csvfile.read().split("\n")
 
     @always_inline("nodebug")
     fn get_line(
