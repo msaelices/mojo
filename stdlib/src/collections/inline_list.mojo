@@ -22,8 +22,6 @@ from collections import InlineList
 from sys.intrinsics import _type_is_eq
 from memory.maybe_uninitialized import UnsafeMaybeUninitialized
 
-from utils import InlineArray
-
 
 # ===----------------------------------------------------------------------===#
 # InlineList
@@ -56,7 +54,7 @@ struct _InlineListIter[
 
     fn __next__(
         inout self,
-    ) -> Reference[T, list_lifetime]:
+    ) -> Reference[T, __lifetime_of(self.src[][0])]:
         @parameter
         if forward:
             self.index += 1
@@ -131,7 +129,7 @@ struct InlineList[ElementType: CollectionElementNew, capacity: Int = 16](Sized):
     @always_inline
     fn __getitem__(
         ref [_]self: Self, owned idx: Int
-    ) -> ref [__lifetime_of(self)] Self.ElementType:
+    ) -> ref [__lifetime_of(self._array)] Self.ElementType:
         """Get a `Reference` to the element at the given index.
 
         Args:
