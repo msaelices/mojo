@@ -1216,7 +1216,7 @@ struct Int(
     @staticmethod
     fn from_bytes[
         D: DType, big_endian: Bool = False
-    ](bytes: InlineArray[Byte, D.sizeof()]) raises -> Self:
+    ](bytes: InlineArray[Byte, D.sizeof()]) -> Self:
         """Converts a byte array to an integer.
 
         Args:
@@ -1231,7 +1231,9 @@ struct Int(
         """
         return int(Scalar[D].from_bytes[big_endian](bytes))
 
-    fn as_bytes[D: DType, big_endian: Bool = False](self) -> InlineArray[Byte, D.sizeof()]:
+    fn as_bytes[
+        D: DType, big_endian: Bool = False
+    ](self) -> InlineArray[Byte, D.sizeof()]:
         """Convert the integer to a byte array.
 
         Parameters:

@@ -1884,7 +1884,7 @@ struct SIMD[type: DType, size: Int](
     @staticmethod
     fn from_bytes[
         big_endian: Bool = False
-    ](bytes: InlineArray[Byte, Self.type_len]) raises -> Scalar[type]:
+    ](bytes: InlineArray[Byte, Self.type_len]) -> Scalar[type]:
         """Converts a byte array to an integer.
 
         Args:
