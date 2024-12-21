@@ -1215,35 +1215,33 @@ struct Int(
 
     @staticmethod
     fn from_bytes[
-        D: DType, big_endian: Bool = False
-    ](bytes: InlineArray[Byte, D.sizeof()]) -> Self:
+        big_endian: Bool = False
+    ](bytes: InlineArray[Byte, DType.int64.sizeof()]) -> Self:
         """Converts a byte array to an integer.
 
         Args:
             bytes: The byte array to convert.
 
         Parameters:
-            D: The type of the integer.
             big_endian: Whether the byte array is big-endian.
 
         Returns:
             The integer value.
         """
-        return int(Scalar[D].from_bytes[big_endian](bytes))
+        return int(Scalar[DType.int64].from_bytes[big_endian](bytes))
 
     fn as_bytes[
-        D: DType, big_endian: Bool = False
-    ](self) -> InlineArray[Byte, D.sizeof()]:
+        big_endian: Bool = False
+    ](self) -> InlineArray[Byte, DType.int64.sizeof()]:
         """Convert the integer to a byte array.
 
         Parameters:
-            D: The type of the integer.
             big_endian: Whether the byte array should be big-endian.
 
         Returns:
             The byte array.
         """
-        var value = Scalar[D](self)
+        var value = Scalar[DType.int64](self)
         return value.as_bytes[big_endian]()
 
     @always_inline("nodebug")
