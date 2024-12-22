@@ -26,7 +26,7 @@ from math import Ceilable, CeilDivable, Floorable, Truncable
 from sys import bitwidthof
 
 from builtin.io import _snprintf
-from memory import Span, UnsafePointer
+from memory import UnsafePointer
 from python import Python, PythonObject
 from python._cpython import Py_ssize_t
 
