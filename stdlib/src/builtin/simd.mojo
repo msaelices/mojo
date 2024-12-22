@@ -17,7 +17,8 @@ These are Mojo built-ins, so you don't need to import them.
 
 import math
 from collections import InlineArray
-from collections.string import (
+from collections.string import StringSlice
+from collections.string.string import (
     _calc_format_buffer_size,
     _calc_initial_buffer_size,
 )
@@ -239,6 +240,7 @@ struct SIMD[type: DType, size: Int](
     CollectionElement,
     # FIXME(MOCO-1291): Can't implement this due to ambiguity.
     # CollectionElementNew,
+    ExplicitlyCopyable,
     Floatable,
     Floorable,
     Writable,
@@ -307,6 +309,15 @@ struct SIMD[type: DType, size: Int](
     #        other: The value to copy.
     #    """
     #    self = other
+
+    @always_inline
+    fn copy(self) -> Self:
+        """Explicitly construct a deep copy of the provided value.
+
+        Returns:
+            A copy of the value.
+        """
+        return self
 
     @always_inline("nodebug")
     @implicit

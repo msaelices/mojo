@@ -25,7 +25,19 @@ what we publish.
 
 ### Language changes
 
+- Initializers are now treated as static methods that return an instance of
+  `Self`.  This means the `out` argument of an initializer is now treated the
+  same as a any other function result or `out` argument. This is generally
+  invisible, except that patterns like `instance.__init__()` and
+  `x.__copyinit__(y)` no longer work.  Simply replace them with `instance = T()`
+  and `x = y` respectively.
+
 ### Standard library changes
+
+- `UnsafePointer`'s `bitcast` method has now been split into `bitcast`
+  for changing the type, `origin_cast` for changing mutability,
+  `static_alignment_cast` for changing alignment,
+  and `address_space_cast` for changing the address space.
 
 - `UnsafePointer` is now parameterized on mutability. Previously,
   `UnsafePointer` could only represent mutable pointers.
@@ -49,7 +61,7 @@ what we publish.
     ```mojo
     var local = 10
     # Cast the mutable pointer to be immutable.
-    var ptr = UnsafePointer.address_of(local).bitcast[mut=False]()
+    var ptr = UnsafePointer.address_of(local).origin_cast[mut=False]()
     ```
 
   - The `unsafe_ptr()` method on several standard library collection types have
@@ -66,6 +78,33 @@ what we publish.
         # Mutable pointer, since receiver is mutable `mut` reference
         var ptr2 = list2.unsafe_ptr()
     ```
+
+- Added `Optional.copied()` for constructing an owned `Optional[T]` from an
+  `Optional[Pointer[T]]` by copying the pointee value.
+
+- Added `Dict.get_ptr()` which returns an `Optional[Pointer[V]]`. If the given
+  key is present in the dictionary, the optional will hold a pointer to the
+  value. Otherwise, an empty optional is returned.
+
+- Added new `List.extend()` overloads taking `SIMD` and `Span`. These enable
+  growing a `List[Scalar[..]]` by copying the elements of a `SIMD` vector or
+  `Span[Scalar[..]]`, simplifying the writing of some optimized SIMD-aware
+  functionality.
+
+- Added `StringSlice.from_utf()` factor method, for validated construction of
+  a `StringSlice` from a buffer containing UTF-8 encoded data. This method will
+  raise if the buffer contents are not valid UTF-8.
+
+- The `ExplicitlyCopyable` trait has changed to require a
+  `fn copy(self) -> Self` method. Previously, an initializer with the signature
+  `fn __init__(out self, *, other: Self)` had been required by
+  `ExplicitlyCopyable`.
+
+  This improves the "greppability" and at-a-glance readability when a programmer
+  is looking for places in their code that may be performing copies
+
+- `bit_ceil` has been renamed to `next_power_of_two`, and `bit_floor` to
+  `prev_power_of_two`. This is to improve readability and clarity in their use.
 
 ### Tooling changes
 
