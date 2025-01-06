@@ -112,8 +112,11 @@ fn b64encode(input_bytes: List[UInt8, _]) -> String:
 
 
 @always_inline
-fn b64decode(str: String) -> String:
+fn b64decode[validate: Bool = False](str: String) raises -> String:
     """Performs base64 decoding on the input string.
+
+    Parameters:
+      validate: If true, the function will validate the input string.
 
     Args:
       str: A base64 encoded string.
@@ -122,7 +125,11 @@ fn b64decode(str: String) -> String:
       The decoded string.
     """
     var n = str.byte_length()
-    debug_assert(n % 4 == 0, "Input length must be divisible by 4")
+
+    @parameter
+    if validate:
+        if n % 4 != 0:
+            raise Error("ValueError: Input length must be divisible by 4")
 
     var p = String._buffer_type(capacity=n + 1)
 
@@ -133,10 +140,10 @@ fn b64decode(str: String) -> String:
         var c = _ascii_to_value(str[i + 2])
         var d = _ascii_to_value(str[i + 3])
 
-        debug_assert(
-            a >= 0 and b >= 0 and c >= 0 and d >= 0,
-            "Unexpected character encountered",
-        )
+        @parameter
+        if validate:
+            if a < 0 or b < 0 or c < 0 or d < 0:
+                raise Error("ValueError: Unexpected character encountered")
 
         p.append((a << 2) | (b >> 4))
         if str[i + 2] == "=":
