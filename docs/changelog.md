@@ -32,6 +32,8 @@ what we publish.
 
 ### Standard library changes
 
+- Add a new `validate` parameter to the `b64decode()` function.
+
 - `UnsafePointer`'s `bitcast` method has now been split into `bitcast`
   for changing the type, `origin_cast` for changing mutability,
   `static_alignment_cast` for changing alignment,
