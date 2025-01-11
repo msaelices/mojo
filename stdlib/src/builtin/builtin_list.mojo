@@ -39,7 +39,6 @@ struct ListLiteral[*Ts: CollectionElement](Sized, CollectionElement):
     # ===-------------------------------------------------------------------===#
 
     @always_inline
-    @implicit
     fn __init__(out self, owned *args: *Ts):
         """Construct the list literal from the given values.
 
@@ -56,6 +55,15 @@ struct ListLiteral[*Ts: CollectionElement](Sized, CollectionElement):
             existing: The value to copy from.
         """
         self.storage = existing.storage
+
+    @always_inline
+    fn copy(self) -> Self:
+        """Explicitly construct a copy of self.
+
+        Returns:
+            A copy of this value.
+        """
+        return self
 
     fn __moveinit__(out self, owned existing: Self):
         """Move construct the list.
@@ -196,16 +204,19 @@ struct VariadicList[type: AnyTrivialRegType](Sized):
         return __mlir_op.`pop.variadic.size`(self.value)
 
     @always_inline
-    fn __getitem__(self, idx: Int) -> type:
+    fn __getitem__[I: Indexer](self, idx: I) -> type:
         """Gets a single element on the variadic list.
 
         Args:
             idx: The index of the element to access on the list.
 
+        Parameters:
+            I: A type that can be used as an index.
+
         Returns:
             The element on the list corresponding to the given index.
         """
-        return __mlir_op.`pop.variadic.get`(self.value, idx.value)
+        return __mlir_op.`pop.variadic.get`(self.value, index(idx))
 
     @always_inline
     fn __iter__(self) -> Self.IterType:

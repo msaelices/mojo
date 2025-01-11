@@ -30,9 +30,18 @@ what we publish.
 - The legacy `borrowed`/`inout` keywords and `-> T as foo` syntax now generate
   a warning.  Please move to `read`/`mut`/`out` argument syntax instead.
 
+- The `@value` decorator now additionally derives an implementation of the
+  `ExplicitlyCopyable` trait. This will ease the transition to explicit
+  copyablility requirements by default in the Mojo collection types.
+
 ### Standard library changes
 
 - Add a new `validate` parameter to the `b64decode()` function.
+
+- The `int` function to construct an `Int` has been removed, this was a
+  temporary workaround when Mojo didn't have a way to distinguish between
+  implicit and explicit constructors. You can do a search and replace for `int(`
+  to `Int(` to update your programs.
 
 - `UnsafePointer`'s `bitcast` method has now been split into `bitcast`
   for changing the type, `origin_cast` for changing mutability,
@@ -91,9 +100,52 @@ what we publish.
   `Span[Scalar[..]]`, simplifying the writing of some optimized SIMD-aware
   functionality.
 
+- Added `Char`, for representing and storing single Unicode characters.
+
 - Added `StringSlice.from_utf()` factor method, for validated construction of
   a `StringSlice` from a buffer containing UTF-8 encoded data. This method will
   raise if the buffer contents are not valid UTF-8.
+
+- Several standard library functions have been changed to take `StringSlice`
+  instead of `String`. This generalizes them to be used for any appropriately
+  encoded string in memory, without requiring that the string be heap allocated.
+
+  - `atol()`
+  - `atof()`
+  - `ord()`
+  - `ascii()`
+  - `b64encode()`
+    - Additionally, the `b64encode()` overload that previously took `List` has
+      been changed to
+      take a `Span`.
+  - `b64decode()`
+  - `b16encode()`
+  - `b16decode()`
+
+- Various functionality has moved from `String` and `StringRef` to the more
+  general `StringSlice` type.
+
+  - `StringSlice` now implements `Representable`, and that implementation is now
+    used by `String.__repr__()` and `StringRef.__repr__()`.
+
+- `StringSlice` now implements `EqualityComparable`.
+
+  Up until now, `StringSlice` has implemented a more general `__eq__` and
+  `__ne__` comparision with `StringSlice` types that had arbitrary other
+  origins. However, to satisfy `EqualityComparable`, `StringSlice` now also
+  has narrower comparison methods that support comparing only with
+  `StringSlice`'s with the exact same origin.
+
+- Removed `@implicit` decorator from some standard library initializer methods
+  that perform allocation. This reduces places where Mojo code could implicitly
+  allocate where the user may not be aware.
+
+  Remove `@implicit` from:
+
+  - `String.__init__(out self, StringRef)`
+  - `String.__init__(out self, StringSlice)`
+  - `List.__init__(out self, owned *values: T)`
+  - `List.__init__(out self, span: Span[T])`
 
 - The `ExplicitlyCopyable` trait has changed to require a
   `fn copy(self) -> Self` method. Previously, an initializer with the signature
@@ -105,6 +157,23 @@ what we publish.
 
 - `bit_ceil` has been renamed to `next_power_of_two`, and `bit_floor` to
   `prev_power_of_two`. This is to improve readability and clarity in their use.
+
+- The `Indexer` and `IntLike` traits which were previously both used for
+  indexing have been combined. This enables SIMD scalar integer types and UInt
+  to be used for indexing into all of the collection types, as well as
+  optimizing away normalization checks for UInt indexing.
+
+- The `ImplicitlyIntable` trait has been added, allowing types to be implicitly
+  converted to an `Int` by implementing the `__as_int__` method:
+
+  ```mojo
+  @value
+  struct Foo(ImplicitlyIntable):
+      var i: Int
+
+      fn __as_int__(self) -> Int:
+          return self.i
+  ```
 
 ### Tooling changes
 
@@ -119,7 +188,9 @@ what we publish.
 
 - `StringRef` is being deprecated. Use `StringSlice` instead.
   - Changed `sys.argv()` to return list of `StringSlice`.
+  - Added `Path` explicit constructor from `StringSlice`.
   - removed `StringRef.startswith()` and `StringRef.endswith()`
+  - removed `StringRef.strip()`
 
 ### 🛠️ Fixed
 

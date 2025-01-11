@@ -48,7 +48,6 @@ struct Tuple[*element_types: CollectionElement](Sized, CollectionElement):
     """The underlying storage for the tuple."""
 
     @always_inline("nodebug")
-    @implicit
     fn __init__(out self, owned *args: *element_types):
         """Construct the tuple.
 
@@ -110,6 +109,15 @@ struct Tuple[*element_types: CollectionElement](Sized, CollectionElement):
         @parameter
         for i in range(Self.__len__()):
             UnsafePointer.address_of(self[i]).init_pointee_copy(existing[i])
+
+    @always_inline
+    fn copy(self) -> Self:
+        """Explicitly construct a copy of self.
+
+        Returns:
+            A copy of this value.
+        """
+        return self
 
     @always_inline("nodebug")
     fn __moveinit__(out self, owned existing: Self):

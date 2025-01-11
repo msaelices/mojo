@@ -184,17 +184,6 @@ fn _simd_construction_checks[type: DType, size: Int]():
         not (type is DType.bfloat16 and has_neon()),
         "bf16 is not supported for ARM architectures",
     ]()
-    constrained[
-        not (type.is_float8() and not _has_native_f8_support()),
-        "f8 is not supported on non sm_89 and sm_90 architectures",
-    ]()
-    constrained[
-        not (
-            type in (DType.float8e4m3fnuz, DType.float8e5m2fnuz)
-            and not is_amd_gpu()
-        ),
-        "f8 fnuz variants is only supported for AMD GPU.",
-    ]()
 
 
 @always_inline("nodebug")
@@ -246,7 +235,7 @@ struct SIMD[type: DType, size: Int](
     Hashable,
     _HashableWithHasher,
     Intable,
-    IntLike,
+    Indexer,
     Representable,
     Roundable,
     Sized,
@@ -310,10 +299,10 @@ struct SIMD[type: DType, size: Int](
 
     @always_inline
     fn copy(self) -> Self:
-        """Explicitly construct a deep copy of the provided value.
+        """Explicitly construct a copy of self.
 
         Returns:
-            A copy of the value.
+            A copy of this value.
         """
         return self
 
@@ -661,7 +650,7 @@ struct SIMD[type: DType, size: Int](
         """
         return __mlir_op.`pop.simd.extractelement`[
             _type = __mlir_type[`!pop.scalar<`, type.value, `>`]
-        ](self.value, index(idx).value)
+        ](self.value, idx.value)
 
     @always_inline("nodebug")
     fn __setitem__(mut self, idx: Int, val: Scalar[type]):
@@ -672,7 +661,7 @@ struct SIMD[type: DType, size: Int](
             val: The value to set.
         """
         self.value = __mlir_op.`pop.simd.insertelement`(
-            self.value, val.value, index(idx).value
+            self.value, val.value, idx.value
         )
 
     fn __contains__(self, value: Scalar[type]) -> Bool:
@@ -1534,7 +1523,7 @@ struct SIMD[type: DType, size: Int](
             ](rebind[Scalar[type]](self).value)
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    fn __index__(self) -> __mlir_type.index:
         """Convert to index.
 
         Returns:
@@ -1543,7 +1532,7 @@ struct SIMD[type: DType, size: Int](
         constrained[
             type.is_integral(), "cannot index using a floating point type"
         ]()
-        return int(self).value
+        return Int(self).value
 
     @always_inline("nodebug")
     fn __float__(self) -> Float64:
@@ -2176,7 +2165,7 @@ struct SIMD[type: DType, size: Int](
         ```
         result = SIMD[Self.type, mask_size]()
         for i in range(mask_size):
-            result[i] = self[int(mask[i])]
+            result[i] = self[Int(mask[i])]
         ```
 
         Parameters:
@@ -2234,7 +2223,7 @@ struct SIMD[type: DType, size: Int](
 
         @parameter
         for i in range(0, mask_size):
-            result[i] = self[int(mask[i])]
+            result[i] = self[Int(mask[i])]
         return result
 
     @always_inline
@@ -2728,12 +2717,12 @@ struct SIMD[type: DType, size: Int](
 
         @parameter
         if type is DType.bool:
-            return int(self.cast[DType.uint8]().reduce_add())
+            return Int(self.cast[DType.uint8]().reduce_add())
         else:
             constrained[
                 type.is_integral(), "Expected either integral or bool type"
             ]()
-            return int(pop_count(self).reduce_add())
+            return Int(pop_count(self).reduce_add())
 
     # ===------------------------------------------------------------------=== #
     # select
