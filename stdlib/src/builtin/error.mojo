@@ -23,6 +23,7 @@ from memory.memory import _free
 from collections.string import StringSlice
 
 from utils import StringRef
+from utils.write import write_buffered
 
 # ===-----------------------------------------------------------------------===#
 # Error
@@ -112,6 +113,26 @@ struct Error(
         self.data = dest
         self.loaded_length = -length
 
+    @no_inline
+    fn __init__[
+        *Ts: Writable
+    ](out self, *args: *Ts, sep: StringLiteral = "", end: StringLiteral = ""):
+        """
+        Construct an Error by concatenating a sequence of Writable arguments.
+
+        Args:
+            args: A sequence of Writable arguments.
+            sep: The separator used between elements.
+            end: The String to write after printing the elements.
+
+        Parameters:
+            Ts: The types of the arguments to format. Each type must be satisfy
+                `Writable`.
+        """
+        var output = String()
+        write_buffered(output, args, sep=sep, end=end)
+        self = Error(output)
+
     fn copy(self) -> Self:
         """Copy the object.
 
@@ -184,7 +205,7 @@ struct Error(
         Returns:
             A printable representation of the error message.
         """
-        return String.write("Error(", repr(self._message()), ")")
+        return String("Error(", repr(self._message()), ")")
 
     # ===-------------------------------------------------------------------===#
     # Methods

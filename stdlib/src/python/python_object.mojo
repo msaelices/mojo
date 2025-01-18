@@ -499,21 +499,21 @@ struct PythonObject(
 
             @parameter
             if _type_is_eq[T, PythonObject]():
-                obj = value.get[i, PythonObject]()
+                obj = rebind[PythonObject](value[i])
             elif _type_is_eq[T, Int]():
-                obj = PythonObject(value.get[i, Int]())
+                obj = PythonObject(rebind[Int](value[i]))
             elif _type_is_eq[T, Float64]():
-                obj = PythonObject(value.get[i, Float64]())
+                obj = PythonObject(rebind[Float64](value[i]))
             elif _type_is_eq[T, Bool]():
-                obj = PythonObject(value.get[i, Bool]())
+                obj = PythonObject(rebind[Bool](value[i]))
             elif _type_is_eq[T, StringRef]():
                 obj = PythonObject(
                     StringSlice[MutableAnyOrigin](
-                        unsafe_from_utf8_strref=value.get[i, StringRef]()
+                        unsafe_from_utf8_strref=rebind[StringRef](value[i])
                     )
                 )
             elif _type_is_eq[T, StringLiteral]():
-                obj = PythonObject(value.get[i, StringLiteral]())
+                obj = PythonObject(rebind[StringLiteral](value[i]))
             else:
                 obj = PythonObject(0)
                 constrained[
@@ -1492,7 +1492,7 @@ struct PythonObject(
         cpython = _get_global_python_itf().cpython()
         return cpython.PyFloat_AsDouble(self.py_object)
 
-    @deprecated("Use `float(obj)` instead.")
+    @deprecated("Use `Float64(obj)` instead.")
     fn to_float64(self) -> Float64:
         """Returns a float representation of the object.
 
@@ -1531,7 +1531,7 @@ struct PythonObject(
         """
 
         # TODO: Avoid this intermediate String allocation, if possible.
-        writer.write(str(self))
+        writer.write(String(self))
 
     # ===-------------------------------------------------------------------===#
     # Methods
@@ -1589,7 +1589,7 @@ struct PythonObject(
         var actual_type = cpython.Py_TYPE(self.unsafe_as_py_object_ptr())
         var actual_type_name = PythonObject(cpython.PyType_GetName(actual_type))
 
-        return str(actual_type_name)
+        return String(actual_type_name)
 
 
 # ===-----------------------------------------------------------------------===#

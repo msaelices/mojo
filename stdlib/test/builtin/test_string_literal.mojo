@@ -66,7 +66,7 @@ def test_equality():
     assert_true(StringLiteral.__ne__("five", "six"))
     assert_false(StringLiteral.__ne__("six", "six"))
 
-    var hello = str("hello")
+    var hello = String("hello")
     var hello_ref = hello.as_string_slice()
 
     assert_false(StringLiteral.__eq__("goodbye", hello))
@@ -481,7 +481,7 @@ def test_splitlines():
 
 def test_float_conversion():
     assert_equal(("4.5").__float__(), 4.5)
-    assert_equal(float("4.5"), 4.5)
+    assert_equal(Float64("4.5"), 4.5)
     with assert_raises():
         _ = ("not a float").__float__()
 

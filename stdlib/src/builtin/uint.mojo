@@ -121,7 +121,7 @@ struct UInt(Indexer, _HashableWithHasher):
         ```mojo
         %# from testing import assert_equal
         x = UInt(50)
-        assert_equal(str(x), "50")
+        assert_equal(String(x), "50")
         ```
 
         Returns:
@@ -164,7 +164,7 @@ struct UInt(Indexer, _HashableWithHasher):
         Returns:
             The string representation of this UInt.
         """
-        return String.write("UInt(", str(self), ")")
+        return String("UInt(", String(self), ")")
 
     fn __hash__(self) -> UInt:
         """Hash the UInt using builtin hash.
@@ -263,7 +263,7 @@ struct UInt(Indexer, _HashableWithHasher):
             rhs: The value to divide on.
 
         Returns:
-            `float(self)/float(rhs)` value.
+            `Float64(self)/Float64(rhs)` value.
         """
         return Float64(self) / Float64(rhs)
 

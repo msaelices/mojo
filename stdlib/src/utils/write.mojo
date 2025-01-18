@@ -68,14 +68,14 @@ trait Writer:
         fn write_to[W: Writer](self, mut writer: W):
             writer.write("Point(", self.x, ", ", self.y, ")")
 
-        # Enable conversion to a String using `str(point)`
+        # Enable conversion to a String using `String(point)`
         fn __str__(self) -> String:
             return String.write(self)
 
 
     fn main():
         var point = Point(1, 2)
-        var new_string = NewString(str(point))
+        var new_string = NewString(String(point))
         new_string.write("\\n", Point(3, 4))
         print(new_string)
     ```
@@ -217,12 +217,6 @@ fn write_args[
         end.write_to(writer)
 
 
-trait MovableWriter(Movable, Writer):
-    """Allows moving a Writer into a buffer."""
-
-    ...
-
-
 struct _WriteBufferHeap(Writer):
     var data: UnsafePointer[UInt8]
     var pos: Int
@@ -272,19 +266,21 @@ struct _ArgBytes(Writer):
         args.each[write_arg]()
 
 
-struct _WriteBufferStack[W: MovableWriter, //, capacity: Int](Writer):
+struct _WriteBufferStack[origin: MutableOrigin, W: Writer, //, capacity: Int](
+    Writer
+):
     var data: InlineArray[UInt8, capacity]
     var pos: Int
-    var writer: W
+    var writer: Pointer[W, origin]
 
     @implicit
-    fn __init__(out self, owned writer: W):
+    fn __init__(out self, ref [origin]writer: W):
         self.data = InlineArray[UInt8, capacity](unsafe_uninitialized=True)
         self.pos = 0
-        self.writer = writer^
+        self.writer = Pointer.address_of(writer)
 
     fn flush(mut self):
-        self.writer.write_bytes(
+        self.writer[].write_bytes(
             Span[Byte, ImmutableAnyOrigin](
                 ptr=self.data.unsafe_ptr(), length=self.pos
             )
@@ -299,7 +295,7 @@ struct _WriteBufferStack[W: MovableWriter, //, capacity: Int](Writer):
         # If span is too large to fit in buffer, write directly and return
         if len_bytes > capacity:
             self.flush()
-            self.writer.write_bytes(bytes)
+            self.writer[].write_bytes(bytes)
             return
         # If buffer would overflow, flush writer and reset pos to 0.
         if self.pos + len_bytes > capacity:
@@ -317,11 +313,11 @@ struct _WriteBufferStack[W: MovableWriter, //, capacity: Int](Writer):
 
 
 fn write_buffered[
-    W: MovableWriter, //,
+    W: Writer, //,
     *Ts: Writable,
-    buffer_size: Int,
+    buffer_size: Int = 4096,
 ](
-    owned writer: W,
+    mut writer: W,
     args: VariadicPack[_, Writable, *Ts],
     *,
     sep: StaticString = "",
@@ -332,11 +328,11 @@ fn write_buffered[
     the buffer would overflow it writes to the `writer` passed in. You can also
     add seperators between the args, and end characters.
 
-
     Parameters:
         W: The type of the `Writer` to write to.
         Ts: The types of each arg to write. Each type must satisfy `Writable`.
-        buffer_size: How many bytes to write to a buffer before writing out.
+        buffer_size: How many bytes to write to a buffer before writing out to
+            the `writer` (default `4096`).
 
     Args:
         writer: The `Writer` to write to.
@@ -353,8 +349,13 @@ fn write_buffered[
     fn print_err_buffered[*Ts: Writable](
         *args: *Ts, sep: StringLiteral, end: StringLiteral
     ):
-        var stdout = sys.stderr
-        write_buffered[buffer_size=4096](stdout, args, sep=sep, end=end)
+        var stderr = sys.stderr
+        write_buffered(stdout, args, sep=sep, end=end)
+
+        # Buffer before allocating a string
+        var string = String()
+        write_buffered(string, args, sep=sep, end=end)
+
 
     print_err_buffered(3, "total", "args", sep=",", end="[end]")
     ```
@@ -367,11 +368,11 @@ fn write_buffered[
 
     @parameter
     if is_nvidia_gpu():
-        # Stack space is very small on GPU due to many threads, so use heap
         # Count the total length of bytes to allocate only once
         var arg_bytes = _ArgBytes()
         write_args(arg_bytes, args, sep=sep, end=end)
 
+        # Stack space is very small on GPU due to many threads, so use heap
         var buffer = _WriteBufferHeap(arg_bytes.size + 1)
         write_args(buffer, args, sep=sep, end=end)
         buffer.data[buffer.pos] = 0
@@ -379,6 +380,6 @@ fn write_buffered[
             Span[Byte, ImmutableAnyOrigin](ptr=buffer.data, length=buffer.pos)
         )
     else:
-        var buffer = _WriteBufferStack[buffer_size](writer^)
+        var buffer = _WriteBufferStack[buffer_size](writer)
         write_args(buffer, args, sep=sep, end=end)
         buffer.flush()

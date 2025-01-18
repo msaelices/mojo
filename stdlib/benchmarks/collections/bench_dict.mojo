@@ -65,7 +65,7 @@ fn bench_dict_insert[size: Int](mut b: Bencher) raises:
             items[key] = Int(random.random_si64(0, size))
 
     b.iter[call_fn]()
-    keep(bool(items))
+    keep(Bool(items))
 
 
 # ===-----------------------------------------------------------------------===#
@@ -93,7 +93,7 @@ fn bench_dict_lookup[size: Int](mut b: Bencher) raises:
                 keep(res)
 
     b.iter[call_fn]()
-    keep(bool(items))
+    keep(Bool(items))
 
 
 # ===-----------------------------------------------------------------------===#
@@ -132,20 +132,24 @@ def main():
 
     @parameter
     for i in range(len(sizes)):
-        alias size = sizes.get[i, Int]()
+        alias size = sizes[i]
         m.bench_function[bench_dict_insert[size]](
-            BenchId("bench_dict_insert[" + str(size) + "]")
+            BenchId("bench_dict_insert[" + String(size) + "]")
         )
         m.bench_function[bench_dict_lookup[size]](
-            BenchId("bench_dict_lookup[" + str(size) + "]")
+            BenchId("bench_dict_lookup[" + String(size) + "]")
         )
 
     m.dump_report()
 
     @parameter
     for i in range(len(sizes)):
-        alias size = sizes.get[i, Int]()
+        alias size = sizes[i]
         var mem_s = total_bytes_used(make_dict[size]())
         print(
-            '"bench_dict_memory_size[' + str(size) + ']",' + str(mem_s) + ",0"
+            '"bench_dict_memory_size['
+            + String(size)
+            + ']",'
+            + String(mem_s)
+            + ",0"
         )

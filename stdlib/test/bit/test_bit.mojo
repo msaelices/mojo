@@ -506,7 +506,7 @@ def test_rotate_bits_simd():
 
 
 fn _log2_floor(n: Int) -> Int:
-    return Int(floor(log2(float(n))))
+    return Int(floor(log2(Float64(n))))
 
 
 def test_log2_floor():
@@ -515,7 +515,7 @@ def test_log2_floor():
         assert_equal(
             log2_floor(i),
             _log2_floor(i),
-            msg="mismatching value for the input value of " + str(i),
+            msg="mismatching value for the input value of " + String(i),
         )
 
     fn _check_alias[n: Int](expected: Int) raises:

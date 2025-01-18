@@ -2,7 +2,8 @@
 title: "Get started with Mojo"
 sidebar_label: "Tutorial: Get started with Mojo"
 description: "Install Mojo and learn the language basics by building a complete Mojo program"
-github_url: https://github.com/modularml/mojo/tree/nightly/examples/life
+github_url: https://github.com/modular/mojo/tree/nightly/examples/life
+image: /images/artwork/mojo-get-started.jpg
 ---
 
 import GetMagic from '@site/src/includes/get_magic.mdx';
@@ -28,7 +29,7 @@ tried to keep the explanations simple, and we included links along the way for
 you to go learn more about each topic.
 
 And if you just want to see the finished code, you can [get it on
-GitHub](https://github.com/modularml/mojo/tree/nightly/examples/life).
+GitHub](https://github.com/modular/mojo/tree/nightly/examples/life).
 
 ## 1. Create a Mojo project with `magic`
 
@@ -344,7 +345,7 @@ def main():
 ## 5. Create and use a function to print the grid
 
 Now let's create a function to generate a string representation of the game grid
-that we can print it to the terminal.
+that we can print to the terminal.
 
 There are actually two different keywords that we can use to define functions in
 Mojo: `def` and `fn`. Using `fn` gives us finer level control over the function
@@ -362,7 +363,7 @@ def grid_str(rows: Int, cols: Int, grid: List[List[Int]]) -> String:
 
     # Iterate through rows 0 through rows-1
     for row in range(rows):
-	      # Iterate through columns 0 through cols-1
+        # Iterate through columns 0 through cols-1
         for col in range(cols):
             if grid[row][col] == 1:
                 str += "*"  # If cell is populated, append an asterisk
@@ -540,7 +541,7 @@ def grid_str(grid: Grid) -> String:
 
     # Iterate through rows 0 through rows-1
     for row in range(grid.rows):
-	      # Iterate through columns 0 through cols-1
+        # Iterate through columns 0 through cols-1
         for col in range(grid.cols):
             if grid.data[row][col] == 1:
                 str += "*"  # If cell is populated, append an asterisk
@@ -646,11 +647,11 @@ produces the same output. You can verify that by running the program again.
 
 ## 9. Implement support for the `StringableRaising` trait
 
-You can pass most Mojo types to the built-in `str()` function to produce a
+You can convert most Mojo types to `String` using `String(my_val)` to produce a
 `String` representation of that instance. But you'll get an error if you try to
 do that with our current implementation of `Grid`. So let's fix that.
 
-Because the Mojo compiler performs static type checking, a function like `str()`
+Because the Mojo compiler performs static type checking, a `String` constructor
 can accept a value only if its type implements some required behavior—in this
 case, it only accepts types that can generate a `String` representation.
 
@@ -662,7 +663,7 @@ any type that conform to a specified trait. (This type of function is sometimes
 referred to as a [*generic*
 function](/mojo/manual/parameters/#parameters-and-generics).)
 
-In the case of `str()`, it requires a type to conform to either the `Stringable`
+In the case of `String()`, it requires a type to conform to either the `Stringable`
 or `StringableRaising` trait. Each trait requires a conforming type to implement
 a `__str__()` method that returns a `String` representation. The only difference
 between the two traits is that `Stringable` requires that the method *cannot*
@@ -691,13 +692,13 @@ struct Grid(StringableRaising):
         ...
 ```
 
-Now let's verify that `str()` works with an instance of `Grid`.
+Now let's verify that `String()` works with an instance of `Grid`.
 
 ```mojo title="life.mojo"
 def main():
     ...
     start = Grid(8, 8, glider)
-    print(str(start))
+    print(String(start))
 ```
 
 If you run the program again, you should still see the same glider pattern as before.
@@ -850,7 +851,7 @@ struct Grid(StringableRaising):
             row_data = List[Int]()
             for col in range(cols):
                 # Generate a random 0 or 1 and append it to the row.
-                row_data.append(int(random.random_si64(0, 1)))
+                row_data.append(Int(random.random_si64(0, 1)))
             data.append(row_data)
 
         return Self(rows, cols, data)
@@ -876,8 +877,8 @@ respectively. This function actually returns a value of type `Int64`, which is a
 signed 64-bit integer value. As described in [Numeric
 types](/mojo/manual/types#numeric-types), this is *not* the same as the `Int`
 type whose precision is dependent on the native word size of the system.
-Therefore we're passing this value to the built-in
-[`int()`](/mojo/stdlib/builtin/int/int-function/) function, which explicitly
+Therefore we're passing this value to the
+[`Int()`](/mojo/stdlib/builtin/int/Int/#__init__) constructor, which explicitly
 converts a numeric value to an `Int`.
 
 The return type of the method is `Self`, which is an alias for the type of the
@@ -895,7 +896,7 @@ and print it.
 
 def main():
     start = Grid.random(8, 16)
-    print(str(start))
+    print(String(start))
 ```
 
 Run the program a few times to verify that it generates a different grid each
@@ -1008,7 +1009,7 @@ from gridv1 import Grid
 
 def run_display(owned grid: Grid) -> None:
     while True:
-        print(str(grid))
+        print(String(grid))
         print()
         if input("Enter 'q' to quit or press <Enter> to continue: ") == "q":
             break

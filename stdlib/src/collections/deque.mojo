@@ -444,7 +444,7 @@ struct Deque[ElementType: CollectionElement](
         print(my_deque.__str__())
         ```
 
-        When the compiler supports conditional methods, then a simple `str(my_deque)` will
+        When the compiler supports conditional methods, then a simple `String(my_deque)` will
         be enough.
 
         The elements' type must implement the `__repr__()` method for this to work.
@@ -1016,14 +1016,14 @@ struct _DequeIter[
     fn __iter__(self) -> Self:
         return self
 
-    fn __next__(mut self) -> Pointer[ElementType, deque_lifetime]:
+    fn __next__(mut self, out p: Pointer[ElementType, deque_lifetime]):
         @parameter
         if forward:
+            p = Pointer.address_of(self.src[][self.index])
             self.index += 1
-            return Pointer.address_of(self.src[][self.index - 1])
         else:
             self.index -= 1
-            return Pointer.address_of(self.src[][self.index])
+            p = Pointer.address_of(self.src[][self.index])
 
     fn __len__(self) -> Int:
         @parameter

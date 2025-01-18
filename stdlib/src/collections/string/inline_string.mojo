@@ -122,7 +122,7 @@ struct InlineString(Sized, Stringable, CollectionElement, CollectionElementNew):
             except e:
                 abort(
                     "unreachable: InlineString append to FixedString failed: "
-                    + str(e),
+                    + String(e),
                 )
         else:
             # We're currently in the small layout but must change to the
@@ -140,7 +140,7 @@ struct InlineString(Sized, Stringable, CollectionElement, CollectionElementNew):
             # Copy the bytes from the additional string.
             buffer.extend(str_slice.as_bytes())
             buffer.append(0)  # Add the NUL byte
-            self._storage = Self.Layout(String(buffer^))
+            self._storage = Self.Layout(String(buffer=buffer^))
 
     fn __add__(self, other: StringSlice) -> Self:
         """Construct a string by appending another string at the end of this string.
@@ -197,7 +197,7 @@ struct InlineString(Sized, Stringable, CollectionElement, CollectionElementNew):
             The string representation of the type.
         """
         if self._is_small():
-            return str(self._storage[_FixedString[Self.SMALL_CAP]])
+            return String(self._storage[_FixedString[Self.SMALL_CAP]])
         else:
             return self._storage[String]
 
@@ -303,9 +303,9 @@ struct _FixedString[CAP: Int](
         if len(literal) > CAP:
             raise Error(
                 "String literal (len="
-                + str(len(literal))
+                + String(len(literal))
                 + ") is longer than FixedString capacity ("
-                + str(CAP)
+                + String(CAP)
                 + ")"
             )
 
@@ -385,11 +385,11 @@ struct _FixedString[CAP: Int](
             return Optional(
                 Error(
                     "Insufficient capacity to append len="
-                    + str(len(bytes))
+                    + String(len(bytes))
                     + " string to len="
-                    + str(len(self))
+                    + String(len(self))
                     + " FixedString with capacity="
-                    + str(CAP),
+                    + String(CAP),
                 )
             )
 

@@ -60,16 +60,14 @@ struct _ListIter[
     fn __iter__(self) -> Self:
         return self
 
-    fn __next__(
-        mut self,
-    ) -> Pointer[T, list_origin]:
+    fn __next__(mut self, out p: Pointer[T, list_origin]):
         @parameter
         if forward:
+            p = Pointer.address_of(self.src[][self.index])
             self.index += 1
-            return Pointer.address_of(self.src[][self.index - 1])
         else:
             self.index -= 1
-            return Pointer.address_of(self.src[][self.index])
+            p = Pointer.address_of(self.src[][self.index])
 
     @always_inline
     fn __has_next__(self) -> Bool:
@@ -403,7 +401,7 @@ struct List[T: CollectionElement, hint_trivial_type: Bool = False](
         print(my_list.__str__())
         ```
 
-        When the compiler supports conditional methods, then a simple `str(my_list)` will
+        When the compiler supports conditional methods, then a simple `String(my_list)` will
         be enough.
 
         The elements' type must implement the `__repr__()` method for this to work.
@@ -505,7 +503,7 @@ struct List[T: CollectionElement, hint_trivial_type: Bool = False](
         """
         if self.size >= self.capacity:
             self._realloc(self.capacity * 2 | Int(self.capacity == 0))
-        (self.data + self.size).init_pointee_move(value^)
+        self._unsafe_next_uninit_ptr().init_pointee_move(value^)
         self.size += 1
 
     fn insert(mut self, i: Int, owned value: T):
@@ -611,7 +609,7 @@ struct List[T: CollectionElement, hint_trivial_type: Bool = False](
             If there is no capacity left, resizes to `len(self) + value.size`.
         """
         self.reserve(self.size + value.size)
-        (self.data + self.size).store(value)
+        self._unsafe_next_uninit_ptr().store(value)
         self.size += value.size
 
     fn extend[
@@ -633,7 +631,7 @@ struct List[T: CollectionElement, hint_trivial_type: Bool = False](
         debug_assert(count <= value.size, "count must be <= value.size")
         self.reserve(self.size + count)
         var v_ptr = UnsafePointer.address_of(value).bitcast[Scalar[D]]()
-        memcpy(self.data + self.size, v_ptr, count)
+        memcpy(self._unsafe_next_uninit_ptr(), v_ptr, count)
         self.size += count
 
     fn extend[
@@ -651,7 +649,7 @@ struct List[T: CollectionElement, hint_trivial_type: Bool = False](
             If there is no capacity left, resizes to `len(self) + len(value)`.
         """
         self.reserve(self.size + len(value))
-        memcpy(self.data + self.size, value.unsafe_ptr(), len(value))
+        memcpy(self._unsafe_next_uninit_ptr(), value.unsafe_ptr(), len(value))
         self.size += len(value)
 
     fn pop(mut self, i: Int = -1) -> T:
@@ -807,6 +805,31 @@ struct List[T: CollectionElement, hint_trivial_type: Bool = False](
             if self[i] == value:
                 return i
         raise "ValueError: Given element is not in list"
+
+    fn _binary_search_index[
+        dtype: DType, //,
+    ](self: List[Scalar[dtype], **_], needle: Scalar[dtype]) -> Optional[UInt]:
+        """Finds the index of `needle` with binary search.
+
+        This function will return an unspecified index if `self` is not
+        sorted in ascending order.
+
+        Args:
+            needle: The value to binary search for.
+
+        Returns:
+            Returns None if `needle` is not present, or if `self` was not
+            sorted.
+        """
+        var cursor = UInt(0)
+        var b = self.data
+        var length = len(self)
+        while length > 1:
+            var half = length >> 1
+            length -= half
+            cursor += Int(b[cursor + half - 1] < needle) * half
+
+        return Optional(cursor) if b[cursor] == needle else None
 
     fn clear(mut self):
         """Clears the elements in the list."""
@@ -1006,6 +1029,40 @@ struct List[T: CollectionElement, hint_trivial_type: Bool = False](
             The pointer to the underlying memory.
         """
         return self.data
+
+    @always_inline
+    fn _unsafe_next_uninit_ptr(
+        ref self,
+    ) -> UnsafePointer[
+        T,
+        mut = Origin(__origin_of(self)).is_mutable,
+        origin = __origin_of(self),
+    ]:
+        """Retrieves a pointer to the next uninitialized element position.
+
+        This returns a pointer that points to the element position immediately
+        after the last initialized element.
+
+        This is equivalent to `list.unsafe_ptr() + len(list)`.
+
+        # Safety
+
+        - This pointer MUST not be used to read or write memory beyond the
+        allocated capacity of this list.
+        - This pointer may not be used to initialize non-contiguous elements.
+        - Ensure that `List.size` is updated to reflect the new number of
+          initialized elements, otherwise elements may be unexpectedly
+          overwritten or not destroyed correctly.
+        """
+        debug_assert(
+            self.capacity > 0 and self.capacity > self.size,
+            (
+                "safety violation: Insufficient capacity to retrieve pointer to"
+                " next uninitialized element"
+            ),
+        )
+
+        return self.data + self.size
 
     fn _cast_hint_trivial_type[
         hint_trivial_type: Bool

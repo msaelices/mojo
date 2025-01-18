@@ -331,7 +331,7 @@ fn count_many_things[*ArgTypes: Intable](*args: *ArgTypes) -> Int:
 
     @parameter
     fn add[Type: Intable](value: Type):
-        total += int(value)
+        total += Int(value)
 
     args.each[add]()
     return total
@@ -364,12 +364,12 @@ fn print_string(s: String):
     print(s, end="")
 
 fn print_many[T: Stringable, *Ts: Stringable](first: T, *rest: *Ts):
-    print_string(str(first))
+    print_string(String(first))
 
     @parameter
     fn print_elt[T: Stringable](a: T):
         print_string(" ")
-        print_string(str(a))
+        print_string(String(a))
     rest.each[print_elt]()
 print_many("Bob")
 ```

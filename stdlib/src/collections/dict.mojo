@@ -22,6 +22,11 @@ Its implementation closely mirrors Python's `dict` implementation:
 - Insertion order is implicitly preserved. Iteration over keys, values, and
   items have a deterministic order based on insertion.
 
+- For more information on the Mojo `Dict` type, see the
+  [Mojo `Dict` manual](/mojo/manual/types/#dict). To learn more about using
+  Python dictionaries from Mojo, see
+  [Python types in Mojo](/mojo/manual/python/types/#python-types-in-mojo).
+
 Key elements must implement the `KeyElement` trait, which encompasses
 Movable, Hashable, and EqualityComparable. It also includes CollectionElement
 and Copyable until we push references through the standard library types.
@@ -380,6 +385,11 @@ struct Dict[K: KeyElement, V: CollectionElement](
         K: The type of the dictionary key. Must be Hashable and EqualityComparable
            so we can find the key in the map.
         V: The value type of the dictionary. Currently must be CollectionElement.
+
+    For more information on the Mojo `Dict` type, see the
+    [Mojo `Dict` manual](/mojo/manual/types/#dict). To learn more about using
+    Python dictionaries from Mojo, see
+    [Python types in Mojo](/mojo/manual/python/types/#python-types-in-mojo).
     """
 
     # Implementation:
@@ -702,7 +712,7 @@ struct Dict[K: KeyElement, V: CollectionElement](
         # prints "{1: 1.1, 2: 2.2}"
         ```
 
-        When the compiler supports conditional methods, then a simple `str(my_dict)` will
+        When the compiler supports conditional methods, then a simple `String(my_dict)` will
         be enough.
 
         Note that both they keys and values' types must implement the `__repr__()` method
@@ -720,7 +730,7 @@ struct Dict[K: KeyElement, V: CollectionElement](
         var minimum_capacity = self._minimum_size_of_string_representation()
         var string_buffer = List[UInt8](capacity=minimum_capacity)
         string_buffer.append(0)  # Null terminator
-        var result = String(string_buffer^)
+        var result = String(buffer=string_buffer^)
         result += "{"
 
         var i = 0
@@ -738,11 +748,11 @@ struct Dict[K: KeyElement, V: CollectionElement](
 
     fn _minimum_size_of_string_representation(self) -> Int:
         # we do a rough estimation of the minimum number of chars that we'll see
-        # in the string representation, we assume that str(key) and str(value)
+        # in the string representation, we assume that String(key) and String(value)
         # will be both at least one char.
         return (
             2  # '{' and '}'
-            + len(self) * 6  # str(key), str(value) ": " and ", "
+            + len(self) * 6  # String(key), String(value) ": " and ", "
             - 2  # remove the last ", "
         )
 
