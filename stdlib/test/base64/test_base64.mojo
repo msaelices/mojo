@@ -61,11 +61,13 @@ def test_b64decode():
     assert_equal(b64decode("QUJDREVGYWJjZGVm"), "ABCDEFabcdef")
 
     with assert_raises(
-        contains="ValueError: Input length must be divisible by 4"
+        contains="ValueError: Input length 21 must be divisible by 4"
     ):
         _ = b64decode[validate=True]("invalid base64 string")
 
-    with assert_raises(contains="ValueError: Unexpected character encountered"):
+    with assert_raises(
+        contains='ValueError: Unexpected character " " encountered'
+    ):
         _ = b64decode[validate=True]("invalid base64 string!!!")
 
 

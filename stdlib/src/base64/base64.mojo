@@ -34,7 +34,7 @@ from ._b64encode import b64encode_with_buffers as _b64encode_with_buffers
 
 
 @always_inline
-fn _ascii_to_value(char: StringSlice) -> Int:
+fn _ascii_to_value[validate: Bool = False](char: StringSlice) raises -> Int:
     """Converts an ASCII character to its integer value for base64 decoding.
 
     Args:
@@ -58,6 +58,12 @@ fn _ascii_to_value(char: StringSlice) -> Int:
     elif char == "/":
         return 63
     else:
+
+        @parameter
+        if validate:
+            raise Error(
+                'ValueError: Unexpected character "{}" encountered'.format(char)
+            )
         return -1
 
 
@@ -129,21 +135,18 @@ fn b64decode[validate: Bool = False](str: StringSlice) raises -> String:
     @parameter
     if validate:
         if n % 4 != 0:
-            raise Error("ValueError: Input length must be divisible by 4")
+            raise Error(
+                "ValueError: Input length {} must be divisible by 4".format(n)
+            )
 
     var p = String._buffer_type(capacity=n + 1)
 
     # This algorithm is based on https://arxiv.org/abs/1704.00605
     for i in range(0, n, 4):
-        var a = _ascii_to_value(str[i])
-        var b = _ascii_to_value(str[i + 1])
-        var c = _ascii_to_value(str[i + 2])
-        var d = _ascii_to_value(str[i + 3])
-
-        @parameter
-        if validate:
-            if a < 0 or b < 0 or c < 0 or d < 0:
-                raise Error("ValueError: Unexpected character encountered")
+        var a = _ascii_to_value[validate](str[i])
+        var b = _ascii_to_value[validate](str[i + 1])
+        var c = _ascii_to_value[validate](str[i + 2])
+        var d = _ascii_to_value[validate](str[i + 3])
 
         p.append((a << 2) | (b >> 4))
         if str[i + 2] == "=":
