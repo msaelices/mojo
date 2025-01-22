@@ -43,7 +43,7 @@ from sys import (
     sizeof,
 )
 from sys._assembly import inlined_assembly
-from sys.info import _current_arch, _is_sm_8x, _is_sm_9x
+from sys.info import _current_arch, _is_sm_9x
 
 from bit import pop_count
 from builtin._format_float import _write_float
@@ -770,11 +770,6 @@ struct SIMD[type: DType, size: Int](
             `self[i] + rhs[i]`.
         """
         constrained[type.is_numeric(), "the SIMD type must be numeric"]()
-
-        @parameter
-        if _is_sm_8x() and type.is_half_float():
-            return self.fma(1, rhs)
-
         return __mlir_op.`pop.add`(self.value, rhs.value)
 
     @always_inline("nodebug")
@@ -789,18 +784,6 @@ struct SIMD[type: DType, size: Int](
             `self[i] - rhs[i]`.
         """
         constrained[type.is_numeric(), "the SIMD type must be numeric"]()
-
-        @parameter
-        if _is_sm_9x() and type is DType.bfloat16:
-            return _call_ptx_intrinsic[
-                scalar_instruction="sub.rn.bf16",
-                vector2_instruction="sub.rn.bf16x2",
-                scalar_constraints="=h,h,h",
-                vector_constraints="=r,r,r",
-            ](self, rhs)
-        elif _is_sm_8x() and type.is_half_float():
-            return rhs.fma(-1, self)
-
         return __mlir_op.`pop.sub`(self.value, rhs.value)
 
     @always_inline("nodebug")
@@ -820,8 +803,6 @@ struct SIMD[type: DType, size: Int](
             return (rebind[Self._Mask](self) & rebind[Self._Mask](rhs)).cast[
                 type
             ]()
-        elif _is_sm_8x() and type.is_half_float():
-            return self.fma(rhs, -0.0)
 
         constrained[type.is_numeric(), "the SIMD type must be numeric"]()
         return __mlir_op.`pop.mul`(self.value, rhs.value)
@@ -1686,7 +1667,6 @@ struct SIMD[type: DType, size: Int](
         Returns:
             The elementwise truncated values of this SIMD vector.
         """
-
         return self._floor_ceil_trunc_impl["llvm.trunc"]()
 
     @always_inline
@@ -1842,30 +1822,7 @@ struct SIMD[type: DType, size: Int](
         if is_nvidia_gpu():
 
             @parameter
-            if size > 1 and type is DType.float32 and target.is_half_float():
-                # For size == 1, the LLVM backend generates the correct `cvt.rn.f16.f32`
-                # instruction. This is why we do not handle it here.
-                alias vector_asm_prefix = "cvt.rn.f16x2.f32" if target is DType.float16 else "cvt.rn.bf16x2.f32"
-                var res = SIMD[target, size]()
-
-                @parameter
-                for i in range(0, size, 2):
-                    var bf16x2_as_uint32 = inlined_assembly[
-                        vector_asm_prefix + " $0, $1, $2;",
-                        UInt32,
-                        constraints="=r,f,f",
-                        has_side_effect=False,
-                    ](
-                        rebind[Float32](self[i + 1]),
-                        rebind[Float32](self[i]),
-                    )
-                    res = res.insert[offset=i](
-                        bitcast[target, 2](bf16x2_as_uint32)
-                    )
-
-                return res
-
-            elif type is DType.bfloat16 and target is DType.float64:
+            if type is DType.bfloat16 and target is DType.float64:
                 # Convert to F64 via a Float32 pathway. This would allow us to
                 # use the optimizations defined above.
                 return self.cast[DType.float32]().cast[target]()
@@ -1918,13 +1875,17 @@ struct SIMD[type: DType, size: Int](
             return rebind[SIMD[target, size]](self != 0)
 
         @parameter
-        if type is DType.bfloat16 and not _has_native_bf16_support():
+        if type is DType.bfloat16 and (
+            not _has_native_bf16_support() or is_amd_gpu()
+        ):
             return _bfloat16_to_f32(
                 rebind[SIMD[DType.bfloat16, size]](self)
             ).cast[target]()
 
         @parameter
-        if target is DType.bfloat16 and not _has_native_bf16_support():
+        if target is DType.bfloat16 and (
+            not _has_native_bf16_support() or is_amd_gpu()
+        ):
             return rebind[SIMD[target, size]](
                 _f32_to_bfloat16(self.cast[DType.float32]())
             )
@@ -2064,36 +2025,6 @@ struct SIMD[type: DType, size: Int](
             `self[i]*multiplier[i] + accumulator[i]`.
         """
         constrained[type.is_numeric(), "the SIMD type must be numeric"]()
-
-        @parameter
-        if (_is_sm_8x() or _is_sm_9x()) and type.is_half_float():
-            alias prefix = "fma.rn.bf16" if type is DType.bfloat16 else "fma.rn.f16"
-
-            @parameter
-            if size == 1:
-                return inlined_assembly[
-                    prefix + " $0, $1, $2, $3;",
-                    Self,
-                    constraints="=h,h,h,h",
-                    has_side_effect=False,
-                ](self, multiplier, accumulator)
-
-            var res = Self()
-
-            @parameter
-            for i in range(0, size, 2):
-                var val = inlined_assembly[
-                    prefix + "x2 $0, $1, $2, $3;",
-                    SIMD[type, 2],
-                    constraints="=r,r,r,r",
-                    has_side_effect=False,
-                ](
-                    self.slice[2, offset=i](),
-                    multiplier.slice[2, offset=i](),
-                    accumulator.slice[2, offset=i](),
-                )
-                res = res.insert[offset=i](val)
-            return res
 
         return __mlir_op.`pop.fma`(
             self.value, multiplier.value, accumulator.value
@@ -3569,10 +3500,45 @@ fn _f32_to_bfloat16_scalar(
         # TODO(KERN-228): support BF16 on neon systems.
         return _unchecked_zero[DType.bfloat16, 1]()
 
+    elif is_amd_gpu():
+        alias round_bias = Int32(0x7FFF)
+
+        # Compute the mask of unordered values.
+        var unordered_mask = inlined_assembly[
+            "v_cmp_u_f32 $0, $1, $1",
+            SIMD[DType.uint64, 1],
+            constraints="=s,v",
+            has_side_effect=False,
+        ](val)
+
+        # Compute "rounded_val = val + lsb + round_bias" to round-to-nearest.
+        var lsb = inlined_assembly[
+            "v_bfe_u32 $0, $1, 16, 1",
+            SIMD[DType.uint32, 1],
+            constraints="=v,v",
+            has_side_effect=False,
+        ](val)
+        var rounded_val = inlined_assembly[
+            "v_add3_u32 $0, $1, $2, $3",
+            SIMD[DType.uint32, 1],
+            constraints="=v,v,v,v",
+            has_side_effect=False,
+        ](val, lsb, round_bias)
+
+        # Select the rounded value or NaN based on the unordered mask.
+        var float_bits = inlined_assembly[
+            "v_cndmask_b32 $0, $1, $2, $3",
+            SIMD[DType.uint32, 1],
+            constraints="=v,v,v,s",
+            has_side_effect=False,
+        ](rounded_val, _nan[DType.float32](), unordered_mask)
+
+        return bitcast[DType.bfloat16, 1](
+            UInt16(float_bits >> _fp32_bf16_mantissa_diff)
+        )
+
     if _isnan(val):
-        return -_nan[DType.bfloat16]() if FPUtils[DType.float32].get_sign(
-            val
-        ) else _nan[DType.bfloat16]()
+        return _nan[DType.bfloat16]()
 
     var float_bits = FPUtils[DType.float32].bitcast_to_integer(val)
 

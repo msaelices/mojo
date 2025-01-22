@@ -16,16 +16,6 @@ from collections import Optional
 from collections._index_normalization import normalize_index
 
 
-trait WritableCollectionElement(CollectionElement, Writable):
-    """A trait that combines CollectionElement and Writable traits.
-
-    This trait requires types to implement both CollectionElement and Writable
-    interfaces, allowing them to be used in collections and written to output.
-    """
-
-    pass
-
-
 @value
 struct Node[ElementType: WritableCollectionElement]:
     """A node in a linked list data structure.
@@ -167,7 +157,7 @@ struct LinkedList[ElementType: WritableCollectionElement]:
         Args:
             value: The value to append.
         """
-        var node = Node[ElementType](value^, self._tail, None)
+        var node = Node(value^, self._tail, None)
         var addr = UnsafePointer[__type_of(node)].alloc(1)
         addr.init_pointee_move(node)
         if self:
@@ -183,7 +173,7 @@ struct LinkedList[ElementType: WritableCollectionElement]:
         Args:
             value: The value to prepend.
         """
-        var node = Node[ElementType](value^, None, self._head)
+        var node = Node(value^, None, self._head)
         var addr = UnsafePointer[__type_of(node)].alloc(1)
         addr.init_pointee_move(node)
         if self:
