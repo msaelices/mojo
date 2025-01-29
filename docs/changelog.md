@@ -106,7 +106,7 @@ what we publish.
 
 - The free floating functions for constructing different types have been
   deprecated for actual constructors:
-  
+
   ```plaintext
   before   after
   ------------------
@@ -115,7 +115,7 @@ what we publish.
   bool()   Bool()
   float()  Float64()
   ```
-  
+
   These functions were a workaround before Mojo had a way to distinguish between
   implicit and explicit constructors. For this release you'll get a deprecation
   warning, and in the next release they'll become compiler errors. You can
@@ -199,6 +199,9 @@ what we publish.
 - Added `StringSlice.chars()` which returns an iterator over `Char`s. This is a
   compliant UTF-8 decoder that returns each Unicode codepoint encoded in the
   string.
+
+- Added `StringSlice.__getitem__(Slice)` which returns a substring.
+  Only step sizes of 1 are supported.
 
 - Several standard library functions have been changed to take `StringSlice`
   instead of `String`. This generalizes them to be used for any appropriately
@@ -371,6 +374,11 @@ what we publish.
 
   This writes to a buffer on the stack before reallocating the `String`.
 
+- The `__disable_del x` operation has been tightened up to treat all fields of
+  'x' as consumed by the point of the del, so it should be used after all the
+  subfields are transferred or otherwise consumed (e.g. at the end of the
+  function) not before uses of the fields.
+
 ### Tooling changes
 
 - mblack (aka `mojo format`) no longer formats non-mojo files. This prevents
@@ -389,6 +397,9 @@ what we publish.
   - removed `StringRef.strip()`
 - The `Tuple.get[i, T]()` method has been removed. Please use `tup[i]` or
   `rebind[T](tup[i])` as needed instead.
+- `StringableCollectionElement` is deprecated, use `WritableCollectionElement`
+  instead which still allows you to construct a `String`, but can avoid
+  intermediary allocations.
 
 ### 🛠️ Fixed
 

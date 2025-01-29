@@ -1,5 +1,5 @@
 # ===----------------------------------------------------------------------=== #
-# Copyright (c) 2024, Modular Inc. All rights reserved.
+# Copyright (c) 2025, Modular Inc. All rights reserved.
 #
 # Licensed under the Apache License v2.0 with LLVM Exceptions:
 # https://llvm.org/LICENSE.txt
@@ -135,6 +135,7 @@ from builtin.value import (
     Movable,
     RepresentableCollectionElement,
     WritableCollectionElement,
+    StringableCollectionElement,
 )
 from documentation import doc_private
 from memory import AddressSpace, Pointer
