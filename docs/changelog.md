@@ -101,7 +101,7 @@ what we publish.
 ### Standard library changes
 
 - New `SIMD.from_bytes()` and `SIMD.as_bytes()` functions to convert a list of bytes
-  to an scalars and vice versa, accepting the endianess as an argument. Similar
+  to a list of scalars and vice versa, accepting the endianess as an argument. Similar
   to Python `int.from_bytes()` and `int.to_bytes()` functions.
 
 - The free floating functions for constructing different types have been
