@@ -1961,7 +1961,7 @@ struct SIMD[type: DType, size: Int](
 
     @staticmethod
     fn from_bytes[
-        big_endian: Bool = False
+        big_endian: Bool = is_big_endian()
     ](bytes: InlineArray[Byte, Self.type_len]) -> Scalar[type]:
         """Converts a byte array to an scalar integer.
 
@@ -1987,7 +1987,7 @@ struct SIMD[type: DType, size: Int](
         return value
 
     fn as_bytes[
-        big_endian: Bool = False
+        big_endian: Bool = is_big_endian()
     ](self) -> InlineArray[Byte, Self.type_len]:
         """Convert the scalar integer to a byte array.
 
