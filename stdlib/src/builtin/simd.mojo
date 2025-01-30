@@ -269,7 +269,6 @@ struct SIMD[type: DType, size: Int](
     alias _Mask = SIMD[DType.bool, size]
 
     alias element_type = type
-    alias type_len = type.sizeof()
 
     var value: __mlir_type[`!pop.simd<`, size.value, `, `, type.value, `>`]
     """The underlying storage for the vector."""
@@ -1962,7 +1961,7 @@ struct SIMD[type: DType, size: Int](
     @staticmethod
     fn from_bytes[
         big_endian: Bool = is_big_endian()
-    ](bytes: InlineArray[Byte, Self.type_len]) -> Scalar[type]:
+    ](bytes: InlineArray[Byte, type.sizeof()]) -> Scalar[type]:
         """Converts a byte array to an scalar integer.
 
         Args:
@@ -1988,7 +1987,7 @@ struct SIMD[type: DType, size: Int](
 
     fn as_bytes[
         big_endian: Bool = is_big_endian()
-    ](self) -> InlineArray[Byte, Self.type_len]:
+    ](self) -> InlineArray[Byte, type.sizeof()]:
         """Convert the scalar integer to a byte array.
 
         Parameters:
@@ -2006,10 +2005,10 @@ struct SIMD[type: DType, size: Int](
             value = byte_swap(value)
 
         var ptr = UnsafePointer.address_of(value)
-        var array = InlineArray[Byte, Self.type_len](fill=0)
+        var array = InlineArray[Byte, type.sizeof()](fill=0)
 
         # TODO: Maybe this can be a List.extend(ptr, count) method
-        memcpy(array.unsafe_ptr(), ptr.bitcast[Byte](), Self.type_len)
+        memcpy(array.unsafe_ptr(), ptr.bitcast[Byte](), type.sizeof())
 
         return array^
 
