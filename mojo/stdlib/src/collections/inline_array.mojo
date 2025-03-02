@@ -140,8 +140,21 @@ struct InlineArray[
         _inline_array_construction_checks[size]()
         __mlir_op.`lit.ownership.mark_initialized`(__get_mvalue_as_litref(self))
 
+        alias unroll_threshold = 1000
+        alias unrolled = size // unroll_threshold
+        alias remainder = size % unroll_threshold
+
         @parameter
-        for i in range(size):
+        for i in range(unrolled):
+            for j in range(unroll_threshold):
+                var ptr = UnsafePointer.address_of(
+                    self.unsafe_get(i * unroll_threshold + j)
+                )
+                ptr.init_pointee_copy(fill)
+
+        # Fill the remainder
+        @parameter
+        for i in range(unrolled * unroll_threshold, size):
             var ptr = UnsafePointer.address_of(self.unsafe_get(i))
             ptr.init_pointee_copy(fill)
 
