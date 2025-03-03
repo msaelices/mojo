@@ -22,6 +22,7 @@ from collections import InlineArray
 from collections._index_normalization import normalize_index
 from sys.intrinsics import _type_is_eq
 
+import math
 from memory import UnsafePointer
 from memory.maybe_uninitialized import UnsafeMaybeUninitialized
 
@@ -140,21 +141,21 @@ struct InlineArray[
         _inline_array_construction_checks[size]()
         __mlir_op.`lit.ownership.mark_initialized`(__get_mvalue_as_litref(self))
 
-        alias unroll_threshold = 1000
-        alias unrolled = size // unroll_threshold
-        alias remainder = size % unroll_threshold
+        alias batch_size = 1000
+        alias unroll_end = math.align_down(size, batch_size)
 
-        @parameter
-        for i in range(unrolled):
-            for j in range(unroll_threshold):
+        for i in range(0, unroll_end, batch_size):
+
+            @parameter
+            for j in range(batch_size):
                 var ptr = UnsafePointer.address_of(
-                    self.unsafe_get(i * unroll_threshold + j)
+                    self.unsafe_get(i * batch_size + j)
                 )
                 ptr.init_pointee_copy(fill)
 
         # Fill the remainder
         @parameter
-        for i in range(unrolled * unroll_threshold, size):
+        for i in range(unroll_end, size):
             var ptr = UnsafePointer.address_of(self.unsafe_get(i))
             ptr.init_pointee_copy(fill)
 
