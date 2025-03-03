@@ -132,8 +132,11 @@ struct InlineArray[
 
     @always_inline
     @implicit
-    fn __init__[batch_size: Int = 100](out self, fill: Self.ElementType):
+    fn __init__[batch_size: Int = 64](out self, fill: Self.ElementType):
         """Constructs an empty array where each element is the supplied `fill`.
+
+        Parameters:
+            batch_size: The number of elements to unroll for filling the array.
 
         Args:
             fill: The element to fill each index.
