@@ -132,7 +132,7 @@ struct InlineArray[
 
     @always_inline
     @implicit
-    fn __init__(out self, fill: Self.ElementType):
+    fn __init__[batch_size: Int = 100](out self, fill: Self.ElementType):
         """Constructs an empty array where each element is the supplied `fill`.
 
         Args:
@@ -141,7 +141,6 @@ struct InlineArray[
         _inline_array_construction_checks[size]()
         __mlir_op.`lit.ownership.mark_initialized`(__get_mvalue_as_litref(self))
 
-        alias batch_size = 1000
         alias unroll_end = math.align_down(size, batch_size)
 
         for i in range(0, unroll_end, batch_size):
