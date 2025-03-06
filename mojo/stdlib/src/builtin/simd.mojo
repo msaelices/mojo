@@ -10,9 +10,34 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
-"""Implements SIMD struct.
+"""Implements SIMD primitives and abstractions.
 
-These are Mojo built-ins, so you don't need to import them.
+Provides high-performance SIMD primitives and abstractions for
+vectorized computation in Mojo. It enables efficient data-parallel operations
+by leveraging hardware vector processing units across different architectures.
+
+Key Features:
+1. Architecture-agnostic SIMD abstractions with automatic hardware detection
+2. Optimized vector operations for common numerical computations
+3. Explicit control over vectorization strategies and memory layouts
+4. Zero-cost abstractions that compile to efficient machine code
+5. Support for different vector widths and element types
+
+Primary Components:
+- Vector types: Strongly-typed vector containers with element-wise operations
+- SIMD intrinsics: Low-level access to hardware SIMD instructions
+- Vectorized algorithms: Common algorithms optimized for SIMD execution
+- Memory utilities: Aligned memory allocation and vector load/store operations
+
+Performance Considerations:
+- Vector width selection should match target hardware capabilities
+- Memory alignment affects load/store performance
+- Data layout transformations may be necessary for optimal vectorization
+
+Integration:
+This module is designed to work seamlessly with other Mojo numerical computing
+components, including tensor operations, linear algebra routines, and
+domain-specific libraries for machine learning and scientific computing.
 """
 
 import math
@@ -95,6 +120,14 @@ alias Int64 = Scalar[DType.int64]
 """Represents a 64-bit signed scalar integer."""
 alias UInt64 = Scalar[DType.uint64]
 """Represents a 64-bit unsigned scalar integer."""
+alias Int128 = Scalar[DType.int128]
+"""Represents a 128-bit signed scalar integer."""
+alias UInt128 = Scalar[DType.uint128]
+"""Represents a 128-bit unsigned scalar integer."""
+alias Int256 = Scalar[DType.int256]
+"""Represents a 256-bit signed scalar integer."""
+alias UInt256 = Scalar[DType.uint256]
+"""Represents a 256-bit unsigned scalar integer."""
 
 alias Float8_e5m2 = Scalar[DType.float8_e5m2]
 """Represents a FP8E5M2 floating point format from the [OFP8
@@ -433,9 +466,9 @@ struct SIMD[type: DType, size: Int](
         """
         _simd_construction_checks[type, size]()
 
-        var tn1 = __mlir_op.`kgen.int_literal.convert`[
-            _type = __mlir_type.si128
-        ](value.value)
+        var tn1 = __mlir_attr[
+            `#kgen<int_literal_convert<`, value.value, `, 0>> : si128`
+        ]
         var t0 = __mlir_op.`pop.cast_from_builtin`[
             _type = __mlir_type.`!pop.scalar<si128>`
         ](tn1)
@@ -548,9 +581,11 @@ struct SIMD[type: DType, size: Int](
                 __mlir_op.`pop.cast_from_builtin`[
                     _type = __mlir_type[`!pop.scalar<f8e4m3fn>`]
                 ](
-                    __mlir_op.`kgen.float_literal.convert`[
-                        _type = __mlir_type.f8E4M3FN
-                    ](value.value)
+                    __mlir_attr[
+                        `#kgen<float_literal_convert<`,
+                        value.value,
+                        `>> : f8E4M3FN`,
+                    ]
                 )
             )
         elif type is DType.float8_e4m3fnuz:
@@ -558,9 +593,11 @@ struct SIMD[type: DType, size: Int](
                 __mlir_op.`pop.cast_from_builtin`[
                     _type = __mlir_type[`!pop.scalar<f8e4m3fnuz>`]
                 ](
-                    __mlir_op.`kgen.float_literal.convert`[
-                        _type = __mlir_type.f8E4M3FNUZ
-                    ](value.value)
+                    __mlir_attr[
+                        `#kgen<float_literal_convert<`,
+                        value.value,
+                        `>> : f8E4M3FNUZ`,
+                    ]
                 )
             )
         elif type is DType.float8_e5m2:
@@ -568,9 +605,11 @@ struct SIMD[type: DType, size: Int](
                 __mlir_op.`pop.cast_from_builtin`[
                     _type = __mlir_type[`!pop.scalar<f8e5m2>`]
                 ](
-                    __mlir_op.`kgen.float_literal.convert`[
-                        _type = __mlir_type.f8E5M2
-                    ](value.value)
+                    __mlir_attr[
+                        `#kgen<float_literal_convert<`,
+                        value.value,
+                        `>> : f8E5M2`,
+                    ]
                 )
             )
         elif type is DType.float8_e5m2fnuz:
@@ -578,9 +617,11 @@ struct SIMD[type: DType, size: Int](
                 __mlir_op.`pop.cast_from_builtin`[
                     _type = __mlir_type[`!pop.scalar<f8e5m2fnuz>`]
                 ](
-                    __mlir_op.`kgen.float_literal.convert`[
-                        _type = __mlir_type.f8E5M2FNUZ
-                    ](value.value)
+                    __mlir_attr[
+                        `#kgen<float_literal_convert<`,
+                        value.value,
+                        `>> : f8E5M2FNUZ`,
+                    ]
                 )
             )
         elif type is DType.float16:
@@ -588,9 +629,11 @@ struct SIMD[type: DType, size: Int](
                 __mlir_op.`pop.cast_from_builtin`[
                     _type = __mlir_type[`!pop.scalar<f16>`]
                 ](
-                    __mlir_op.`kgen.float_literal.convert`[
-                        _type = __mlir_type.f16
-                    ](value.value)
+                    __mlir_attr[
+                        `#kgen<float_literal_convert<`,
+                        value.value,
+                        `>> : f16`,
+                    ]
                 )
             )
         elif type is DType.bfloat16:
@@ -598,9 +641,11 @@ struct SIMD[type: DType, size: Int](
                 __mlir_op.`pop.cast_from_builtin`[
                     _type = __mlir_type[`!pop.scalar<bf16>`]
                 ](
-                    __mlir_op.`kgen.float_literal.convert`[
-                        _type = __mlir_type.bf16
-                    ](value.value)
+                    __mlir_attr[
+                        `#kgen<float_literal_convert<`,
+                        value.value,
+                        `>> : bf16`,
+                    ]
                 )
             )
         elif type is DType.float32:
@@ -608,9 +653,11 @@ struct SIMD[type: DType, size: Int](
                 __mlir_op.`pop.cast_from_builtin`[
                     _type = __mlir_type[`!pop.scalar<f32>`]
                 ](
-                    __mlir_op.`kgen.float_literal.convert`[
-                        _type = __mlir_type.f32
-                    ](value.value)
+                    __mlir_attr[
+                        `#kgen<float_literal_convert<`,
+                        value.value,
+                        `>> : f32`,
+                    ]
                 )
             )
         else:
@@ -618,9 +665,11 @@ struct SIMD[type: DType, size: Int](
                 __mlir_op.`pop.cast_from_builtin`[
                     _type = __mlir_type[`!pop.scalar<f64>`]
                 ](
-                    __mlir_op.`kgen.float_literal.convert`[
-                        _type = __mlir_type.f64
-                    ](value.value)
+                    __mlir_attr[
+                        `#kgen<float_literal_convert<`,
+                        value.value,
+                        `>> : f64`,
+                    ]
                 )
             )
         # Finally, splat the scalar to a SIMD if needed.
@@ -3132,7 +3181,7 @@ fn _powi(base: Scalar, exp: Int32) -> __type_of(base):
 @always_inline
 fn _convert_float8_to_f32_scaler[
     type: DType,
-](x: Scalar[type]) -> Scalar[DType.float32]:
+](x: Scalar[type]) -> Float32:
     var kF32_NaN: UInt32 = 0x7FFFFFFF
     var FP8_NUM_BITS = 8
     var IS_E4M3 = type is DType.float8_e4m3fn
@@ -3439,8 +3488,8 @@ alias _fp32_bf16_mantissa_diff = FPUtils[
 
 @always_inline
 fn _bfloat16_to_f32_scalar(
-    val: Scalar[DType.bfloat16],
-) -> Scalar[DType.float32]:
+    val: BFloat16,
+) -> Float32:
     @parameter
     if has_neon():
         # TODO(KERN-228): support BF16 on neon systems.
@@ -3451,7 +3500,7 @@ fn _bfloat16_to_f32_scalar(
     if is_nvidia_gpu():
         return inlined_assembly[
             "cvt.f32.bf16 $0, $1;" if _is_sm_9x() else "mov.b32 $0, {0, $1};",
-            Scalar[DType.float32],
+            Float32,
             constraints="=f,h",
             has_side_effect=False,
         ](bitcast[DType.int16](val))
@@ -3474,7 +3523,7 @@ fn _bfloat16_to_f32[
         input_type: DType, result_type: DType
     ](val: Scalar[input_type]) capturing -> Scalar[result_type]:
         return rebind[Scalar[result_type]](
-            _bfloat16_to_f32_scalar(rebind[Scalar[DType.bfloat16]](val))
+            _bfloat16_to_f32_scalar(rebind[BFloat16](val))
         )
 
     return _simd_apply[wrapper_fn, DType.float32, size](val)
@@ -3482,8 +3531,8 @@ fn _bfloat16_to_f32[
 
 @always_inline
 fn _f32_to_bfloat16_scalar(
-    val: Scalar[DType.float32],
-) -> Scalar[DType.bfloat16]:
+    val: Float32,
+) -> BFloat16:
     @parameter
     if has_neon():
         # TODO(KERN-228): support BF16 on neon systems.
@@ -3555,7 +3604,7 @@ fn _f32_to_bfloat16[
         input_type: DType, result_type: DType
     ](val: Scalar[input_type]) capturing -> Scalar[result_type]:
         return rebind[Scalar[result_type]](
-            _f32_to_bfloat16_scalar(rebind[Scalar[DType.float32]](val))
+            _f32_to_bfloat16_scalar(rebind[Float32](val))
         )
 
     return _simd_apply[wrapper_fn, DType.bfloat16, size](val)

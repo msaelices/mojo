@@ -35,6 +35,7 @@ from max.pipelines import (
 )
 from max.pipelines.dataprocessing import collate_batch
 from max.pipelines.kv_cache import KVCacheInputs, KVCacheParams
+from transformers import AutoConfig
 
 from .graph import build_graph
 
@@ -67,33 +68,40 @@ class MPNetInputs(ModelInputs):
 
 class MPNetPipelineModel(PipelineModel[TextContext]):
     def __init__(
-        self, pipeline_config: PipelineConfig, session: InferenceSession
+        self,
+        pipeline_config: PipelineConfig,
+        session: InferenceSession,
+        huggingface_config: AutoConfig,
     ) -> None:
-        super().__init__(pipeline_config, session)
+        super().__init__(pipeline_config, session, huggingface_config)
         self.model = self.load_model(session)
 
     @classmethod
-    def get_kv_params(cls, pipeline_config: PipelineConfig) -> KVCacheParams:
+    def get_kv_params(
+        cls, pipeline_config: PipelineConfig, huggingface_config: AutoConfig
+    ) -> KVCacheParams:
         return KVCacheParams(
             dtype=pipeline_config.cache_dtype,
-            n_kv_heads=pipeline_config.huggingface_config.num_attention_heads,
+            n_kv_heads=huggingface_config.num_attention_heads,
             head_dim=(
-                pipeline_config.huggingface_config.hidden_size
-                // pipeline_config.huggingface_config.num_attention_heads
+                huggingface_config.hidden_size
+                // huggingface_config.num_attention_heads
             ),
             cache_strategy=pipeline_config.kv_cache_config.cache_strategy,
             enable_prefix_caching=pipeline_config.kv_cache_config.enable_prefix_caching,
         )
 
     @classmethod
-    def get_num_layers(cls, pipeline_config: PipelineConfig) -> int:
-        return pipeline_config.huggingface_config.num_hidden_layers
+    def get_num_layers(cls, huggingface_config: AutoConfig) -> int:
+        return huggingface_config.num_hidden_layers
 
     @classmethod
-    def calculate_max_seq_len(cls, pipeline_config: PipelineConfig) -> int:
+    def calculate_max_seq_len(
+        cls, pipeline_config: PipelineConfig, huggingface_config: AutoConfig
+    ) -> int:
         try:
             return upper_bounded_default(
-                upper_bound=pipeline_config.huggingface_config.max_position_embeddings,
+                upper_bound=huggingface_config.max_position_embeddings,
                 default=pipeline_config.max_length,
             )
         except ValueError as e:
@@ -101,7 +109,7 @@ class MPNetPipelineModel(PipelineModel[TextContext]):
                 "Unable to infer max_length for MPNet, the provided "
                 f"max_length ({pipeline_config.max_length}) exceeds the "
                 f"model's max_position_embeddings "
-                f"({pipeline_config.huggingface_config.max_position_embeddings})."
+                f"({huggingface_config.max_position_embeddings})."
             )
             raise ValueError(msg) from e
 
@@ -124,9 +132,7 @@ class MPNetPipelineModel(PipelineModel[TextContext]):
         tokens = [ctx.next_tokens for ctx in context_batch]
 
         # Pad tokens for the batch.
-        pad_value = getattr(
-            self.pipeline_config.huggingface_config, "pad_token_id", 1
-        )
+        pad_value = getattr(self.huggingface_config, "pad_token_id", 1)
         next_tokens_batch, _ = collate_batch(
             tokens,
             pad_value=pad_value,
@@ -179,8 +185,7 @@ class MPNetPipelineModel(PipelineModel[TextContext]):
             logger.info("Building and compiling model...")
             before = time.perf_counter()
             graph = build_graph(
-                self.pipeline_config,
-                self._weights,
+                self.pipeline_config, self._weights, self.huggingface_config
             )
             model = session.load(
                 graph, weights_registry=self._weights.allocated_weights

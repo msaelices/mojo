@@ -86,6 +86,10 @@ class InputContext(Protocol):
         """Updates the next_tokens and extends existing tokens to include all generated tokens."""
         ...
 
+    def jump_ahead(self, new_token: int) -> None:
+        """Updates the token array, while ensuring the new token is returned to the user."""
+        ...
+
     def bump_token_indices(
         self,
         start_idx: Optional[int] = None,
@@ -270,6 +274,25 @@ class TextContext:
 
         self.is_initial_prompt = False
 
+    def jump_ahead(self, new_token: int) -> None:
+        """Updates the token array, while ensuring the new token is returned to the user."""
+
+        self._upsize()
+
+        # Update tokens
+        self.tokens[self._active_idx] = new_token
+
+        # Bump Indices
+        self._active_idx += 1
+        self._end_idx += 1
+        self._completion_end_idx += 1
+
+        # Accept the token, and move the FSM for constrained decoding forward.
+        if self.matcher:
+            assert self.matcher.accept_token(new_token)
+
+        self.is_initial_prompt = False
+
     def reset(self) -> None:
         """Resets the context's state by combining all tokens into a new prompt."""
         self._start_idx = 0
@@ -309,7 +332,7 @@ class TextAndVisionContext(TextContext):
         prompt: Union[str, Sequence[int]],
         max_length: int | None,
         tokens: np.ndarray,
-        pixel_values: Union[np.ndarray, list[np.ndarray]],
+        pixel_values: Sequence[np.ndarray],
         extra_model_args: dict[str, Any],
         log_probabilities: int = 0,
         log_probabilities_echo: bool = False,
@@ -342,4 +365,4 @@ class TextAndVisionContext(TextContext):
 
         # Update context not to re-encode the same image in next steps. There are no image tokens
         # expected after context encoding.
-        self.pixel_values = []
+        self.pixel_values = ()

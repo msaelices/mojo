@@ -348,6 +348,15 @@ class PrefixCache:
             return None, 0
         return partial_match_block, num_cache_hit_tokens
 
+    @property
+    def cow_blocks_copied(self) -> int:
+        """Get the number of cow operations performed."""
+        return self.cow_count
+
+    def reset_cow_blocks_copied(self) -> None:
+        """Reset the number of cow operations performed."""
+        self.cow_count = 0
+
     def _fetch_cow(
         self,
         seq_id: int,
@@ -399,7 +408,7 @@ class PrefixCache:
         )
         data.blocks.append(new_block)
         data.cached_idx += num_cache_hit_tokens
-        assert len(data.prompt_tokens) > 0
+        assert data.num_prompt_tokens > 0
         assert data.cached_idx < data.inflight_idx
 
     @traced
@@ -445,6 +454,9 @@ class PrefixCache:
             - prefix_blocks: Prefix cache blocks that would be reused for this seq.
             - num_cache_hit_tokens: Number of new cached tokens retrieved from prefix cache.
         """
+        if data.num_prompt_tokens == 1:
+            return set(), 0
+
         node, prefix_blocks = self._fetch_query_cache(seq_id, data)
         num_cache_hit_tokens = len(prefix_blocks) * self.page_size
 

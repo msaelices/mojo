@@ -38,7 +38,7 @@ from max.pipelines.kv_cache import (
     infer_optimal_batch_size,
 )
 from max.profiler import Tracer, traced
-from transformers import AutoTokenizer
+from transformers import AutoConfig, AutoTokenizer
 
 from .config import PipelineConfig
 from .context import InputContext
@@ -146,9 +146,13 @@ class PipelineModel(ABC, Generic[T]):
     _MIN_DEFAULT_BATCH_SIZE = 1
 
     def __init__(
-        self, pipeline_config: PipelineConfig, session: InferenceSession
+        self,
+        pipeline_config: PipelineConfig,
+        session: InferenceSession,
+        huggingface_config: AutoConfig,
     ) -> None:
         self.pipeline_config = pipeline_config
+        self.huggingface_config = huggingface_config
 
         if isinstance(self, KVCacheMixin):
             self.kv_manager = self.load_kv_manager(
@@ -157,7 +161,9 @@ class PipelineModel(ABC, Generic[T]):
 
     @classmethod
     @abstractmethod
-    def calculate_max_seq_len(cls, pipeline_config: PipelineConfig) -> int:
+    def calculate_max_seq_len(
+        cls, pipeline_config: PipelineConfig, huggingface_config: AutoConfig
+    ) -> int:
         """Calculate the optimal max sequence length for the model.
         Models are expected to implement this method.
 
@@ -186,13 +192,15 @@ class PipelineModel(ABC, Generic[T]):
 
     @classmethod
     @abstractmethod
-    def get_kv_params(cls, pipeline_config: PipelineConfig) -> KVCacheParams:
+    def get_kv_params(
+        cls, pipeline_config: PipelineConfig, huggingface_config: AutoConfig
+    ) -> KVCacheParams:
         """Returns the KV cache params for the pipeline model."""
         ...
 
     @classmethod
     @abstractmethod
-    def get_num_layers(cls, pipeline_config: PipelineConfig) -> int:
+    def get_num_layers(cls, huggingface_config: AutoConfig) -> int:
         """Returns the number of layers for the pipeline model."""
         ...
 
@@ -201,6 +209,7 @@ class PipelineModel(ABC, Generic[T]):
         cls,
         pipeline_config: PipelineConfig,
         available_cache_memory: int,
+        huggingface_config: AutoConfig,
     ) -> int:
         """Returns the estimated optimal batch size to run the model
         given current memory constraints."""
@@ -217,11 +226,19 @@ class PipelineModel(ABC, Generic[T]):
 
         # TODO we should map HF configs to a unified MAX Config object
         # this would help avoid these excessive calls to class methods.
-        n_layers = cls.get_num_layers(pipeline_config)
-        kv_params = cls.get_kv_params(pipeline_config)
+        n_layers = cls.get_num_layers(
+            huggingface_config=pipeline_config.huggingface_config,
+        )
+        kv_params = cls.get_kv_params(
+            pipeline_config,
+            huggingface_config=pipeline_config.huggingface_config,
+        )
         inferred_batch_size = infer_optimal_batch_size(
             params=kv_params,
-            max_seq_len=cls.calculate_max_seq_len(pipeline_config),
+            max_seq_len=cls.calculate_max_seq_len(
+                pipeline_config,
+                huggingface_config=pipeline_config.huggingface_config,
+            ),
             num_layers=n_layers,
             available_cache_memory=available_cache_memory,
             devices=pipeline_config.devices,
@@ -349,6 +366,7 @@ class KVCacheMixin(Protocol):
         pipeline_config: PipelineConfig,
         available_cache_memory: int,
         devices: list[Device],
+        huggingface_config: AutoConfig,
     ) -> int:
         """Estimates the size of the kv cache in bytes."""
         ...
@@ -391,12 +409,12 @@ class TextGenerationPipeline(TokenGenerator[T]):
         # Create a grammar compiler if constrained decoding is enabled
         self.vocab_size = None
         if pipeline_config.sampling_config.enable_structured_output:
-            tokenizer = AutoTokenizer.from_pretrained(
+            self.tokenizer = AutoTokenizer.from_pretrained(
                 pipeline_config.model_path
             )
-            self.vocab_size = len(tokenizer)
+            self.vocab_size = len(self.tokenizer)
             tokenizer_info = xgr.TokenizerInfo.from_huggingface(
-                tokenizer,
+                self.tokenizer,
                 vocab_size=self.vocab_size,
             )
 
@@ -417,7 +435,9 @@ class TextGenerationPipeline(TokenGenerator[T]):
 
         # Load model.
         self._pipeline_model = pipeline_model(
-            pipeline_config=self._pipeline_config, session=session
+            pipeline_config=self._pipeline_config,
+            session=session,
+            huggingface_config=self._pipeline_config.huggingface_config,
         )
 
         # Load sampler.
@@ -431,7 +451,8 @@ class TextGenerationPipeline(TokenGenerator[T]):
         context: T,
     ) -> int:
         max_seq_len = self._pipeline_model.calculate_max_seq_len(
-            self._pipeline_config
+            self._pipeline_config,
+            huggingface_config=self._pipeline_config.huggingface_config,
         )
         # this is effectively: max_seq_len - (num_tokens_in_kv_cache + num_new_tokens) - num_new_tokens
         num_available_steps = max_seq_len - (
@@ -458,11 +479,12 @@ class TextGenerationPipeline(TokenGenerator[T]):
 
         if self._pipeline_config.sampling_config.enable_structured_output:
             assert self.vocab_size is not None
-            bitmask = torch.ones(
+            bitmask = torch.full(
                 xgr.get_bitmask_shape(
                     len(batch),
                     self.vocab_size,
                 ),
+                -1,
                 dtype=torch.int32,
             )
         else:
@@ -493,6 +515,17 @@ class TextGenerationPipeline(TokenGenerator[T]):
                     logger.warning(msg)
                     # I am removing the json_schema, so it doesn't try to load the grammar repeatedly.
                     context.json_schema = None  # type: ignore
+
+            if context.matcher:
+                if (
+                    jump_forward_string
+                    := context.matcher.find_jump_forward_string()
+                ):
+                    tokens = self.tokenizer.encode(
+                        jump_forward_string, add_special_tokens=False
+                    )
+                    for token in tokens:
+                        context.jump_ahead(token)
 
             # Claim cache rows for context.
             if not self._pipeline_model.kv_manager.contains(
@@ -731,7 +764,8 @@ class TextGenerationPipeline(TokenGenerator[T]):
 
                 max_length = upper_bounded_default(
                     upper_bound=self._pipeline_model.calculate_max_seq_len(
-                        self._pipeline_config
+                        self._pipeline_config,
+                        huggingface_config=self._pipeline_config.huggingface_config,
                     ),
                     default=context.max_length,
                 )

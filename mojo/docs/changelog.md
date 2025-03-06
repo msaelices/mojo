@@ -41,7 +41,16 @@ what we publish.
 
 ### Standard library changes
 
+- The design of the `IntLiteral` and `FloatLiteral` types has been changed to
+  maintain their compile-time-only value as a parameter instead of a stored
+  field. This correctly models that infinite precision literals are not
+  representable at runtime, and eliminates a number of bugs hit in corner cases.
+  This is made possible by enhanced dependent type support in the compiler.
+
 - The `Buffer` struct has been removed in favor of `Span` and `NDBuffer`.
+
+- `Optional`, `Span`, and `InlineArray` have been added to the prelude.  You
+   now no longer need to explicitly import these types to use them in your program.
 
 - A new `IntervalTree` data structure has been added to the standard library.
   This is a tree data structure that allows for efficient range queries.
@@ -214,6 +223,11 @@ ctx.enqueue_function(compiled_func, grid_dim=1, block_dim=1)
 
 - `List.bytecount()` has been renamed to `List.byte_length()` for consistency
   with the String-like APIs.
+
+- The `logger` package is now documented.
+
+- Large bigwidth integers are introduced. Specifically, the Int128, UInt128,
+  Int256, and UInt256 are now supported.
 
 ### Tooling changes
 
