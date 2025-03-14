@@ -169,7 +169,11 @@ struct InlineArray[
         """Constructs an array where each element is initialized to the supplied value.
 
         Parameters:
-            batch_size: The number of elements to unroll for filling the array.
+            batch_size: The number of elements to unroll for filling the array. 
+                Default is 64, which optimizes for AVX512 operations on modern CPUs.
+                For large arrays (>2k elements), this batched approach significantly 
+                improves compile times compared to full unrolling while maintaining 
+                good runtime performance.
 
         Args:
             fill: The element value to fill each index with.
@@ -177,7 +181,19 @@ struct InlineArray[
         Example:
             ```mojo
             var filled = InlineArray[Int, 5](fill=42)  # [42, 42, 42, 42, 42]
+            
+            # For large arrays, consider adjusting batch_size to balance 
+            # compile time and runtime performance:
+            var large = InlineArray[Int, 10000, batch_size=32](fill=0)
             ```
+            
+        Note:
+            - Full unrolling with large arrays (>2k elements) can cause significant
+              compiler slowdowns
+            - Using batch_size=64 balances AVX512 efficiency and instruction cache usage
+            - For very large arrays, using smaller batch sizes (e.g., 32 or 16) can
+              further improve compilation speed while still maintaining good runtime
+              performance
         """
         _inline_array_construction_checks[size]()
         __mlir_op.`lit.ownership.mark_initialized`(__get_mvalue_as_litref(self))
