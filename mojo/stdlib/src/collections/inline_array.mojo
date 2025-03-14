@@ -187,7 +187,8 @@ struct InlineArray[
             var large = InlineArray[Int, 10000, batch_size=32](fill=0)
             ```
             
-        Note:
+        Notes:
+        
             - Full unrolling with large arrays (>2k elements) can cause significant
               compiler slowdowns
             - Using batch_size=64 balances AVX512 efficiency and instruction cache usage
