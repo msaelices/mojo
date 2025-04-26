@@ -285,14 +285,14 @@ value that has a more specific bound on one or more of its parameters.
 For example, the following code defines a `Container` type that holds an
 instance of `CollectionElement`. It also defines a `__str__()` method that can
 only be called if the stored `ElementType` conforms to
-`WritableCollectionElement`:
+`Writable & CollectionElement`:
 
 ```mojo
 @value
 struct Container[ElementType: CollectionElement]:
     var element: ElementType
 
-    def __str__[StrElementType: WritableCollectionElement, //](
+    def __str__[StrElementType: Writable & CollectionElement, //](
             self: Container[StrElementType]) -> String:
         return String(self.element)
 
@@ -312,10 +312,10 @@ Hello
 
 Note the signature of the `__str__()` method, which declares the `self` argument
 with a more specific type. Specifically, it declares that it takes a `Container`
-with an `ElementType` that conforms to the `WritableCollectionElement` trait.
+with an `ElementType` that conforms to the `Writable & CollectionElement` traits.
 
 ```mojo
-def __str__[StrElementType: WritableCollectionElement, //](
+def __str__[StrElementType: Writable & CollectionElement, //](
         self: Container[StrElementType]) -> String:
 ```
 
