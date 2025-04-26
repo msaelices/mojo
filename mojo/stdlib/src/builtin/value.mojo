@@ -198,18 +198,6 @@ trait CollectionElementNew(ExplicitlyCopyable, Movable):
     pass
 
 
-trait WritableCollectionElement(CollectionElement, Writable):
-    """The WritableCollectionElement trait denotes a trait composition
-    of the `CollectionElement` and `Writable` traits.
-
-    This is useful to have as a named entity since Mojo does not
-    currently support anonymous trait compositions to constrain
-    on `CollectionElement & Stringable` in the parameter.
-    """
-
-    pass
-
-
 trait ComparableCollectionElement(CollectionElement, Comparable):
     """
     This trait denotes a trait composition of the `CollectionElement` and `Comparable` traits.
@@ -241,44 +229,6 @@ trait BoolableKeyElement(Boolable, KeyElement):
     This is useful to have as a named entity since Mojo does not
     currently support anonymous trait compositions to constrain
     on `Boolable & KeyElement` in the parameter.
-    """
-
-    pass
-
-
-trait EqualityComparableWritableCollectionElement(
-    WritableCollectionElement, EqualityComparable
-):
-    """A trait that combines the CollectionElement, Writable and
-    EqualityComparable traits.
-
-    This trait requires types to implement CollectionElement, Writable and
-    EqualityComparable interfaces, allowing them to be used in collections,
-    compared, and written to output.
-    """
-
-    pass
-
-
-trait WritableCollectionElementNew(CollectionElementNew, Writable):
-    """A trait that combines the CollectionElement and Writable traits.
-
-    This trait requires types to implement both CollectionElement and Writable
-    interfaces, allowing them to be used in collections and written to output.
-    """
-
-    pass
-
-
-trait EqualityComparableWritableCollectionElementNew(
-    WritableCollectionElementNew, EqualityComparable
-):
-    """A trait that combines the CollectionElement, Writable and
-    EqualityComparable traits.
-
-    This trait requires types to implement CollectionElement, Writable and
-    EqualityComparable interfaces, allowing them to be used in collections,
-    compared, and written to output.
     """
 
     pass
