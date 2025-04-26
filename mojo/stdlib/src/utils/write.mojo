@@ -302,7 +302,7 @@ struct _WriteBufferStack[
         self.writer = Pointer(to=writer)
 
     fn write_list[
-        T: WritableCollectionElement
+        T: Writable & CollectionElement
     ](mut self, values: List[T, *_], *, sep: String = String()):
         var length = len(values)
         if length == 0:
@@ -424,7 +424,7 @@ fn write_buffered[
 
 fn write_buffered[
     W: Writer,
-    T: WritableCollectionElement, //,
+    T: Writable & CollectionElement, //,
     buffer_size: Int = 4096,
 ](mut writer: W, values: List[T, *_], *, sep: StaticString = StaticString()):
     """

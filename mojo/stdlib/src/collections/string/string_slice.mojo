@@ -2129,7 +2129,9 @@ struct StringSlice[mut: Bool, //, origin: Origin[mut]](
             result += fillchar
         return result
 
-    fn join[T: WritableCollectionElement](self, elems: List[T, *_]) -> String:
+    fn join[
+        T: Writable & CollectionElement
+    ](self, elems: List[T, *_]) -> String:
         """Joins string elements using the current string as a delimiter.
 
         Parameters:
