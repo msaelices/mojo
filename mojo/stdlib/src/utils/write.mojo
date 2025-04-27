@@ -226,7 +226,7 @@ struct _WriteBufferHeap(Writer):
         self.pos = 0
 
     fn write_list[
-        T: WritableCollectionElement
+        T: Writable & CollectionElement
     ](mut self, values: List[T, *_], *, sep: StaticString = StaticString()):
         var length = len(values)
         if length == 0:
@@ -266,7 +266,7 @@ struct _TotalWritableBytes(Writer):
         self.size = 0
 
     fn __init__[
-        T: WritableCollectionElement
+        T: Writable & CollectionElement
     ](out self, values: List[T, *_], sep: String = String()):
         self.size = 0
         var length = len(values)

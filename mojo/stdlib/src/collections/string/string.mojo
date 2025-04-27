@@ -692,7 +692,7 @@ struct String(
     CollectionElementNew,
     FloatableRaising,
     _HashableWithHasher,
-    WritableCollectionElement,
+    CollectionElement,
     PathLike,
     _CurlyEntryFormattable,
     PythonConvertible,

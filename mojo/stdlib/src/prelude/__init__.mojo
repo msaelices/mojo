@@ -135,7 +135,6 @@ from builtin.value import (
     Defaultable,
     ExplicitlyCopyable,
     Movable,
-    WritableCollectionElement,
 )
 from documentation import doc_private
 from memory import AddressSpace, Pointer, Span
