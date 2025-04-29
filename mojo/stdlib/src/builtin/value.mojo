@@ -223,7 +223,7 @@ trait BoolableCollectionElement(Boolable, CollectionElement):
 
 
 trait EqualityComparableWritableCollectionElement(
-    WritableCollectionElement, EqualityComparable
+    Writable, CollectionElement, EqualityComparable
 ):
     """A trait that combines the CollectionElement, Writable and
     EqualityComparable traits.
@@ -255,18 +255,6 @@ trait EqualityComparableWritableCollectionElementNew(
     This trait requires types to implement CollectionElement, Writable and
     EqualityComparable interfaces, allowing them to be used in collections,
     compared, and written to output.
-    """
-
-    pass
-
-
-trait BoolableKeyElement(Boolable, KeyElement):
-    """The BoolableKeyElement trait denotes a trait composition
-    of the `Boolable` and `KeyElement` traits.
-
-    This is useful to have as a named entity since Mojo does not
-    currently support anonymous trait compositions to constrain
-    on `Boolable & KeyElement` in the parameter.
     """
 
     pass
