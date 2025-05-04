@@ -37,7 +37,7 @@ struct Counter[V: KeyElement](Sized, Copyable, Movable, Boolable):
 
     ```mojo
     from collections import Counter
-    var c = Counter[String](List("a", "a", "a", "b", "b", "c", "d", "c", "c"))
+    var c = Counter[String]("a", "a", "a", "b", "b", "c", "d", "c", "c")
     print(c["a"]) # prints 3
     print(c["b"]) # prints 2
     ```
@@ -56,13 +56,40 @@ struct Counter[V: KeyElement](Sized, Copyable, Movable, Boolable):
         """Create a new, empty Counter object."""
         self._data = Dict[V, Int]()
 
-    # TODO: Change List to Iterable when it is supported in Mojo
+    fn __init__(out self, owned *values: V):
+        """Create a new Counter from a list of values.
+
+        Args:
+            values: A list of values to count.
+
+        Usage:
+        ```mojo
+        from collections import Counter
+        var c = Counter[String]("a", "a", "a", "b", "b", "c", "d", "c", "c")
+        print(c["a"])  # print 3
+        print(c["b"])  # print 2
+        ```
+        """
+        self._data = Dict[V, Int]()
+        for item_ref in values:
+            var item = item_ref[]
+            self._data[item] = self._data.get(item, 0) + 1
+
     @implicit
     fn __init__(out self, items: List[V, *_]):
         """Create a from an input iterable.
 
         Args:
             items: A list of items to count.
+
+        Usage:
+
+        ```mojo
+        from collections import Counter
+        var c = Counter[String](List("a", "a", "a", "b", "b", "c", "d", "c", "c"))
+        print(c["a"]) # prints 3
+        print(c["b"]) # prints 2
+        ```
         """
         self._data = Dict[V, Int]()
         for item_ref in items:
