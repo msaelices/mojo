@@ -552,7 +552,7 @@ struct Counter[V: KeyElement](Sized, Copyable, Movable, Boolable):
 
     # Special methods for counter
 
-    fn total(self) -> Int:
+    fn total(self) -> UInt:
         """Return the total of all counts in the Counter.
 
         Returns:
@@ -563,7 +563,7 @@ struct Counter[V: KeyElement](Sized, Copyable, Movable, Boolable):
             total += count_ref[]
         return total
 
-    fn most_common(self, n: Int) -> List[CountTuple[V]]:
+    fn most_common(self, n: UInt) -> List[CountTuple[V]]:
         """Return a list of the `n` most common elements and their counts from
         the most common to the least.
 
@@ -584,7 +584,7 @@ struct Counter[V: KeyElement](Sized, Copyable, Movable, Boolable):
             return a < b
 
         sort[comparator](items)
-        return items[:n]
+        return items[: Int(n)]
 
     fn elements(self) -> List[V]:
         """Return an iterator over elements repeating each as many times as its
@@ -642,7 +642,7 @@ struct CountTuple[V: KeyElement](
     # Life cycle methods
     # ===------------------------------------------------------------------=== #
 
-    fn __init__(out self, value: V, count: Int):
+    fn __init__(out self, value: V, count: UInt):
         """Create a new CountTuple.
 
         Args:
