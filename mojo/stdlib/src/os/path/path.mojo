@@ -337,7 +337,7 @@ fn is_absolute[PathLike: os.PathLike, //](path: PathLike) -> Bool:
 # TODO(MOCO-1532):
 #   Use StringSlice here once param inference bug for empty variadic
 #   list of parameterized types is fixed.
-fn join(owned path: String, *paths: String) -> String:
+fn join(path: StringSlice, *paths: StringSlice) -> String:
     """Join two or more pathname components, inserting '/' as needed.
     If any component is an absolute path, all previous path components
     will be discarded.  An empty last part will result in a path that
@@ -350,15 +350,15 @@ fn join(owned path: String, *paths: String) -> String:
     Returns:
         The joined path.
     """
-    var joined_path = path
+    var joined_path = String(path)
 
     for cur_path in paths:
-        if cur_path[].startswith(sep):
-            joined_path = cur_path[]
+        if cur_path.startswith(sep):
+            joined_path = String(cur_path)
         elif not joined_path or path.endswith(sep):
-            joined_path += cur_path[]
+            joined_path += cur_path
         else:
-            joined_path += sep + cur_path[]
+            joined_path += sep + cur_path
 
     return joined_path^
 
