@@ -100,7 +100,7 @@ from python import PythonObject, PythonConvertible
 from python._bindings import ConvertibleFromPython
 
 from utils import IndexList, Variant, Writable, Writer, write_args
-from utils.write import write_buffered
+from utils.write import write_buffered, _TotalWritableBytes, _WriteBufferHeap, _WriteBufferStack
 from os.atomic import Atomic
 
 # ===----------------------------------------------------------------------=== #
@@ -1074,14 +1074,22 @@ struct String(
         Returns:
             The joined string.
         """
-        var result = String()
-        if not len(elems):
-            return result^
-        result.write(elems[0])
-        for i in range(1, len(elems)):
-            result.write(self)
-            result.write(elems[i])
-        return result^
+        var sep = StaticString(ptr=self.unsafe_ptr(), length=len(self))
+        var total_bytes = _TotalWritableBytes(elems, sep=sep)
+
+        # Use heap if over the stack buffer size
+        if total_bytes.size + 1 > buffer_size:
+            var buffer = _WriteBufferHeap(total_bytes.size + 1)
+            buffer.write_list(elems, sep=sep)
+            buffer.data[total_bytes.size] = 0
+            return String(
+                StringSlice(ptr=buffer.data, length=total_bytes.size + 1)
+            )
+        # Use stack otherwise
+        else:
+            var result = String()
+            write_buffered[buffer_size](result, elems, sep=sep)
+            return result
 
     @always_inline
     fn codepoints(self) -> CodepointsIter[__origin_of(self)]:
