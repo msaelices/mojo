@@ -1081,7 +1081,6 @@ struct String(
         if total_bytes.size + 1 > buffer_size:
             var buffer = _WriteBufferHeap(total_bytes.size + 1)
             buffer.write_list(elems, sep=sep)
-            buffer.data[total_bytes.size] = 0
             return String(
                 StringSlice(ptr=buffer.data, length=total_bytes.size + 1)
             )
