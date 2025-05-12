@@ -1086,7 +1086,7 @@ struct String(
         # Use heap otherwise
         var buffer = _WriteBufferHeap(total_bytes.size + 1)
         buffer.write_list(elems, sep=sep)
-        return String(StringSlice(ptr=buffer.data, length=total_bytes.size + 1))
+        return String(StringSlice(ptr=buffer.data, length=total_bytes.size))
 
     @always_inline
     fn codepoints(self) -> CodepointsIter[__origin_of(self)]:
