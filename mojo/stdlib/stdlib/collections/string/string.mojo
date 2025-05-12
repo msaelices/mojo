@@ -1077,18 +1077,16 @@ struct String(
         var sep = StaticString(ptr=self.unsafe_ptr(), length=len(self))
         var total_bytes = _TotalWritableBytes(elems, sep=sep)
 
-        # Use heap if over the stack buffer size
-        if total_bytes.size + 1 > buffer_size:
-            var buffer = _WriteBufferHeap(total_bytes.size + 1)
-            buffer.write_list(elems, sep=sep)
-            return String(
-                StringSlice(ptr=buffer.data, length=total_bytes.size + 1)
-            )
-        # Use stack otherwise
-        else:
+        if total_bytes.size <= buffer_size:
+            # Use stack if we are under the stack buffer size
             var result = String()
             write_buffered[buffer_size](result, elems, sep=sep)
             return result
+
+        # Use heap otherwise
+        var buffer = _WriteBufferHeap(total_bytes.size + 1)
+        buffer.write_list(elems, sep=sep)
+        return String(StringSlice(ptr=buffer.data, length=total_bytes.size + 1))
 
     @always_inline
     fn codepoints(self) -> CodepointsIter[__origin_of(self)]:
