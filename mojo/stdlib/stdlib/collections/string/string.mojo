@@ -1049,7 +1049,7 @@ struct String(
         Returns:
             The joined string.
         """
-        var sep = StaticString(ptr=self.unsafe_ptr(), length=len(self))
+        var sep = StaticString(ptr=self.unsafe_ptr(), length=self.byte_length())
         return String(elems, sep=sep)
 
     fn join[
@@ -1074,7 +1074,7 @@ struct String(
         Returns:
             The joined string.
         """
-        var sep = StaticString(ptr=self.unsafe_ptr(), length=len(self))
+        var sep = StaticString(ptr=self.unsafe_ptr(), length=self.byte_length())
         var total_bytes = _TotalWritableBytes(elems, sep=sep)
 
         if total_bytes.size <= buffer_size:
