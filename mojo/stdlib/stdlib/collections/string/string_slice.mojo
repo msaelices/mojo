@@ -75,7 +75,7 @@ from memory import Span, UnsafePointer, memcmp, memcpy, pack_bits
 from memory.memory import _memcmp_impl_unconstrained
 from python import Python, PythonObject, PythonConvertible
 
-from utils.write import _WriteBufferStack
+from utils.write import _WriteBufferStack, _TotalWritableBytes
 
 alias StaticString = StringSlice[StaticConstantOrigin]
 """An immutable static string slice."""
@@ -2165,14 +2165,14 @@ struct StringSlice[mut: Bool, //, origin: Origin[mut]](
         Returns:
             The joined string.
         """
-        var string = String()
-        var buffer = _WriteBufferStack(string)
+        var sep = StaticString(ptr=self.unsafe_ptr(), length=self.byte_length())
+        var total_bytes = _TotalWritableBytes(elems, sep=sep).size
+        var result = String(capacity=total_bytes)
         for i in range(len(elems)):
-            buffer.write(elems[i])
+            result.write(elems[i])
             if i < len(elems) - 1:
-                buffer.write(self)
-        buffer.flush()
-        return string
+                result.write(self)
+        return result^
 
     # TODO(MOCO-1791): The corresponding String.__init__ is limited to
     # StaticString. This is because default arguments and param inference aren't

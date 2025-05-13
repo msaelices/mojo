@@ -1053,20 +1053,13 @@ struct String(
         return String(elems, sep=sep)
 
     fn join[
-        T: Copyable & Movable & Writable, //, buffer_size: Int = 4096
+        T: Copyable & Movable & Writable
     ](self, elems: List[T, *_]) -> String:
         """Joins string elements using the current string as a delimiter.
-        Defaults to writing to the stack if total bytes of `elems` is less than
-        `buffer_size`, otherwise will allocate once to the heap and write
-        directly into that. The `buffer_size` defaults to 4096 bytes to match
-        the default page size on arm64 and x86-64, but you can increase this if
-        you're joining a very large `List` of elements to write into the stack
-        instead of the heap.
 
         Parameters:
             T: The type of the elements. Must implement the `Copyable`,
                 `Movable` and `Writable` traits.
-            buffer_size: The max size of the stack buffer.
 
         Args:
             elems: The input values.
@@ -1074,19 +1067,7 @@ struct String(
         Returns:
             The joined string.
         """
-        var sep = StaticString(ptr=self.unsafe_ptr(), length=self.byte_length())
-        var total_bytes = _TotalWritableBytes(elems, sep=sep)
-
-        if total_bytes.size <= buffer_size:
-            # Use stack if we are under the stack buffer size
-            var result = String()
-            write_buffered[buffer_size](result, elems, sep=sep)
-            return result
-
-        # Use heap otherwise
-        var buffer = _WriteBufferHeap(total_bytes.size + 1)
-        buffer.write_list(elems, sep=sep)
-        return String(StringSlice(ptr=buffer.data, length=total_bytes.size))
+        return self.as_string_slice().join(elems)
 
     @always_inline
     fn codepoints(self) -> CodepointsIter[__origin_of(self)]:
