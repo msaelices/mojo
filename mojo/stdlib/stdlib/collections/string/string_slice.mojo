@@ -2167,6 +2167,14 @@ struct StringSlice[mut: Bool, //, origin: Origin[mut]](
         """
         var sep = StaticString(ptr=self.unsafe_ptr(), length=self.byte_length())
         var total_bytes = _TotalWritableBytes(elems, sep=sep).size
+
+        if total_bytes <= buffer_size:
+            # Use stack if we are under the stack buffer size
+            var result = String()
+            write_buffered[buffer_size](result, elems, sep=sep)
+            return result^
+
+        # Use heap otherwise
         var result = String(capacity=total_bytes)
         for i in range(len(elems)):
             result.write(elems[i])
