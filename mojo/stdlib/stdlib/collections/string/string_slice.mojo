@@ -75,7 +75,7 @@ from memory import Span, UnsafePointer, memcmp, memcpy, pack_bits
 from memory.memory import _memcmp_impl_unconstrained
 from python import Python, PythonObject, PythonConvertible
 
-from utils.write import _WriteBufferStack, _TotalWritableBytes, write_buffered
+from utils.write import _WriteBufferHeap, _WriteBufferStack, _TotalWritableBytes, write_buffered
 
 alias StaticString = StringSlice[StaticConstantOrigin]
 """An immutable static string slice."""
@@ -2169,28 +2169,33 @@ struct StringSlice[mut: Bool, //, origin: Origin[mut]](
 
         Notes:
             - Defaults to writing to the stack if total bytes of `elems` is 
-            less than `buffer_size`, otherwise will allocate once to the heap 
+            inline, otherwise will allocate once to the heap 
             and write directly into that. 
             - The `buffer_size` defaults to 4096 bytes to match the default 
             page size on arm64 and x86-64, but you can increase this if you're 
             joining a very large `List` of elements to write into the stack
             instead of the heap.
         """
+        if len(elems) == 0:
+            return String()
+
         var sep = StaticString(ptr=self.unsafe_ptr(), length=self.byte_length())
         var total_bytes = _TotalWritableBytes(elems, sep=sep).size
+        var result = String(capacity=total_bytes)
 
-        if total_bytes <= buffer_size:
-            # Use stack if we are under the stack buffer size
-            var result = String()
-            write_buffered[buffer_size](result, elems, sep=sep)
+        if result._capacity_or_data.is_inline():
+            # Write directly to the stack address
+            result.write(elems[0])
+            for i in range(1, len(elems)):
+                result.write(self, elems[i])
             return result^
 
-        # Use heap otherwise
-        var result = String(capacity=total_bytes)
-        for i in range(len(elems)):
-            result.write(elems[i])
-            if i < len(elems) - 1:
-                result.write(self)
+        var buffer = _WriteBufferStack[buffer_size](result)        
+
+        buffer.write(elems[0])
+        for i in range(1, len(elems)):
+            buffer.write(self, elems[i])
+        buffer.flush()
         return result^
 
     # TODO(MOCO-1791): The corresponding String.__init__ is limited to
