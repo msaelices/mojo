@@ -75,7 +75,7 @@ from memory import Span, UnsafePointer, memcmp, memcpy, pack_bits
 from memory.memory import _memcmp_impl_unconstrained
 from python import Python, PythonObject, PythonConvertible
 
-from utils.write import _WriteBufferHeap, _WriteBufferStack, _TotalWritableBytes, write_buffered
+from utils.write import _WriteBufferStack, _TotalWritableBytes
 
 alias StaticString = StringSlice[StaticConstantOrigin]
 """An immutable static string slice."""
@@ -2169,8 +2169,7 @@ struct StringSlice[mut: Bool, //, origin: Origin[mut]](
 
         Notes:
             - Defaults to writing to the stack if total bytes of `elems` is 
-            inline, otherwise will allocate once to the heap 
-            and write directly into that. 
+            inline, otherwise will process it by chunks.
             - The `buffer_size` defaults to 4096 bytes to match the default 
             page size on arm64 and x86-64, but you can increase this if you're 
             joining a very large `List` of elements to write into the stack
