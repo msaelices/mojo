@@ -75,7 +75,7 @@ from memory import Span, UnsafePointer, memcmp, memcpy, pack_bits
 from memory.memory import _memcmp_impl_unconstrained
 from python import Python, PythonObject, PythonConvertible
 
-from utils.write import _WriteBufferStack, _TotalWritableBytes
+from utils.write import _WriteBufferStack, _TotalWritableBytes, write_buffered
 
 alias StaticString = StringSlice[StaticConstantOrigin]
 """An immutable static string slice."""
@@ -2151,19 +2151,30 @@ struct StringSlice[mut: Bool, //, origin: Origin[mut]](
         return result
 
     fn join[
-        T: Copyable & Movable & Writable
+        T: Copyable & Movable & Writable, //,
+        buffer_size: Int = 4096,
     ](self, elems: List[T, *_]) -> String:
         """Joins string elements using the current string as a delimiter.
 
         Parameters:
             T: The type of the elements, must implement the `Copyable`,
                 `Movable` and `Writable` traits.
+            buffer_size: The size of the stack buffer to use for writing.
 
         Args:
             elems: The input values.
 
         Returns:
             The joined string.
+
+        Notes:
+            - Defaults to writing to the stack if total bytes of `elems` is 
+            less than `buffer_size`, otherwise will allocate once to the heap 
+            and write directly into that. 
+            - The `buffer_size` defaults to 4096 bytes to match the default 
+            page size on arm64 and x86-64, but you can increase this if you're 
+            joining a very large `List` of elements to write into the stack
+            instead of the heap.
         """
         var sep = StaticString(ptr=self.unsafe_ptr(), length=self.byte_length())
         var total_bytes = _TotalWritableBytes(elems, sep=sep).size
