@@ -48,6 +48,7 @@ from ..kernels import (
     fused_qkv_ragged_matmul_scaled_float8,
     kv_cache_get_max_seq_len,
     matmul_k_cache_ragged,
+    quantize_dynamic_scaled_float8,
     quantize_static_scaled_float8,
     rms_norm_key_cache,
     unfused_qkv_ragged_matmul_gguf_quantized,
@@ -58,7 +59,11 @@ from ..kv_cache import (
     PagedKVCacheCollection,
 )
 from ..layer import Module
-from ..linear import Float8Config, Float8ScaleGranularity, Linear
+from ..linear import (
+    Float8Config,
+    Float8ScaleGranularity,
+    Linear,
+)
 from ..norm import RMSNorm
 from ..rotary_embedding import OptimizedRotaryEmbedding
 from .interfaces import (
@@ -86,6 +91,7 @@ class AttentionWithRopeV1(AttentionImpl):
 
     def __call__(
         self,
+        layer_idx: TensorValue,
         x: TensorValue,
         kv_collection: Union[
             ContinuousBatchingKVCacheCollection, PagedKVCacheCollection
@@ -103,7 +109,7 @@ class AttentionWithRopeV1(AttentionImpl):
                 wqkv=self.wqkv,
                 input_row_offsets=kwargs["input_row_offsets"],
                 kv_collection=kv_collection,
-                layer_idx=self.layer_idx,
+                layer_idx=layer_idx,
                 n_heads=self.n_heads,
                 bias=self.bias,
                 perm_idx=self.perm_idx,
@@ -116,7 +122,7 @@ class AttentionWithRopeV1(AttentionImpl):
                 wqkv=self.wqkv,
                 input_row_offsets=kwargs["input_row_offsets"],
                 kv_collection=kv_collection,
-                layer_idx=self.layer_idx,
+                layer_idx=layer_idx,
                 n_heads=self.n_heads,
                 bias=self.bias,
             )
@@ -135,7 +141,7 @@ class AttentionWithRopeV1(AttentionImpl):
             kwargs["input_row_offsets"],
             kv_collection,
             freqs_cis,
-            self.layer_idx,
+            layer_idx,
             interleaved=self.rope.interleaved,
         )
 
@@ -144,7 +150,7 @@ class AttentionWithRopeV1(AttentionImpl):
             self.kv_params,
             input=xq,
             kv_collection=kv_collection,
-            layer_idx=self.layer_idx,
+            layer_idx=layer_idx,
             input_row_offsets=kwargs["input_row_offsets"],
             mask_variant=MHAMaskVariant.CAUSAL_MASK,
             scale=self.scale,
@@ -171,7 +177,6 @@ class AttentionWithRope(Module):
         num_key_value_heads: int,
         hidden_size: int,
         kv_params: KVCacheParams,
-        layer_idx: int,
         devices: list[DeviceRef] | None = None,
         dtype: DType = DType.float32,
         linear_cls: Callable[..., Linear] = Linear,
@@ -189,7 +194,6 @@ class AttentionWithRope(Module):
             num_key_value_heads: Number of key/value heads.
             hidden_size: The dimension of the hidden states.
             kv_params: KV Cache Params, including the number of kv heads, the head dim, and data type.
-            layer_idx: The layer number associated with this Attention block.
             dtype: DType of the
             devices: Device to place the weights and run the computation. If
                 multiple are provided, the first device is used. Use
@@ -206,7 +210,6 @@ class AttentionWithRope(Module):
         super().__init__()
         self.rope = rope
         self.n_heads = num_attention_heads
-        self.layer_idx = layer_idx
         self.kv_params = kv_params
         self.has_bias = has_bias
         self.scale = (
@@ -214,6 +217,7 @@ class AttentionWithRope(Module):
         )
         self.clip_qkv = clip_qkv
         self.devices = devices or [DeviceRef.CPU()]
+        self.float8_config = float8_config
 
         if stacked_qkv and clip_qkv:
             raise ValueError(
@@ -290,14 +294,11 @@ class AttentionWithRope(Module):
             float8_config=float8_config,
         )
 
-        self.has_input_scale = False
-        self.has_weight_scale = False
         if float8_config:
             if (
                 float8_config.input_scale.granularity
                 == Float8ScaleGranularity.TENSOR
             ):
-                self.has_input_scale = True
                 self.input_scale_q = Weight(
                     name="q_proj.input_scale",
                     dtype=float8_config.input_scale.dtype,
@@ -316,11 +317,11 @@ class AttentionWithRope(Module):
                     shape=[1],
                     device=self.devices[0],
                 )
+
             if (
                 float8_config.weight_scale.granularity
                 == Float8ScaleGranularity.TENSOR
             ):
-                self.has_weight_scale = True
                 self.weight_scale_q = Weight(
                     name="q_proj.weight_scale",
                     dtype=float8_config.weight_scale.dtype,
@@ -337,6 +338,28 @@ class AttentionWithRope(Module):
                     name="v_proj.weight_scale",
                     dtype=float8_config.weight_scale.dtype,
                     shape=[1],
+                    device=self.devices[0],
+                )
+            elif (
+                float8_config.weight_scale.granularity
+                == Float8ScaleGranularity.ROWWISE
+            ):
+                self.weight_scale_q = Weight(
+                    name="q_proj.weight_scale",
+                    dtype=float8_config.weight_scale.dtype,
+                    shape=[self.q_proj.shape[0], 1],
+                    device=self.devices[0],
+                )
+                self.weight_scale_k = Weight(
+                    name="k_proj.weight_scale",
+                    dtype=float8_config.weight_scale.dtype,
+                    shape=[self.k_proj.shape[0], 1],
+                    device=self.devices[0],
+                )
+                self.weight_scale_v = Weight(
+                    name="v_proj.weight_scale",
+                    dtype=float8_config.weight_scale.dtype,
+                    shape=[self.v_proj.shape[0], 1],
                     device=self.devices[0],
                 )
 
@@ -361,16 +384,21 @@ class AttentionWithRope(Module):
             # canonical implementation for correctness. This rescaling is what
             # vllm does.
             # https://github.com/vllm-project/vllm/blob/9b1769dd9ad13a5688d1e2b1b5f00b07b3716969/vllm/model_executor/layers/quantization/compressed_tensors/schemes/compressed_tensors_w8a8_fp8.py#L35
-            if self.has_weight_scale:
+            if (
+                self.float8_config
+                and self.float8_config.weight_scale.granularity
+                == Float8ScaleGranularity.TENSOR
+            ):
                 wq = wq * self.weight_scale_q
                 wk = wk * self.weight_scale_k
                 wv = wv * self.weight_scale_v
 
             wqkv = ops.concat((wq, wk, wv))
-            if self.has_weight_scale:
-                assert self.max_weight_scale is not None
+            if self.float8_config and self.float8_config.is_static:
+                # Float8 always has a weight scale.
+                assert self.qkv_weight_scale is not None
                 wqkv = quantize_static_scaled_float8(
-                    wqkv, self.max_weight_scale.to(DeviceRef.CPU())
+                    wqkv, self.qkv_weight_scale.to(DeviceRef.CPU())
                 )
             return wqkv
 
@@ -383,9 +411,9 @@ class AttentionWithRope(Module):
         return ops.concat((self.bias_q, self.bias_k, self.bias_v))
 
     @property
-    def max_input_scale(self) -> TensorValue | None:
+    def qkv_input_scale(self) -> TensorValue | None:
         """The max of q, k, and v scale input vectors."""
-        if not self.has_input_scale:
+        if not self.float8_config or self.float8_config.is_dynamic:
             return None
 
         return ops.max(
@@ -395,20 +423,29 @@ class AttentionWithRope(Module):
         ).reshape([])
 
     @property
-    def max_weight_scale(self) -> TensorValue | None:
+    def qkv_weight_scale(self) -> TensorValue:
         """The max of q, k, and v scale weight vectors."""
-        if not self.has_weight_scale:
-            return None
+        assert self.float8_config
 
-        return ops.max(
-            ops.concat(
-                (self.weight_scale_q, self.weight_scale_k, self.weight_scale_v)
+        weight_scale = ops.concat(
+            (
+                self.weight_scale_q,
+                self.weight_scale_k,
+                self.weight_scale_v,
             )
-        ).reshape([])
+        )
+        if self.float8_config.is_dynamic:
+            # In the dynamic scaling case, return the weight scales directly.
+            return weight_scale
+
+        assert self.float8_config.is_static
+        # Otherwise, return a scalar max QKV weight scale in the static case.
+        return ops.max(weight_scale).reshape([])
 
     def build_subgraph(
         self,
         name: str,
+        layer_idx_type: TensorType,
         x_type: TensorType,
         kv_collection_type: _OpaqueType,
     ) -> Module:
@@ -427,6 +464,7 @@ class AttentionWithRope(Module):
         class AttentionWithRopeSubgraph(Module):
             def __call__(
                 self,
+                layer_idx: TensorValue,
                 x: TensorValue,
                 kv_collection: Union[
                     ContinuousBatchingKVCacheCollection, PagedKVCacheCollection
@@ -439,6 +477,7 @@ class AttentionWithRope(Module):
                 graph_inputs = (
                     [
                         _ChainType(),
+                        layer_idx_type,
                         x_type,
                         kv_collection_type,
                         *misc_input_types,
@@ -459,15 +498,16 @@ class AttentionWithRope(Module):
                         subgraph._current_chain._mlir_value = subgraph.inputs[
                             0
                         ]._mlir_value
-                        arg_x = subgraph.inputs[1]
-                        arg_kv_collection = subgraph.inputs[2]
-                        arg_input_row_offsets_arg = subgraph.inputs[3]
+                        arg_layer_idx = subgraph.inputs[1]
+                        arg_x = subgraph.inputs[2]
+                        arg_kv_collection = subgraph.inputs[3]
+                        arg_input_row_offsets_arg = subgraph.inputs[4]
                         subgraph._mlir_value_map.update(
                             {
                                 w: subgraph_input._mlir_value
                                 for w, subgraph_input in zip(
                                     weight_mlir_values,
-                                    subgraph.inputs[4:],
+                                    subgraph.inputs[4:-1],
                                 )
                             }
                         )
@@ -477,13 +517,14 @@ class AttentionWithRope(Module):
                         subgraph.output(
                             subgraph._current_chain,
                             outer_self(
+                                arg_layer_idx,
                                 arg_x,
                                 arg_kv_collection,
                                 input_row_offsets=arg_input_row_offsets_arg,
                             ),
                         )
 
-                call_args = [x, kv_collection, input_row_offsets]
+                call_args = [layer_idx, x, kv_collection, input_row_offsets]
                 call_args.extend([w.tensor for w in weights])
                 call_args.append(freqs_cis)
                 return ops.call(subgraph, *call_args)[0].tensor
@@ -492,6 +533,7 @@ class AttentionWithRope(Module):
 
     def __call__(
         self,
+        layer_idx: TensorValue,
         x: TensorValue,
         kv_collection: Union[
             ContinuousBatchingKVCacheCollection, PagedKVCacheCollection
@@ -501,17 +543,18 @@ class AttentionWithRope(Module):
         # Get attributes from input.
         total_seq_len = x.shape[0]
 
-        layer_idx = ops.constant(
-            self.layer_idx, DType.uint32, device=DeviceRef.CPU()
-        )
-        # Call into fused qkv ragged matmul.
-        if self.has_input_scale:
-            assert self.max_input_scale is not None
-            assert self.max_weight_scale is not None
+        if self.float8_config:
             assert isinstance(kv_collection, PagedKVCacheCollection)
-            x = quantize_static_scaled_float8(
-                x, self.max_input_scale.to(DeviceRef.CPU())
-            )
+
+            x_scales: TensorValue
+            if self.float8_config.is_static:
+                assert self.qkv_input_scale is not None
+                x = quantize_static_scaled_float8(
+                    x, self.qkv_input_scale.to(DeviceRef.CPU())
+                )
+                x_scales = self.qkv_input_scale
+            else:
+                x, x_scales = quantize_dynamic_scaled_float8(x)
 
             xq = fused_qkv_ragged_matmul_scaled_float8(
                 self.kv_params,
@@ -522,10 +565,12 @@ class AttentionWithRope(Module):
                 kv_collection=kv_collection,
                 layer_idx=layer_idx,
                 n_heads=self.n_heads,
-                input_scale=self.max_input_scale,
-                weight_scale=self.max_weight_scale,
+                input_scale=x_scales,
+                weight_scale=self.qkv_weight_scale,
             )
         else:
+            # Call into fused qkv ragged matmul.
+            assert isinstance(kv_collection, PagedKVCacheCollection)
             xq = fused_qkv_ragged_matmul(
                 self.kv_params,
                 input=x,
@@ -584,7 +629,6 @@ class LatentAttentionWithRope(AttentionWithRope):
         num_key_value_heads: int,
         hidden_size: int,
         kv_params: KVCacheParams,
-        layer_idx: int,
         dtype: DType,
         devices: list[DeviceRef] | None = None,
         linear_cls: Callable[..., Linear] = Linear,
@@ -640,7 +684,6 @@ class LatentAttentionWithRope(AttentionWithRope):
 
         self.rope = rope
         self.n_heads = num_attention_heads
-        self.layer_idx = layer_idx
         self.kv_params = kv_params
         self.num_key_value_heads = num_key_value_heads
         self.hidden_size = hidden_size
@@ -656,6 +699,7 @@ class LatentAttentionWithRope(AttentionWithRope):
         self.BUFFER_TOK_SIZE = buffer_size
 
         self.scale = scale if scale else math.sqrt(1.0 / self.qk_head_dim)
+        self.scale = self.rope.compute_scale(self.scale)
         self.devices = devices or [DeviceRef.CPU()]
 
         if self.q_lora_rank is not None:
@@ -665,7 +709,9 @@ class LatentAttentionWithRope(AttentionWithRope):
                 shape=(self.q_lora_rank, self.hidden_size),
                 device=self.devices[0],
             )
-            self.q_a_layernorm = RMSNorm(dim=self.q_lora_rank, eps=1e-6)
+            self.q_a_layernorm = RMSNorm(
+                dim=self.q_lora_rank, dtype=dtype, eps=1e-6
+            )
             self.q_b_proj = Weight(
                 name="q_b_proj.weight",
                 dtype=dtype,
@@ -748,7 +794,7 @@ class LatentAttentionWithRope(AttentionWithRope):
         xq_nope: TensorValue,
         xq_rope: TensorValue,
         kv_collection: PagedKVCacheCollection,
-        layer_idx: int,
+        layer_idx: TensorValue,
         input_row_offsets: TensorValue,
     ) -> TensorValue:
         def _mla_prefill() -> TensorValue:
@@ -759,9 +805,7 @@ class LatentAttentionWithRope(AttentionWithRope):
                     self.kv_params,
                     input_row_offsets,
                     kv_collection,
-                    ops.constant(
-                        layer_idx, DType.uint32, device=DeviceRef.CPU()
-                    ),
+                    layer_idx,
                     self.BUFFER_TOK_SIZE,
                 )
             )
@@ -774,7 +818,7 @@ class LatentAttentionWithRope(AttentionWithRope):
                 buffer_lengths_host[0],
                 self.kv_b_proj,
                 kv_collection,
-                ops.constant(layer_idx, DType.uint32, device=DeviceRef.CPU()),
+                layer_idx,
                 self.BUFFER_TOK_SIZE,
             )
 
@@ -794,7 +838,7 @@ class LatentAttentionWithRope(AttentionWithRope):
                 buffer_row_offsets[0],
                 cache_offsets[0],
                 kv_collection,
-                ops.constant(layer_idx, DType.uint32, device=DeviceRef.CPU()),
+                layer_idx,
                 MHAMaskVariant.CAUSAL_MASK,
                 self.scale,
                 self.qk_rope_head_dim,
@@ -813,9 +857,7 @@ class LatentAttentionWithRope(AttentionWithRope):
                     buffer_lengths_host[iter_i],
                     self.kv_b_proj,
                     kv_collection,
-                    ops.constant(
-                        layer_idx, DType.uint32, device=DeviceRef.CPU()
-                    ),
+                    layer_idx,
                     self.BUFFER_TOK_SIZE,
                 )
 
@@ -835,9 +877,7 @@ class LatentAttentionWithRope(AttentionWithRope):
                     buffer_row_offsets[iter_i],
                     cache_offsets[iter_i],
                     kv_collection,
-                    ops.constant(
-                        layer_idx, DType.uint32, device=DeviceRef.CPU()
-                    ),
+                    layer_idx,
                     MHAMaskVariant.CAUSAL_MASK,
                     self.scale,
                     self.qk_rope_head_dim,
@@ -872,9 +912,7 @@ class LatentAttentionWithRope(AttentionWithRope):
                 self.kv_params,
                 input=xq,
                 kv_collection=kv_collection,
-                layer_idx=ops.constant(
-                    layer_idx, DType.uint32, device=DeviceRef.CPU()
-                ),
+                layer_idx=layer_idx,
                 input_row_offsets=input_row_offsets,
                 mask_variant=MHAMaskVariant.CAUSAL_MASK,
                 scale=self.scale,
@@ -914,6 +952,7 @@ class LatentAttentionWithRope(AttentionWithRope):
 
     def __call__(
         self,
+        layer_idx: TensorValue,
         x: TensorValue,
         kv_collection: Union[
             PagedKVCacheCollection, ContinuousBatchingKVCacheCollection
@@ -924,8 +963,6 @@ class LatentAttentionWithRope(AttentionWithRope):
 
         # Get attributes from input.
         total_seq_len = x.shape[0]
-
-        layer_idx = self.layer_idx
 
         if self.q_lora_rank is not None:
             xq = self.q_a_layernorm(x @ self.q_a_proj.T) @ self.q_b_proj.T
@@ -971,7 +1008,7 @@ class LatentAttentionWithRope(AttentionWithRope):
             kwargs["input_row_offsets"],
             kv_collection,
             freqs_cis,
-            ops.constant(layer_idx, DType.uint32, device=DeviceRef.CPU()),
+            layer_idx,
             interleaved=True,
         )
 
@@ -1002,7 +1039,6 @@ class GGUFQAttentionWithRope(AttentionWithRope):
         num_key_value_heads: int,
         hidden_size: int,
         kv_params: KVCacheParams,
-        layer_idx: int,
         dtype: DType,
         quantization_encoding: QuantizationEncoding,
         devices: list[DeviceRef] | None = None,
@@ -1063,7 +1099,6 @@ class GGUFQAttentionWithRope(AttentionWithRope):
         self.quantization_encoding = quantization_encoding
         self.rope = rope
         self.n_heads = num_attention_heads
-        self.layer_idx = layer_idx
         self.kv_params = kv_params
         self.num_key_value_heads = num_key_value_heads
         self.hidden_size = hidden_size
@@ -1117,6 +1152,7 @@ class GGUFQAttentionWithRope(AttentionWithRope):
 
     def __call__(
         self,
+        layer_idx: TensorValue,
         x: TensorValue,
         kv_collection: Union[
             ContinuousBatchingKVCacheCollection, PagedKVCacheCollection
@@ -1129,10 +1165,6 @@ class GGUFQAttentionWithRope(AttentionWithRope):
         assert self.q_proj.quantization_encoding is not None
         assert self.k_proj.quantization_encoding is not None
         assert self.v_proj.quantization_encoding is not None
-
-        layer_idx = ops.constant(
-            self.layer_idx, DType.uint32, device=DeviceRef.CPU()
-        )
 
         # Call into unfused qkv ragged matmul.
         xq = unfused_qkv_ragged_matmul_gguf_quantized(
@@ -1190,7 +1222,6 @@ class GPTQAttentionWithRope(AttentionWithRope):
         num_key_value_heads: int,
         hidden_size: int,
         kv_params: KVCacheParams,
-        layer_idx: int,
         devices: list[DeviceRef] | None = None,
         dtype: DType = DType.float32,
         scale: float | None = None,
@@ -1202,7 +1233,6 @@ class GPTQAttentionWithRope(AttentionWithRope):
         self.quantization_config = quantization_config
         self.rope = rope
         self.n_heads = num_attention_heads
-        self.layer_idx = layer_idx
         self.kv_params = kv_params
         self.hidden_size = hidden_size
         self.devices = devices or [DeviceRef.CPU()]
@@ -1309,16 +1339,13 @@ class GPTQAttentionWithRope(AttentionWithRope):
 
     def __call__(
         self,
+        layer_idx: TensorValue,
         x: TensorValue,
         kv_collection: Union[
             ContinuousBatchingKVCacheCollection, PagedKVCacheCollection
         ],
         **kwargs,
     ) -> TensorValue:
-        layer_idx = ops.constant(
-            self.layer_idx, DType.uint32, device=DeviceRef.CPU()
-        )
-
         # Get attributes from input.
         total_seq_len = x.shape[0]
 
@@ -1423,6 +1450,7 @@ class DistributedAttentionWithRope(AttentionWithRope, DistributedAttentionImpl):
     def build_subgraph(
         self,
         name,
+        layer_idx_type: TensorType,
         x_type: list[TensorType],  # type: ignore[override]
         kv_collection_type: list[_OpaqueType],  # type: ignore[override]
     ) -> Module:
@@ -1430,7 +1458,10 @@ class DistributedAttentionWithRope(AttentionWithRope, DistributedAttentionImpl):
         for i, attn in enumerate(self.list_of_attentions):
             attn_subgraphs.append(
                 attn.build_subgraph(
-                    f"{name}_attn_{i}", x_type[i], kv_collection_type[i]
+                    f"{name}_attn_{i}",
+                    layer_idx_type,
+                    x_type[i],
+                    kv_collection_type[i],
                 )
             )
         outer_self = self
@@ -1438,6 +1469,7 @@ class DistributedAttentionWithRope(AttentionWithRope, DistributedAttentionImpl):
         class DistributedAttentionWithRopeSubgraph(Module):
             def __call__(
                 self,
+                layer_idx: TensorValue,
                 x: list[TensorValue],
                 signal_buffers: list[BufferValue],
                 kv_collections: list[
@@ -1451,6 +1483,7 @@ class DistributedAttentionWithRope(AttentionWithRope, DistributedAttentionImpl):
                 return outer_self.allreduce(
                     inputs=[
                         attn_subgraphs[i](
+                            layer_idx,
                             x[i],
                             kv_collections[i],
                             input_row_offsets=input_row_offsets_[i],
@@ -1464,6 +1497,7 @@ class DistributedAttentionWithRope(AttentionWithRope, DistributedAttentionImpl):
 
     def __call__(  # type: ignore[override]
         self,
+        layer_idx: TensorValue,
         x: list[TensorValue],
         signal_buffers: list[BufferValue],
         kv_collections: list[
@@ -1478,6 +1512,7 @@ class DistributedAttentionWithRope(AttentionWithRope, DistributedAttentionImpl):
         return self.allreduce(
             inputs=[
                 self.list_of_attentions[i](
+                    layer_idx,
                     x[i],
                     kv_collections[i],
                     input_row_offsets=input_row_offsets_[i],
@@ -1497,6 +1532,7 @@ class AttentionWithRopeQKV(AttentionImplQKV):
 
     def __call__(
         self,
+        layer_idx: TensorValue,
         x: TensorValue,
         kv_collection: Union[
             ContinuousBatchingKVCacheCollection, PagedKVCacheCollection
@@ -1515,9 +1551,7 @@ class AttentionWithRopeQKV(AttentionImplQKV):
             wqkv=wqkv,
             input_row_offsets=kwargs["input_row_offsets"],
             kv_collection=kv_collection,
-            layer_idx=ops.constant(
-                self.layer_idx, DType.uint32, device=DeviceRef.CPU()
-            ),
+            layer_idx=layer_idx,
             n_heads=self.n_heads,
         )
 
@@ -1533,7 +1567,7 @@ class AttentionWithRopeQKV(AttentionImplQKV):
             kwargs["input_row_offsets"],
             kv_collection,
             freqs_cis,
-            ops.constant(self.layer_idx, DType.uint32, device=DeviceRef.CPU()),
+            layer_idx,
             interleaved=self.rope.interleaved,
         )
 
@@ -1542,9 +1576,7 @@ class AttentionWithRopeQKV(AttentionImplQKV):
             self.kv_params,
             input=xq,
             kv_collection=kv_collection,
-            layer_idx=ops.constant(
-                self.layer_idx, DType.uint32, device=DeviceRef.CPU()
-            ),
+            layer_idx=layer_idx,
             input_row_offsets=kwargs["input_row_offsets"],
             mask_variant=MHAMaskVariant.CAUSAL_MASK,
             scale=self.scale,

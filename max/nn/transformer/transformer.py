@@ -53,6 +53,7 @@ class TransformerBlock(Module):
 
     def __call__(
         self,
+        layer_idx: TensorValue,
         x: TensorValue,
         kv_collection: ContinuousBatchingKVCacheCollection
         | PagedKVCacheCollection,
@@ -62,6 +63,7 @@ class TransformerBlock(Module):
             self.residual_multiplier, x.dtype, device=x.device
         )
         attn_out = self.self_attn(
+            layer_idx,
             self.input_layernorm(x),
             kv_collection,
             **kwargs,
@@ -145,8 +147,9 @@ class Transformer(Module):
         kv_collection = self.kv_collection_constructor(*kv_cache_inputs)
         input_row_offsets = kwargs["input_row_offsets"]
 
-        for _, layer in enumerate(self.layers):
+        for idx, layer in enumerate(self.layers):
             h = layer(
+                ops.constant(idx, DType.uint32, device=DeviceRef.CPU()),
                 h,
                 kv_collection,
                 **kwargs,
@@ -164,7 +167,7 @@ class Transformer(Module):
                 0,
                 -1,
                 out_dim="return_n_logits_range",
-                device=DeviceRef.CPU(),
+                device=h.device,
                 dtype=DType.int64,
             )
             offsets = (
@@ -180,7 +183,7 @@ class Transformer(Module):
                 TensorValue(last_indices.shape[0]) + return_n_logits[0],
                 return_n_logits[0],
                 out_dim="logit_offsets",
-                device=DeviceRef.CPU(),
+                device=h.device,
                 dtype=DType.int64,
             )
         elif self.return_logits == ReturnLogits.ALL:

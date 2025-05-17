@@ -10,12 +10,3 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
-
-from max.dtype import DType
-from max.nn.norm.rms_norm import RMSNorm
-
-
-class Gemma3RMSNorm(RMSNorm):
-    def __init__(self, dim: int, dtype: DType, eps: float = 1e-6):
-        # Gemma3 uses (1.0 + weight) as the scale factor
-        super().__init__(dim=dim, dtype=dtype, eps=eps, weight_offset=1.0)

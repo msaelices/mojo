@@ -59,7 +59,6 @@ class Mistral(Transformer):
                     num_key_value_heads=config.num_key_value_heads,
                     hidden_size=config.hidden_size,
                     kv_params=config.kv_params,
-                    layer_idx=i,
                     dtype=config.dtype,
                     devices=config.devices,
                     scale=config.attention_multiplier,
@@ -75,11 +74,13 @@ class Mistral(Transformer):
                 ),
                 attention_norm=RMSNorm(
                     config.hidden_size,
+                    config.dtype,
                     config.rms_norm_eps,
                     multiply_before_cast=False,
                 ),
                 mlp_norm=RMSNorm(
                     config.hidden_size,
+                    config.dtype,
                     config.rms_norm_eps,
                     multiply_before_cast=False,
                 ),
@@ -121,6 +122,7 @@ class Mistral(Transformer):
             layers=layers,
             norm=RMSNorm(
                 config.hidden_size,
+                config.dtype,
                 config.rms_norm_eps,
                 multiply_before_cast=False,
             ),

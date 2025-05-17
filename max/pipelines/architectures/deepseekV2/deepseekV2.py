@@ -67,7 +67,6 @@ class DeepseekV2(Transformer):
                     num_key_value_heads=config.num_key_value_heads,
                     hidden_size=config.hidden_size,
                     kv_params=config.kv_params,
-                    layer_idx=i,
                     dtype=config.dtype,
                     q_lora_rank=config.q_lora_rank,
                     kv_lora_rank=config.kv_lora_rank,
@@ -79,10 +78,12 @@ class DeepseekV2(Transformer):
                 mlp=self._get_mlp(config, i),
                 attention_norm=RMSNorm(
                     config.hidden_size,
+                    config.dtype,
                     config.rms_norm_eps,
                 ),
                 mlp_norm=RMSNorm(
                     config.hidden_size,
+                    config.dtype,
                     config.rms_norm_eps,
                 ),
             )
@@ -110,6 +111,7 @@ class DeepseekV2(Transformer):
             layers=layers,
             norm=RMSNorm(
                 config.hidden_size,
+                config.dtype,
                 config.rms_norm_eps,
             ),
             output=lm_head,

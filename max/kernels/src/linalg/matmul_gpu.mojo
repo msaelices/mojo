@@ -78,7 +78,12 @@ from .matmul_sm90 import (
     warp_specialize_gemm_with_multicasting,
 )
 from .matmul_vendor import matmul as matmul_vendor
-from .utils import GemmShape, apply_epilogue, elementwise_epilogue_type
+from .utils import (
+    GemmShape,
+    apply_epilogue,
+    elementwise_epilogue_type,
+    elementwise_compute_lambda_type,
+)
 from .utils_gpu import (
     MatmulConfig,
     MatmulKernels,
@@ -323,6 +328,9 @@ fn _matmul_gpu[
     use_tensor_core: Bool = False,
     transpose_b: Bool = False,
     elementwise_lambda_fn: OptionalReg[elementwise_epilogue_type] = None,
+    elementwise_compute_lambda_fn: OptionalReg[
+        elementwise_compute_lambda_type
+    ] = None,
     config: OptionalReg[
         MatmulConfig[a_type, b_type, c_type, transpose_b]
     ] = None,
@@ -359,6 +367,25 @@ fn _matmul_gpu[
 
     alias matmul_supported_format = matmul_supported_format_amd if has_amd_gpu_accelerator() else matmul_supported_format_nvidia
 
+    # Only the H100 version of gemm supports the compute lambda
+    # For the other kernels we wrap it around an epilogue lambda instead.
+    @parameter
+    @always_inline
+    fn compute_lambda_wrapper[
+        _type: DType, _width: Int, *, alignment: Int = 1
+    ](coords: IndexList[2], val: SIMD[_type, _width]):
+        @parameter
+        if elementwise_compute_lambda_fn:
+            alias compute_lambda = elementwise_compute_lambda_fn.value()
+            var output = compute_lambda(coords, val)
+            c.store[alignment=alignment](
+                coords, rebind[SIMD[c.type, _width]](output)
+            )
+
+    alias elementwise_lambda_wrapper = OptionalReg[elementwise_epilogue_type](
+        compute_lambda_wrapper
+    ) if elementwise_compute_lambda_fn else elementwise_lambda_fn
+
     # NOTE: k has to be a multiple of BK * num_stages. Hard coded this condition to 128 for now.
     # TODO: Need to find a better dispatch strategy.
     var h100_matmul_cond = (
@@ -372,9 +399,9 @@ fn _matmul_gpu[
     )
     # fmt: off
     # Require Static K, N in A, B, C
-    alias multistage_gemm_supported_shape = b_shape.all_known[2]() \
-                                        and a_shape.has_value[1]() \
-                                        and c_shape.has_value[1]()
+    alias has_static_NK = b_shape.all_known[2]() \
+                      and a_shape.has_value[1]() \
+                      and c_shape.has_value[1]()
     # fmt: on
 
     @parameter
@@ -382,17 +409,19 @@ fn _matmul_gpu[
         return matmul_vendor[
             use_tensor_core=use_tensor_core,
             transpose_b=transpose_b,
-            elementwise_lambda_fn=elementwise_lambda_fn,
+            elementwise_lambda_fn=elementwise_lambda_wrapper,
             config=config,
             _trace_description=_trace_description,
         ](c, a, b, ctx)
 
+    # Dispatch for FP8
     @parameter
     if (
         (a_type is DType.float8_e4m3fn)
         and a_type == b_type
         and ctx.device_info is H100
         and transpose_b
+        and has_static_NK
     ):
 
         @parameter
@@ -428,6 +457,7 @@ fn _matmul_gpu[
                 warp_specialize_gemm_with_multicasting[
                     transpose_b=transpose_b,
                     elementwise_lambda_fn=elementwise_lambda_fn,
+                    elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                     config=H100_FP8_TUNING_CONFIG,
                     grid_shape = Index(GRID_DIM_X, GRID_DIM_Y),
                     schedule=SCHEDULE_TYPE,
@@ -470,6 +500,7 @@ fn _matmul_gpu[
                 warp_specialize_gemm_with_multicasting[
                     transpose_b=transpose_b,
                     elementwise_lambda_fn=elementwise_lambda_fn,
+                    elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                     config=config,
                 ](
                     rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
@@ -498,6 +529,7 @@ fn _matmul_gpu[
                 warp_specialize_gemm_with_multicasting[
                     transpose_b=transpose_b,
                     elementwise_lambda_fn=elementwise_lambda_fn,
+                    elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                     config=config,
                 ](
                     rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
@@ -526,6 +558,7 @@ fn _matmul_gpu[
                 warp_specialize_gemm_with_multicasting[
                     transpose_b=transpose_b,
                     elementwise_lambda_fn=elementwise_lambda_fn,
+                    elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                     config=config,
                     grid_shape = Index(8, H100.sm_count // 8),
                     schedule = MatmulSchedule.TILE2D,
@@ -559,6 +592,7 @@ fn _matmul_gpu[
                 warp_specialize_gemm_with_multicasting[
                     transpose_b=transpose_b,
                     elementwise_lambda_fn=elementwise_lambda_fn,
+                    elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                     config=config,
                     schedule = MatmulSchedule.TILE2D,
                 ](
@@ -577,7 +611,7 @@ fn _matmul_gpu[
         matmul_supported_format
         and has_accelerator()
         and use_tensor_core
-        and multistage_gemm_supported_shape
+        and has_static_NK
     ):
         if multi_gemm_cond:
             alias kernels = MatmulKernels[a_type, b_type, c_type, transpose_b]()
@@ -627,7 +661,7 @@ fn _matmul_gpu[
                     multistage_gemm[
                         transpose_b=transpose_b,
                         config=config,
-                        elementwise_lambda_fn=elementwise_lambda_fn,
+                        elementwise_lambda_fn=elementwise_lambda_wrapper,
                     ](
                         rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                         rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -694,6 +728,7 @@ fn _matmul_gpu[
                     warp_specialize_gemm_with_multicasting[
                         transpose_b=transpose_b,
                         elementwise_lambda_fn=elementwise_lambda_fn,
+                        elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                         config=H100_TUNING_CONFIG,
                         grid_shape = Index(GRID_DIM_X, GRID_DIM_Y),
                         schedule = MatmulSchedule.TILE2D,
@@ -712,7 +747,7 @@ fn _matmul_gpu[
                     multistage_gemm[
                         transpose_b=transpose_b,
                         config = kernels.tuning_config,
-                        elementwise_lambda_fn=elementwise_lambda_fn,
+                        elementwise_lambda_fn=elementwise_lambda_wrapper,
                     ](
                         rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                         rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -728,7 +763,7 @@ fn _matmul_gpu[
                 multistage_gemm[
                     transpose_b=transpose_b,
                     config = config.value(),
-                    elementwise_lambda_fn=elementwise_lambda_fn,
+                    elementwise_lambda_fn=elementwise_lambda_wrapper,
                 ](
                     rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                     rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -777,6 +812,7 @@ fn _matmul_gpu[
                         warp_specialize_gemm_with_multicasting[
                             transpose_b=transpose_b,
                             elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                             config=M512_N2560_K8192_config,
                             # grid_shape = Index(32, 4),
                             # schedule = MatmulSchedule.TILE2D,
@@ -808,6 +844,7 @@ fn _matmul_gpu[
                         warp_specialize_gemm_with_multicasting[
                             transpose_b=transpose_b,
                             elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                             config=M8192_N2560_K8192_config,
                             grid_shape = Index(10, H100.sm_count // 10),
                             schedule = MatmulSchedule.TILE2D,
@@ -839,6 +876,7 @@ fn _matmul_gpu[
                         warp_specialize_gemm_with_multicasting[
                             transpose_b=transpose_b,
                             elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                             config=M4096_N2560_K8192_config,
                             schedule = MatmulSchedule.TILE2D,
                         ](
@@ -875,6 +913,7 @@ fn _matmul_gpu[
                         warp_specialize_gemm_with_multicasting[
                             transpose_b=transpose_b,
                             elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                             config=M8192_N8192_K2048_config,
                             grid_shape = Index(4, H100.sm_count // 4),
                             schedule = MatmulSchedule.TILE2D,
@@ -906,6 +945,7 @@ fn _matmul_gpu[
                         warp_specialize_gemm_with_multicasting[
                             transpose_b=transpose_b,
                             elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                             config=M4096_N8192_K2048_config,
                             schedule = MatmulSchedule.TILE2D,
                         ](
@@ -942,6 +982,7 @@ fn _matmul_gpu[
                         warp_specialize_gemm_with_multicasting[
                             transpose_b=transpose_b,
                             elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                             config=M8192_N14336_K8192_config,
                             grid_shape = Index(8, H100.sm_count // 8),
                             schedule = MatmulSchedule.TILE2D,
@@ -973,6 +1014,7 @@ fn _matmul_gpu[
                         warp_specialize_gemm_with_multicasting[
                             transpose_b=transpose_b,
                             elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                             config=M4096_N14336_K8192_config,
                             schedule = MatmulSchedule.TILE2D,
                         ](
@@ -1009,6 +1051,7 @@ fn _matmul_gpu[
                         warp_specialize_gemm_with_multicasting[
                             transpose_b=transpose_b,
                             elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                             config=M8192_N8192_K7168_config,
                             grid_shape = Index(8, H100.sm_count // 8),
                             schedule = MatmulSchedule.TILE2D,
@@ -1040,6 +1083,7 @@ fn _matmul_gpu[
                         warp_specialize_gemm_with_multicasting[
                             transpose_b=transpose_b,
                             elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                             config=M4096_N8192_K7168_config,
                             schedule = MatmulSchedule.TILE2D,
                         ](
@@ -1075,6 +1119,7 @@ fn _matmul_gpu[
                         warp_specialize_gemm_with_multicasting[
                             transpose_b=transpose_b,
                             elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                             config=default_bf16_config,
                             schedule = MatmulSchedule.NONE,
                         ](
@@ -1104,6 +1149,7 @@ fn _matmul_gpu[
                         warp_specialize_gemm_with_multicasting[
                             transpose_b=transpose_b,
                             elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                             config=default_bf16_config,
                             schedule = MatmulSchedule.NONE,
                         ](
@@ -1146,7 +1192,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M16_N4096_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1168,7 +1214,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M32_N4096_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1190,7 +1236,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M64_N4096_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1212,7 +1258,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M128_N4096_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1233,7 +1279,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M256_N4096_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1254,7 +1300,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M512_N4096_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1275,7 +1321,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M768_N4096_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1299,7 +1345,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M896_N4096_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1320,7 +1366,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M1606_N4096_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1344,7 +1390,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M2048_N4096_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1369,7 +1415,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M16_N14336_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1391,7 +1437,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M32_N14336_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1413,7 +1459,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M64_N14336_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1438,7 +1484,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M16_N4096_K14336_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1460,7 +1506,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M32_N4096_K14336_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1482,7 +1528,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M64_N4096_K14336_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1503,7 +1549,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M128_N4096_K14336_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1524,7 +1570,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M512_N4096_K14336_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1545,7 +1591,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M768_N4096_K14336_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1566,7 +1612,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M896_N4096_K14336_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1587,7 +1633,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M1024_N4096_K14336_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1608,7 +1654,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M1152_N4096_K14336_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1629,7 +1675,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M1280_N4096_K14336_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1650,7 +1696,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M1606_N4096_K14336_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1671,7 +1717,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M2048_N4096_K14336_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1695,7 +1741,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M128_N128256_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1716,7 +1762,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M768_N128256_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1737,7 +1783,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M2048_N128256_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1762,7 +1808,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M16_N28672_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1784,7 +1830,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M32_N28672_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1806,7 +1852,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M64_N28672_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1827,7 +1873,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M128_N28672_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1848,7 +1894,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M256_N28672_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1869,7 +1915,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M512_N28672_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1890,7 +1936,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M768_N28672_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1911,7 +1957,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M896_N28672_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1932,7 +1978,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M1024_N28672_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1953,7 +1999,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M1152_N28672_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1974,7 +2020,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M1280_N28672_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -1995,7 +2041,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M1606_N28672_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -2016,7 +2062,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M2048_N28672_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -2041,7 +2087,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M16_N6144_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -2063,7 +2109,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M32_N6144_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -2085,7 +2131,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M64_N6144_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -2107,7 +2153,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M128_N6144_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -2128,7 +2174,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M256_N6144_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -2149,7 +2195,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M512_N6144_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -2170,7 +2216,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M768_N6144_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -2191,7 +2237,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M896_N6144_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -2212,7 +2258,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M1024_N6144_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -2233,7 +2279,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M768_N6144_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -2254,7 +2300,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M768_N6144_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -2275,7 +2321,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M1606_N6144_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -2296,7 +2342,7 @@ fn _matmul_gpu[
                         multistage_gemm[
                             transpose_b=transpose_b,
                             config=M2048_N6144_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -2315,7 +2361,7 @@ fn _matmul_gpu[
                 multistage_gemm[
                     transpose_b=transpose_b,
                     config=config,
-                    elementwise_lambda_fn=elementwise_lambda_fn,
+                    elementwise_lambda_fn=elementwise_lambda_wrapper,
                 ](
                     rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                     rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -2328,7 +2374,7 @@ fn _matmul_gpu[
                 multistage_gemm[
                     transpose_b=transpose_b,
                     config = kernels.ampere_256x128_3,
-                    elementwise_lambda_fn=elementwise_lambda_fn,
+                    elementwise_lambda_fn=elementwise_lambda_wrapper,
                 ](
                     rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                     rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -2341,7 +2387,7 @@ fn _matmul_gpu[
                 multistage_gemm[
                     transpose_b=transpose_b,
                     config = kernels.ampere_128x128_4,
-                    elementwise_lambda_fn=elementwise_lambda_fn,
+                    elementwise_lambda_fn=elementwise_lambda_wrapper,
                 ](
                     rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                     rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -2357,7 +2403,7 @@ fn _matmul_gpu[
         if n == 1 or m == 1:
             gemv_gpu[
                 transpose_b=transpose_b,
-                elementwise_lambda_fn=elementwise_lambda_fn,
+                elementwise_lambda_fn=elementwise_lambda_wrapper,
             ](c, a, b, ctx)
             return
 
@@ -2369,7 +2415,7 @@ fn _matmul_gpu[
             b_type,
             BLOCK_DIM,
             transpose_b,
-            elementwise_lambda_fn=elementwise_lambda_fn,
+            elementwise_lambda_fn=elementwise_lambda_wrapper,
         ]
     ](
         c.data,
