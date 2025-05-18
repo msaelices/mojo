@@ -66,6 +66,7 @@ struct _Info:
     """
 
     var asm: __mlir_type.`!kgen.string`
+    var module_name: __mlir_type.`!kgen.string`
     var num_captures: __mlir_type.index
 
 
@@ -85,9 +86,11 @@ struct _PopulateInfo:
 
 @fieldwise_init
 @register_passable("trivial")
-struct Info[func_type: AnyTrivialRegType, func: func_type](
-    Stringable, Writable
-):
+struct Info[
+    func_type: AnyTrivialRegType,
+    func: func_type,
+    target: __mlir_type.`!kgen.target`,
+](Stringable, Writable):
     """Contains compilation information and results for a function.
 
     Stores assembly/IR code, function metadata, and error information from
@@ -96,6 +99,7 @@ struct Info[func_type: AnyTrivialRegType, func: func_type](
     Parameters:
         func_type: Type of the function being compiled.
         func: The function being compiled.
+        target: The target architecture to compile for.
 
     Attributes:
         populate: Function to populate captures
@@ -116,6 +120,8 @@ struct Info[func_type: AnyTrivialRegType, func: func_type](
     alias populate = rebind[fn (UnsafePointer[NoneType]) capturing -> None](
         __mlir_attr[
             `#kgen.param.expr<compile_offload_closure,`,
+            target,
+            `,`,
             func,
             `> : `,
             _PopulateInfo,
@@ -208,7 +214,7 @@ fn compile_info[
     emission_kind: StaticString = "asm",
     compile_options: StaticString = "",
     target: __mlir_type.`!kgen.target` = _current_target(),
-]() -> Info[func_type, func]:
+]() -> Info[func_type, func, target]:
     """Compiles a function and returns detailed compilation information.
 
     This function takes a Mojo function and compiles it, providing access to the
@@ -262,13 +268,10 @@ fn compile_info[
         _type=_Info,
     ]()
 
-    var result = Info[func_type, func](
+    var result = Info[func_type, func, target](
         asm=offload.asm,
         function_name=get_linkage_name[target, func](),
-        # HACK: This is super low-level processing of !kgen.string values.
-        # pop.string.hash should move to an attribute representation or
-        # something.
-        module_name=__mlir_op.`pop.string.hash`(offload.asm),
+        module_name=offload.module_name,
         num_captures=offload.num_captures,
     )
     return result

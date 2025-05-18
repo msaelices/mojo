@@ -22,6 +22,7 @@ from max.dtype import DType
 from max.graph.quantization import QuantizationEncoding
 from max.nn import (
     AttentionWithRope,
+    ColumnParallelLinear,
     DistributedAttentionWithRope,
     DistributedMLP,
     DistributedRMSNorm,
@@ -32,7 +33,6 @@ from max.nn import (
     Linear,
     Llama3RotaryEmbedding,
     Module,
-    RMSNorm,
     VocabParallelEmbedding,
 )
 from max.nn.kv_cache import (
@@ -70,13 +70,9 @@ class DistributedLlama3(DistributedTransformer):
         create_distributed_norm = functools.partial(
             DistributedRMSNorm,
             dim=config.hidden_size,
+            dtype=config.norm_dtype or config.dtype,
             eps=config.rms_norm_eps,
             devices=config.devices,
-        )
-        create_norm = functools.partial(
-            RMSNorm,
-            dim=config.hidden_size,
-            eps=config.rms_norm_eps,
         )
 
         # Select linear layer class.
@@ -126,7 +122,6 @@ class DistributedLlama3(DistributedTransformer):
                     num_key_value_heads=config.num_key_value_heads,
                     hidden_size=config.hidden_size,
                     kv_params=config.kv_params,
-                    layer_idx=i,
                     dtype=config.dtype,
                     rope=rope,
                     linear_cls=linear_cls,
@@ -147,7 +142,7 @@ class DistributedLlama3(DistributedTransformer):
                 # TODO: Support residual_multiplier
                 # residual_multiplier=config.residual_multiplier,
             )
-            for i in range(config.num_hidden_layers)
+            for _ in range(config.num_hidden_layers)
         ]
 
         # Create Embedding and output layers.
@@ -164,12 +159,11 @@ class DistributedLlama3(DistributedTransformer):
             config.devices,
             quantization_encoding=embedding_output_quantization,
         )
-        # TODO: Shard the output layer.
-        output = Linear(
+        output = ColumnParallelLinear(
             config.hidden_size,
             config.vocab_size,
             embedding_output_dtype,
-            config.devices[0],
+            devices=config.devices,
             quantization_encoding=embedding_output_quantization,
         )
 
@@ -194,7 +188,7 @@ class DistributedLlama3(DistributedTransformer):
             dim=config.hidden_size,
             n_heads=config.num_attention_heads,
             layers=layers,
-            norm=create_norm(),
+            norm=create_distributed_norm(),
             output=output,
             embedding=embedding_layer,
             kv_params=config.kv_params,

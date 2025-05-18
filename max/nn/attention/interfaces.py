@@ -36,7 +36,7 @@ from ..linear import LinearV1
 class AttentionImpl(Layer, ABC):
     """
     A generalized attention interface, that will be used upstream by a general Transformer.
-    We would expect a seperate subclass, articulating each variation of Attention:
+    We would expect a separate subclass, articulating each variation of Attention:
 
     - AttentionWithRope
     - AttentionWithAlibi
@@ -86,9 +86,6 @@ class AttentionImpl(Layer, ABC):
 
     kv_params: KVCacheParams
     """KV Cache Params, including the number of kv heads, the head dim, and data type."""
-
-    layer_idx: TensorValue
-    """The layer number associated with this Attention block."""
 
     wqkv: TensorValue
     """The concatenation of q, k, and v weight vectors."""
@@ -111,6 +108,7 @@ class AttentionImpl(Layer, ABC):
     @abstractmethod
     def __call__(
         self,
+        layer_idx: TensorValue,
         x: TensorValue,
         kv_collection: ContinuousBatchingKVCacheCollection
         | PagedKVCacheCollection,
@@ -126,6 +124,7 @@ class DistributedAttentionImpl(Module, ABC):
     @abstractmethod
     def __call__(
         self,
+        layer_idx: TensorValue,
         x: list[TensorValue],
         signal_buffers: list[BufferValue],
         kv_collections: list[
@@ -139,7 +138,7 @@ class DistributedAttentionImpl(Module, ABC):
 class AttentionImplQKV(Layer, ABC):
     """
     A generalized attention interface, that will be used upstream by a general Transformer.
-    We would expect a seperate subclass, articulating each variation of Attention:
+    We would expect a separate subclass, articulating each variation of Attention:
 
     - AttentionWithRope
     - AttentionWithAlibi
@@ -189,9 +188,6 @@ class AttentionImplQKV(Layer, ABC):
 
     kv_params: KVCacheParams
     """KV Cache Params, including the number of kv heads, the head dim, and data type."""
-
-    layer_idx: int
-    """The layer number associated with this Attention block."""
 
     wq: TensorValueLike
     """The q weight vector."""
@@ -222,6 +218,7 @@ class AttentionImplQKV(Layer, ABC):
     @abstractmethod
     def __call__(
         self,
+        layer_idx: TensorValue,
         x: TensorValue,
         kv_collection: ContinuousBatchingKVCacheCollection
         | PagedKVCacheCollection,

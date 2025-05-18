@@ -77,6 +77,7 @@ from linalg.matrix_band_part import matrix_band_part
 from linalg.packing import _pack_b_ndbuffer_impl, pack_matmul_b_shape_func
 from linalg.utils import (
     elementwise_epilogue_type as matmul_elementwise_epilogue_type,
+    elementwise_compute_lambda_type as matmul_elementwise_compute_lambda_type,
 )
 from memory import AddressSpace, UnsafePointer
 from nn import arg_nonzero
@@ -167,6 +168,7 @@ from nn.repeat_interleave import repeat_interleave, repeat_interleave_shape
 from nn.reshape import reshape, reshape_shape
 from nn.resize import resize_linear, resize_nearest_neighbor
 from nn.roi_align import roi_align_nhwc
+from nn.sampling import apply_penalties_to_logits, update_frequency_data
 from nn.slice import (
     copy_to_slice,
     slice_as_view,
@@ -217,6 +219,7 @@ from tensor_internal import (
     VariadicTensors,
     _input_fusion_hook_impl,
     _output_fusion_hook_impl,
+    _mixed_precision_input_fusion_hook_impl,
     _mixed_precision_output_fusion_hook_impl,
     foreach,
     simd_load_from_managed_tensor_slice,
@@ -755,6 +758,7 @@ fn export():
     alias _simd_store_into_managed_tensor_slice = simd_store_into_managed_tensor_slice
     alias __input_fusion_hook_impl = _input_fusion_hook_impl
     alias __output_fusion_hook_impl = _output_fusion_hook_impl
+    alias __mixed_precision_input_fusion_hook_impl = _mixed_precision_input_fusion_hook_impl
     alias __mixed_precision_output_fusion_hook_impl = _mixed_precision_output_fusion_hook_impl
 
 
@@ -1811,9 +1815,9 @@ struct SqueezeShape:
         type: DType,
         indices_type: DType,
     ](
-        output_shape: FusedOutputTensor[type=type, rank=1],
-        input_shape: FusedInputTensor[type=type, rank=1],
-        remove_indices: FusedInputTensor[type=indices_type, rank=1],
+        output_shape: OutputTensor[type=type, rank=1],
+        input_shape: InputTensor[type=type, rank=1],
+        remove_indices: InputTensor[type=indices_type, rank=1],
     ) capturing:
         # remove_indices may not be sorted so our strategy is to use -1 to
         # represent removed dimensions in a copied version of our input shape buffer
@@ -1880,9 +1884,9 @@ struct UnsqueezeShape:
         type: DType,
         indices_type: DType,
     ](
-        output_shape: FusedOutputTensor[type=type, rank=1],
-        input_shape: FusedInputTensor[type=type, rank=1],
-        padding_indices: FusedInputTensor[type=indices_type, rank=1],
+        output_shape: OutputTensor[type=type, rank=1],
+        input_shape: InputTensor[type=type, rank=1],
+        padding_indices: InputTensor[type=indices_type, rank=1],
     ) capturing:
         # represent uninitialized dimensions, add the padding dimensions, and copy
         # over the remaining dimensions later.
@@ -3177,10 +3181,11 @@ struct ArgMax:
 
             @parameter
             if target == "cpu":
-                var output_ndbuffer = managed_tensor_slice_to_ndbuffer(output)
-                var input_ndbuffer = managed_tensor_slice_to_ndbuffer(input)
-
-                argmax(input_ndbuffer, axis_val, output_ndbuffer)
+                argmax(
+                    input.to_layout_tensor(),
+                    axis_val,
+                    output.to_layout_tensor(),
+                )
             else:
                 if axis_val != rank - 1:
                     raise Error("axis other than -1 not supported on GPU")
@@ -3217,10 +3222,11 @@ struct ArgMin:
 
             @parameter
             if target == "cpu":
-                var output_ndbuffer = managed_tensor_slice_to_ndbuffer(output)
-                var input_ndbuffer = managed_tensor_slice_to_ndbuffer(input)
-
-                argmin(input_ndbuffer, axis_val, output_ndbuffer)
+                argmin(
+                    input.to_layout_tensor(),
+                    axis_val,
+                    output.to_layout_tensor(),
+                )
             else:
                 if axis_val != rank - 1:
                     raise Error("axis other than -1 not supported on GPU")
@@ -4308,9 +4314,9 @@ struct NonMaximumSupression:
         var score_threshold_float = score_threshold
 
         non_max_suppression(
-            managed_tensor_slice_to_ndbuffer(boxes),
-            managed_tensor_slice_to_ndbuffer(scores),
-            managed_tensor_slice_to_ndbuffer(output),
+            boxes.to_layout_tensor(),
+            scores.to_layout_tensor(),
+            output.to_layout_tensor(),
             max_output_boxes_int,
             iou_threshold_float,
             score_threshold_float,
@@ -4331,8 +4337,8 @@ struct NonMaximumSupression:
         var score_threshold_float = score_threshold
 
         return non_max_suppression_shape_func(
-            managed_tensor_slice_to_ndbuffer(boxes),
-            managed_tensor_slice_to_ndbuffer(scores),
+            boxes.to_layout_tensor(),
+            scores.to_layout_tensor(),
             max_output_boxes_int,
             iou_threshold_float,
             score_threshold_float,
@@ -4376,30 +4382,41 @@ struct Matmul:
 
         @parameter
         @always_inline
-        fn output_fn[
+        fn epilgue_fn[
             _type: DType, _width: Int, *, alignment: Int = 1
         ](coords: IndexList[2], val: SIMD[_type, _width]):
-            alias has_compute_lambda = c.static_spec.out_compute_lambda is not None
+            c._lambda_store[width=_width, element_alignment=alignment](
+                coords,
+                rebind[SIMD[c.type, _width]](val),
+            )
 
-            @parameter
-            if has_compute_lambda:
-                var output = c._fused_compute_output_lambda(
+        @parameter
+        @always_inline
+        fn output_compute_fn[
+            _type: DType, _width: Int, *, alignment: Int = 1
+        ](coords: IndexList[2], val: SIMD[_type, _width]) -> SIMD[
+            _type, _width
+        ]:
+            return rebind[SIMD[_type, _width]](
+                c._fused_compute_output_lambda(
                     coords, rebind[SIMD[c.type, _width]](val)
                 )
-                c.store[element_alignment=alignment](coords, output)
-            else:
-                c._lambda_store[width=_width, element_alignment=alignment](
-                    coords,
-                    rebind[SIMD[c.type, _width]](val),
-                )
+            )
+
+        alias has_compute_lambda = c.static_spec.out_compute_lambda is not None
 
         matmul[
             transposed_a,
             transpose_b,
             packed_b,
             OptionalReg[matmul_elementwise_epilogue_type](
-                output_fn
-            ) if lambdas_have_fusion else None,
+                epilgue_fn
+            ) if lambdas_have_fusion
+            and not has_compute_lambda else None,
+            OptionalReg[matmul_elementwise_compute_lambda_type](
+                output_compute_fn
+            ) if lambdas_have_fusion
+            and has_compute_lambda else None,
             saturated_vnni=False,
             single_thread_blocking_override=_synchronous,
             target=target,
@@ -4664,9 +4681,9 @@ struct Tile:
         repeats: InputTensor,
     ) raises:
         tile(
-            managed_tensor_slice_to_ndbuffer(input),
-            managed_tensor_slice_to_ndbuffer(repeats),
-            managed_tensor_slice_to_ndbuffer(output),
+            input.to_layout_tensor(),
+            repeats.to_layout_tensor(),
+            output.to_layout_tensor(),
         )
 
     @staticmethod
@@ -4674,9 +4691,13 @@ struct Tile:
         input: InputTensor,
         repeats: InputTensor[rank=1],
     ) raises -> IndexList[input.rank]:
-        return tile_shape[single_thread_blocking_override=True](
-            managed_tensor_slice_to_ndbuffer(input),
-            managed_tensor_slice_to_ndbuffer(repeats),
+        # rebind is required because mojo can't figure out that
+        # input.static_spec.to_layout_tensor().rank == input.rank
+        return rebind[IndexList[input.rank]](
+            tile_shape[single_thread_blocking_override=True](
+                input.to_layout_tensor(),
+                repeats.to_layout_tensor(),
+            )
         )
 
 
@@ -7625,12 +7646,12 @@ struct Struct_moe_create_indices:
         context: DeviceContextPtr,
     ) raises:
         moe_create_indices[input_type = DType.uint32, target=target](
-            managed_tensor_slice_to_ndbuffer(token_expert_order),
-            managed_tensor_slice_to_ndbuffer(expert_start_indices),
-            managed_tensor_slice_to_ndbuffer(restore_token_order),
-            managed_tensor_slice_to_ndbuffer(expert_ids),
-            managed_tensor_slice_to_ndbuffer(expert_usage_stats),
-            managed_tensor_slice_to_ndbuffer(topk_ids),
+            token_expert_order.to_layout_tensor(),
+            expert_start_indices.to_layout_tensor(),
+            restore_token_order.to_layout_tensor(),
+            expert_ids.to_layout_tensor(),
+            expert_usage_stats.to_layout_tensor(),
+            topk_ids.to_layout_tensor(),
             context,
         )
 
@@ -8369,7 +8390,7 @@ struct Struct_unfused_qkv_matmul_ragged_paged_gguf_quantized:
 
 
 # ===-----------------------------------------------------------------------===#
-# Misc Operations
+# Sampling Operations
 # ===-----------------------------------------------------------------------===#
 
 
@@ -8402,7 +8423,11 @@ struct Struct_topk_fused_sampling:
                 # However, switching to just using our topk_fused_sampling leads to a -37% perf
                 # drop in q4_k benchmarking for llama 3.
                 if K == 1:
-                    argmax(input_buf, rank - 1, out_idxs_buf)
+                    argmax(
+                        input.to_layout_tensor(),
+                        rank - 1,
+                        out_idxs.to_layout_tensor(),
+                    )
                     return
                 _topk_fused_sampling_cpu(
                     Int(K), input_buf, out_idxs_buf, temperature
@@ -8456,6 +8481,69 @@ struct Struct_min_p_sampling:
                     out_token_ids_buf,
                     temperature,
                 )
+
+
+@compiler.register("sampler.apply_penalties")
+struct Struct_sampler_apply_penalties:
+    @always_inline
+    @staticmethod
+    fn execute[
+        logit_type: DType,
+        penalty_type: DType,
+        rank: Int,
+        target: StaticString,
+        _trace_name: StaticString,
+    ](
+        logits: MutableInputTensor[type=logit_type, rank=rank],
+        compressed_frequency_data: InputTensor[type = DType.int32, rank=2],
+        frequency_offsets: InputTensor[type = DType.uint32, rank=1],
+        frequency_penalty: Scalar[penalty_type],
+        presence_penalty: Scalar[penalty_type],
+        ctx: DeviceContextPtr,
+    ) raises:
+        constrained[is_valid_target[target](), "not a valid target"]()
+
+        with Trace[TraceLevel.OP, target=target](_trace_name):
+            apply_penalties_to_logits[target=target](
+                logits.to_layout_tensor(),
+                compressed_frequency_data.to_layout_tensor(),
+                frequency_offsets.to_layout_tensor(),
+                frequency_penalty,
+                presence_penalty,
+                ctx,
+            )
+
+
+@compiler.register("sampler.update_frequency_data")
+struct Struct_sampler_update_frequency_data:
+    @always_inline
+    @staticmethod
+    fn execute[
+        token_type: DType, //,
+        target: StaticString,
+        _trace_name: StaticString,
+    ](
+        compressed_frequency_data: MutableInputTensor[
+            type = DType.int32, rank=2
+        ],
+        frequency_offsets: InputTensor[type = DType.uint32, rank=1],
+        new_tokens: InputTensor[type=token_type, rank=1],
+        ctx: DeviceContextPtr,
+    ) raises:
+        constrained[is_valid_target[target](), "not a valid target"]()
+
+        with Trace[TraceLevel.OP, target=target](_trace_name):
+            update_frequency_data[target=target](
+                compressed_frequency_data.to_layout_tensor(),
+                frequency_offsets.to_layout_tensor(),
+                new_tokens.to_layout_tensor(),
+                ctx,
+            )
+
+
+# ===-----------------------------------------------------------------------===#
+# Misc Operations
+# ===-----------------------------------------------------------------------===#
 
 
 @compiler.register("swishGLU")
@@ -8955,8 +9043,8 @@ struct QuantizeDynamicScaledFloat8:
         target: StaticString,
     ](
         output: OutputTensor[type=output_type, rank=2],
+        scales: OutputTensor[type=scales_type, rank=2],
         input: InputTensor[type=input_type, rank=2],
-        scales: InputTensor[type=scales_type, rank=2],
         scale_ub: Float32,
         ctx: DeviceContextPtr,
     ) raises:

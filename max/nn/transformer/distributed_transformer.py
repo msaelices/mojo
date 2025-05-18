@@ -37,8 +37,8 @@ from ..kv_cache import (
     PagedKVCacheCollection,
 )
 from ..layer import LayerList, Module
-from ..linear import Linear
-from ..norm import DistributedRMSNorm, LayerNorm, RMSNorm
+from ..linear import ColumnParallelLinear
+from ..norm import DistributedRMSNorm
 from .transformer import ReturnLogits
 
 
@@ -86,6 +86,7 @@ class DistributedTransformerBlock(Module):
         class DistributedTransformerBlockSubgraph(Module):
             def __call__(
                 self,
+                layer_idx: TensorValue,
                 xs: list[TensorValue],
                 signal_buffers: list[BufferValue],
                 kv_collections: list[
@@ -102,6 +103,7 @@ class DistributedTransformerBlock(Module):
                 subgraph = Graph.current._subgraphs.get(f"{name}_{name_suffix}")
 
                 if subgraph is None:
+                    layer_idx_type = layer_idx.type
                     x_types = [x.type for x in xs]
                     signal_buffers_types = [
                         signal_buffer.type for signal_buffer in signal_buffers
@@ -111,6 +113,7 @@ class DistributedTransformerBlock(Module):
                     ]
                     graph_inputs = [
                         _ChainType(),
+                        layer_idx_type,
                         *x_types,
                         *signal_buffers_types,
                         *kv_collection_types,
@@ -123,22 +126,23 @@ class DistributedTransformerBlock(Module):
                         subgraph._current_chain._mlir_value = subgraph.inputs[
                             0
                         ]._mlir_value
-                        arg_xs = subgraph.inputs[1 : 1 + num_devices]
+                        arg_layer_idx = subgraph.inputs[1]
+                        arg_xs = subgraph.inputs[2 : 2 + num_devices]
                         arg_signal_buffers = subgraph.inputs[
-                            1 + num_devices : 1 + 2 * num_devices
+                            2 + num_devices : 2 + 2 * num_devices
                         ]
                         arg_kv_collections = subgraph.inputs[
-                            1 + 2 * num_devices : 1 + 3 * num_devices
+                            2 + 2 * num_devices : 2 + 3 * num_devices
                         ]
                         arg_input_row_offsets = subgraph.inputs[
-                            1 + 3 * num_devices
+                            2 + 3 * num_devices
                         ]
                         subgraph._mlir_value_map.update(
                             {
                                 w: subgraph_input._mlir_value
                                 for w, subgraph_input in zip(
                                     weight_mlir_values,
-                                    subgraph.inputs[1 + 3 * num_devices + 1 :],
+                                    subgraph.inputs[2 + 3 * num_devices + 1 :],
                                 )
                             }
                         )
@@ -147,6 +151,7 @@ class DistributedTransformerBlock(Module):
                         try:
                             outer_self.use_subgraph = False
                             results = outer_self(
+                                arg_layer_idx,
                                 arg_xs,
                                 arg_signal_buffers,
                                 arg_kv_collections,
@@ -160,6 +165,7 @@ class DistributedTransformerBlock(Module):
                         )
 
                 call_args = [
+                    layer_idx,
                     *xs,
                     *signal_buffers,
                     *kv_collections,
@@ -172,6 +178,7 @@ class DistributedTransformerBlock(Module):
 
     def __call__(
         self,
+        layer_idx: TensorValue,
         xs: list[TensorValue],
         signal_buffers: list[BufferValue],
         kv_collections: list[
@@ -182,10 +189,14 @@ class DistributedTransformerBlock(Module):
         if self.use_subgraph:
             return self.build_subgraph(
                 "dist_transformer_block",
-            )(xs, signal_buffers, kv_collections, **kwargs)
+            )(layer_idx, xs, signal_buffers, kv_collections, **kwargs)
 
         attn_outs = self.self_attn(
-            self.input_layernorm(xs), signal_buffers, kv_collections, **kwargs
+            layer_idx,
+            self.input_layernorm(xs),
+            signal_buffers,
+            kv_collections,
+            **kwargs,
         )
 
         hs = [x + attn_out for x, attn_out in zip(xs, attn_outs)]
@@ -204,8 +215,8 @@ class DistributedTransformer(Module):
         dim: int,
         n_heads: int,
         layers: list[DistributedTransformerBlock],
-        norm: RMSNorm | LayerNorm,
-        output: Linear,
+        norm: DistributedRMSNorm,
+        output: ColumnParallelLinear,
         embedding: VocabParallelEmbedding,
         kv_params: KVCacheParams,
         kv_collection_constructor: (
@@ -249,8 +260,9 @@ class DistributedTransformer(Module):
 
         input_row_offsets = kwargs["input_row_offsets"]
         root_cache_lengths = kv_cache_inputs_per_dev[0][1]
-        for _, layer in enumerate(self.layers):
+        for idx, layer in enumerate(self.layers):
             h = layer(
+                ops.constant(idx, DType.uint32, device=DeviceRef.CPU()),
                 h,
                 signal_buffers,
                 kv_collections,
@@ -260,16 +272,40 @@ class DistributedTransformer(Module):
         h0 = h[0]
         last_token_indices = input_row_offsets[1:] - 1
         last_token_h = ops.gather(h0, last_token_indices, axis=0)
+        last_token_distributed = distribute_value(last_token_h, self.devices)
         last_logits = ops.cast(
-            self.lm_head(self.norm(last_token_h)), DType.float32
+            self.lm_head(self.norm(last_token_distributed))[0], DType.float32
         )
 
         logits = None
         offsets = None
 
-        # NOTE: ReturnLogits.VARIABLE is unsupported and the ctor checks this.
-        if self.return_logits == ReturnLogits.ALL:
-            logits = ops.cast(self.lm_head(self.norm(h0)), DType.float32)
+        if self.return_logits == ReturnLogits.VARIABLE:
+            return_n_logits_range = ops.range(
+                return_n_logits[0],
+                ops.constant(0, DType.int64, device=DeviceRef.CPU()),
+                ops.constant(-1, DType.int64, device=DeviceRef.CPU()),
+                out_dim="return_n_logits_range",
+                device=self.devices[0],
+            )
+            offsets = (
+                ops.unsqueeze(input_row_offsets[1:], -1) - return_n_logits_range
+            )
+            last_indices = ops.reshape(offsets, shape=(-1,))
+            logits = ops.gather(
+                ops.cast(self.lm_head(self.norm(h))[0], DType.float32),
+                last_indices,
+                axis=0,
+            )
+            offsets = ops.range(
+                ops.constant(0, DType.int64, device=DeviceRef.CPU()),
+                last_indices.shape[0] + return_n_logits[0],
+                return_n_logits[0],
+                out_dim="logit_offsets",
+                device=self.devices[0],
+            )
+        elif self.return_logits == ReturnLogits.ALL:
+            logits = ops.cast(self.lm_head(self.norm(h))[0], DType.float32)
             offsets = cast(TensorValue, kwargs["input_row_offsets"])
 
         if logits is not None and offsets is not None:

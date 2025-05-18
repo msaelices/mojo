@@ -77,6 +77,9 @@ class CrossSdpaAttention(Layer):
         Returns:
             Attended hidden activation.
         """
+        layer_idx = ops.constant(
+            self.layer_idx, DType.uint32, device=DeviceRef.CPU()
+        )
         wkv = ops.concat((self.wk, self.wv), axis=0)
 
         query_states = self.q_proj(hidden_states)
@@ -93,7 +96,7 @@ class CrossSdpaAttention(Layer):
             kv_params=self.vision_kv_params,
             # Here, hidden_states correspond to cross_attention_states.
             hidden_states=cross_attention_states,
-            layer_idx=self.layer_idx,
+            layer_idx=layer_idx,
             input_row_offsets=cross_input_row_offsets,
             weight=wkv,
             kv_collection=kv_collection,
@@ -103,7 +106,7 @@ class CrossSdpaAttention(Layer):
             kv_collection,
             gamma=ops.cast(self.k_norm.weight, hidden_states.dtype),
             epsilon=self.k_norm.eps,
-            layer_idx=self.layer_idx,
+            layer_idx=layer_idx,
             # Use the total sequence length of the cross attention states.
             total_seq_len=cross_attention_states.shape[0],
             input_row_offsets=cross_input_row_offsets,
@@ -115,9 +118,7 @@ class CrossSdpaAttention(Layer):
             self.vision_kv_params,
             input=query_states,
             kv_collection=kv_collection,
-            layer_idx=ops.constant(
-                self.layer_idx, DType.uint32, device=DeviceRef.CPU()
-            ),
+            layer_idx=layer_idx,
             input_row_offsets=hidden_input_row_offsets,
             # Use the null mask to attend to all vision tokens.
             mask_variant=MHAMaskVariant.NULL_MASK,

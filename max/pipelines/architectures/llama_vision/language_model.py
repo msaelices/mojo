@@ -52,7 +52,7 @@ class TextModel(Layer):
     kv_params: KVCacheParams
     vision_kv_params: KVCacheParams
     embed_tokens: EmbeddingV1
-    layers: list[CrossAttentionDecoderLayer | TransformerBlock]
+    layers: list[CrossAttentionDecoderLayer | SelfAttentionDecoderLayer]
     norm: RMSNormV1
     cross_attention_layers: list[int]
     rotary_emb: OptimizedRotaryEmbedding
@@ -281,6 +281,19 @@ def cross_attention_decoder_layer(
     )
 
 
+class SelfAttentionDecoderLayer(Layer):
+    def __init__(self, layer_idx: int, transformer_block: TransformerBlock):
+        self.layer_idx = layer_idx
+        self.transformer_block = transformer_block
+
+    def __call__(self, *args, **kwargs):
+        return self.transformer_block(
+            ops.constant(self.layer_idx, DType.uint32, device=DeviceRef.CPU()),
+            *args,
+            **kwargs,
+        )
+
+
 def self_attention_decoder_layer(
     dtype: DType,
     num_attention_heads: int,
@@ -293,7 +306,7 @@ def self_attention_decoder_layer(
     layer_idx: int,
     rotary_embedding: OptimizedRotaryEmbedding,
     device: DeviceRef,
-) -> TransformerBlock:
+) -> SelfAttentionDecoderLayer:
     head_dim = hidden_size // num_attention_heads
 
     wq = weights.self_attn.q_proj.weight.allocate(
@@ -322,7 +335,6 @@ def self_attention_decoder_layer(
     attention = AttentionWithRopeQKV(
         n_heads=num_attention_heads,
         kv_params=kv_params,
-        layer_idx=layer_idx,
         wq=wq,
         wk=wk,
         wv=wv,
@@ -331,39 +343,42 @@ def self_attention_decoder_layer(
         scale=math.sqrt(1.0 / head_dim),
     )
 
-    return TransformerBlock(
-        attention=attention,
-        mlp=MLPV1(
-            gate_proj=LinearV1(
-                weight=weights.mlp.gate_proj.weight.allocate(
-                    dtype, [intermediate_size, hidden_size], device=device
+    return SelfAttentionDecoderLayer(
+        layer_idx=layer_idx,
+        transformer_block=TransformerBlock(
+            attention=attention,
+            mlp=MLPV1(
+                gate_proj=LinearV1(
+                    weight=weights.mlp.gate_proj.weight.allocate(
+                        dtype, [intermediate_size, hidden_size], device=device
+                    ),
+                    bias=None,
                 ),
-                bias=None,
-            ),
-            down_proj=LinearV1(
-                weight=weights.mlp.down_proj.weight.allocate(
-                    dtype, [hidden_size, intermediate_size], device=device
+                down_proj=LinearV1(
+                    weight=weights.mlp.down_proj.weight.allocate(
+                        dtype, [hidden_size, intermediate_size], device=device
+                    ),
+                    bias=None,
                 ),
-                bias=None,
-            ),
-            up_proj=LinearV1(
-                weight=weights.mlp.up_proj.weight.allocate(
-                    dtype, [intermediate_size, hidden_size], device=device
+                up_proj=LinearV1(
+                    weight=weights.mlp.up_proj.weight.allocate(
+                        dtype, [intermediate_size, hidden_size], device=device
+                    ),
+                    bias=None,
                 ),
-                bias=None,
             ),
-        ),
-        attention_norm=RMSNormV1(
-            weight=weights.input_layernorm.weight.allocate(
-                dtype, [hidden_size], device=device
+            attention_norm=RMSNormV1(
+                weight=weights.input_layernorm.weight.allocate(
+                    dtype, [hidden_size], device=device
+                ),
+                eps=rms_norm_eps,
             ),
-            eps=rms_norm_eps,
-        ),
-        mlp_norm=RMSNormV1(
-            weight=weights.post_attention_layernorm.weight.allocate(
-                dtype, [hidden_size], device=device
+            mlp_norm=RMSNormV1(
+                weight=weights.post_attention_layernorm.weight.allocate(
+                    dtype, [hidden_size], device=device
+                ),
+                eps=rms_norm_eps,
             ),
-            eps=rms_norm_eps,
         ),
     )
 
@@ -385,7 +400,7 @@ def instantiate_language_model(
     weights: Weights,
     device: DeviceRef,
 ) -> CausalLanguageModel:
-    layers: list[CrossAttentionDecoderLayer | TransformerBlock] = []
+    layers: list[CrossAttentionDecoderLayer | SelfAttentionDecoderLayer] = []
 
     # We don't really have a rotary embedding layer within the graph as it's largely
     # folded into the custom kernel, but leaving this here for now.
@@ -435,8 +450,6 @@ def instantiate_language_model(
                     rms_norm_eps=rms_norm_eps,
                     kv_params=kv_params,
                     weights=curr_layer_weight,
-                    # Self KV layer index is the total layer index minus the
-                    # number of cross KV layers so far.
                     layer_idx=layer_idx - cross_kv_layer_idx + 1,
                     rotary_embedding=rotary_embedding,
                     device=device,

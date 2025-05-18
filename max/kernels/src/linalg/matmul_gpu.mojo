@@ -11,6 +11,7 @@
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
 from collections import InlineArray, OptionalReg
+from .dispatch_table_a100_gpu import create_matmul_configs_ampere
 from math import align_down, align_up, ceildiv
 from pathlib import Path
 from sys import (
@@ -78,7 +79,12 @@ from .matmul_sm90 import (
     warp_specialize_gemm_with_multicasting,
 )
 from .matmul_vendor import matmul as matmul_vendor
-from .utils import GemmShape, apply_epilogue, elementwise_epilogue_type
+from .utils import (
+    GemmShape,
+    apply_epilogue,
+    elementwise_epilogue_type,
+    elementwise_compute_lambda_type,
+)
 from .utils_gpu import (
     MatmulConfig,
     MatmulKernels,
@@ -86,25 +92,6 @@ from .utils_gpu import (
     _get_block_warp_tile_shape,
     select_config,
 )
-
-alias tile_shapes_64X64X32 = _get_block_warp_tile_shape[64, 64, 32]()
-alias tile_shapes_64X128X32 = _get_block_warp_tile_shape[64, 128, 32]()
-alias tile_shapes_64X256X32 = _get_block_warp_tile_shape[64, 256, 32]()
-alias tile_shapes_128X64X32 = _get_block_warp_tile_shape[128, 64, 32]()
-alias tile_shapes_128X128X32 = _get_block_warp_tile_shape[128, 128, 32]()
-alias tile_shapes_128X256X32 = _get_block_warp_tile_shape[128, 256, 32]()
-alias tile_shapes_256X64X32 = _get_block_warp_tile_shape[256, 64, 32]()
-alias tile_shapes_256X128X32 = _get_block_warp_tile_shape[256, 128, 32]()
-alias tile_shapes_256X256X32 = _get_block_warp_tile_shape[256, 256, 32]()
-alias tile_shapes_64X64X64 = _get_block_warp_tile_shape[64, 64, 64]()
-alias tile_shapes_64X128X64 = _get_block_warp_tile_shape[64, 128, 64]()
-alias tile_shapes_64X256X64 = _get_block_warp_tile_shape[64, 256, 64]()
-alias tile_shapes_128X64X64 = _get_block_warp_tile_shape[128, 64, 64]()
-alias tile_shapes_128X128X64 = _get_block_warp_tile_shape[128, 128, 64]()
-alias tile_shapes_128X256X64 = _get_block_warp_tile_shape[128, 256, 64]()
-alias tile_shapes_256X64X64 = _get_block_warp_tile_shape[256, 64, 64]()
-alias tile_shapes_256X128X64 = _get_block_warp_tile_shape[256, 128, 64]()
-alias tile_shapes_256X256X64 = _get_block_warp_tile_shape[256, 256, 64]()
 
 
 fn _find_largest_bn_for_sm90_matmul[N: Int]() -> Int:
@@ -298,12 +285,12 @@ fn matmul_kernel_naive[
     if transpose_b:
         var b = NDBuffer[b_type, 2](b_ptr, Index(n, k))
         for i in range(k):
-            accum = a[x, i].cast[s_type]() * b[y, i].cast[s_type]() + accum
+            accum += a[x, i].cast[s_type]() * b[y, i].cast[s_type]()
 
     else:
         var b = NDBuffer[b_type, 2](b_ptr, Index(k, n))
         for i in range(k):
-            accum = a[x, i].cast[s_type]() * b[i, y].cast[s_type]() + accum
+            accum += a[x, i].cast[s_type]() * b[i, y].cast[s_type]()
 
     var c = NDBuffer[c_type, 2](c_ptr, Index(m, n))
 
@@ -323,6 +310,9 @@ fn _matmul_gpu[
     use_tensor_core: Bool = False,
     transpose_b: Bool = False,
     elementwise_lambda_fn: OptionalReg[elementwise_epilogue_type] = None,
+    elementwise_compute_lambda_fn: OptionalReg[
+        elementwise_compute_lambda_type
+    ] = None,
     config: OptionalReg[
         MatmulConfig[a_type, b_type, c_type, transpose_b]
     ] = None,
@@ -359,6 +349,25 @@ fn _matmul_gpu[
 
     alias matmul_supported_format = matmul_supported_format_amd if has_amd_gpu_accelerator() else matmul_supported_format_nvidia
 
+    # Only the H100 version of gemm supports the compute lambda
+    # For the other kernels we wrap it around an epilogue lambda instead.
+    @parameter
+    @always_inline
+    fn compute_lambda_wrapper[
+        _type: DType, _width: Int, *, alignment: Int = 1
+    ](coords: IndexList[2], val: SIMD[_type, _width]):
+        @parameter
+        if elementwise_compute_lambda_fn:
+            alias compute_lambda = elementwise_compute_lambda_fn.value()
+            var output = compute_lambda(coords, val)
+            c.store[alignment=alignment](
+                coords, rebind[SIMD[c.type, _width]](output)
+            )
+
+    alias elementwise_lambda_wrapper = OptionalReg[elementwise_epilogue_type](
+        compute_lambda_wrapper
+    ) if elementwise_compute_lambda_fn else elementwise_lambda_fn
+
     # NOTE: k has to be a multiple of BK * num_stages. Hard coded this condition to 128 for now.
     # TODO: Need to find a better dispatch strategy.
     var h100_matmul_cond = (
@@ -372,9 +381,9 @@ fn _matmul_gpu[
     )
     # fmt: off
     # Require Static K, N in A, B, C
-    alias multistage_gemm_supported_shape = b_shape.all_known[2]() \
-                                        and a_shape.has_value[1]() \
-                                        and c_shape.has_value[1]()
+    alias has_static_NK = b_shape.all_known[2]() \
+                      and a_shape.has_value[1]() \
+                      and c_shape.has_value[1]()
     # fmt: on
 
     @parameter
@@ -382,7 +391,7 @@ fn _matmul_gpu[
         return matmul_vendor[
             use_tensor_core=use_tensor_core,
             transpose_b=transpose_b,
-            elementwise_lambda_fn=elementwise_lambda_fn,
+            elementwise_lambda_fn=elementwise_lambda_wrapper,
             config=config,
             _trace_description=_trace_description,
         ](c, a, b, ctx)
@@ -393,6 +402,7 @@ fn _matmul_gpu[
         and a_type == b_type
         and ctx.device_info is H100
         and transpose_b
+        and has_static_NK
     ):
 
         @parameter
@@ -428,6 +438,7 @@ fn _matmul_gpu[
                 warp_specialize_gemm_with_multicasting[
                     transpose_b=transpose_b,
                     elementwise_lambda_fn=elementwise_lambda_fn,
+                    elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                     config=H100_FP8_TUNING_CONFIG,
                     grid_shape = Index(GRID_DIM_X, GRID_DIM_Y),
                     schedule=SCHEDULE_TYPE,
@@ -470,6 +481,7 @@ fn _matmul_gpu[
                 warp_specialize_gemm_with_multicasting[
                     transpose_b=transpose_b,
                     elementwise_lambda_fn=elementwise_lambda_fn,
+                    elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                     config=config,
                 ](
                     rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
@@ -498,6 +510,7 @@ fn _matmul_gpu[
                 warp_specialize_gemm_with_multicasting[
                     transpose_b=transpose_b,
                     elementwise_lambda_fn=elementwise_lambda_fn,
+                    elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                     config=config,
                 ](
                     rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
@@ -526,6 +539,7 @@ fn _matmul_gpu[
                 warp_specialize_gemm_with_multicasting[
                     transpose_b=transpose_b,
                     elementwise_lambda_fn=elementwise_lambda_fn,
+                    elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                     config=config,
                     grid_shape = Index(8, H100.sm_count // 8),
                     schedule = MatmulSchedule.TILE2D,
@@ -559,6 +573,7 @@ fn _matmul_gpu[
                 warp_specialize_gemm_with_multicasting[
                     transpose_b=transpose_b,
                     elementwise_lambda_fn=elementwise_lambda_fn,
+                    elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                     config=config,
                     schedule = MatmulSchedule.TILE2D,
                 ](
@@ -577,7 +592,7 @@ fn _matmul_gpu[
         matmul_supported_format
         and has_accelerator()
         and use_tensor_core
-        and multistage_gemm_supported_shape
+        and has_static_NK
     ):
         if multi_gemm_cond:
             alias kernels = MatmulKernels[a_type, b_type, c_type, transpose_b]()
@@ -627,7 +642,7 @@ fn _matmul_gpu[
                     multistage_gemm[
                         transpose_b=transpose_b,
                         config=config,
-                        elementwise_lambda_fn=elementwise_lambda_fn,
+                        elementwise_lambda_fn=elementwise_lambda_wrapper,
                     ](
                         rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                         rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -694,6 +709,7 @@ fn _matmul_gpu[
                     warp_specialize_gemm_with_multicasting[
                         transpose_b=transpose_b,
                         elementwise_lambda_fn=elementwise_lambda_fn,
+                        elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                         config=H100_TUNING_CONFIG,
                         grid_shape = Index(GRID_DIM_X, GRID_DIM_Y),
                         schedule = MatmulSchedule.TILE2D,
@@ -712,7 +728,7 @@ fn _matmul_gpu[
                     multistage_gemm[
                         transpose_b=transpose_b,
                         config = kernels.tuning_config,
-                        elementwise_lambda_fn=elementwise_lambda_fn,
+                        elementwise_lambda_fn=elementwise_lambda_wrapper,
                     ](
                         rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                         rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -728,7 +744,7 @@ fn _matmul_gpu[
                 multistage_gemm[
                     transpose_b=transpose_b,
                     config = config.value(),
-                    elementwise_lambda_fn=elementwise_lambda_fn,
+                    elementwise_lambda_fn=elementwise_lambda_wrapper,
                 ](
                     rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                     rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -777,6 +793,7 @@ fn _matmul_gpu[
                         warp_specialize_gemm_with_multicasting[
                             transpose_b=transpose_b,
                             elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                             config=M512_N2560_K8192_config,
                             # grid_shape = Index(32, 4),
                             # schedule = MatmulSchedule.TILE2D,
@@ -808,6 +825,7 @@ fn _matmul_gpu[
                         warp_specialize_gemm_with_multicasting[
                             transpose_b=transpose_b,
                             elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                             config=M8192_N2560_K8192_config,
                             grid_shape = Index(10, H100.sm_count // 10),
                             schedule = MatmulSchedule.TILE2D,
@@ -839,6 +857,7 @@ fn _matmul_gpu[
                         warp_specialize_gemm_with_multicasting[
                             transpose_b=transpose_b,
                             elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                             config=M4096_N2560_K8192_config,
                             schedule = MatmulSchedule.TILE2D,
                         ](
@@ -875,6 +894,7 @@ fn _matmul_gpu[
                         warp_specialize_gemm_with_multicasting[
                             transpose_b=transpose_b,
                             elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                             config=M8192_N8192_K2048_config,
                             grid_shape = Index(4, H100.sm_count // 4),
                             schedule = MatmulSchedule.TILE2D,
@@ -906,6 +926,7 @@ fn _matmul_gpu[
                         warp_specialize_gemm_with_multicasting[
                             transpose_b=transpose_b,
                             elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                             config=M4096_N8192_K2048_config,
                             schedule = MatmulSchedule.TILE2D,
                         ](
@@ -942,6 +963,7 @@ fn _matmul_gpu[
                         warp_specialize_gemm_with_multicasting[
                             transpose_b=transpose_b,
                             elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                             config=M8192_N14336_K8192_config,
                             grid_shape = Index(8, H100.sm_count // 8),
                             schedule = MatmulSchedule.TILE2D,
@@ -973,6 +995,7 @@ fn _matmul_gpu[
                         warp_specialize_gemm_with_multicasting[
                             transpose_b=transpose_b,
                             elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                             config=M4096_N14336_K8192_config,
                             schedule = MatmulSchedule.TILE2D,
                         ](
@@ -1009,6 +1032,7 @@ fn _matmul_gpu[
                         warp_specialize_gemm_with_multicasting[
                             transpose_b=transpose_b,
                             elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                             config=M8192_N8192_K7168_config,
                             grid_shape = Index(8, H100.sm_count // 8),
                             schedule = MatmulSchedule.TILE2D,
@@ -1040,6 +1064,7 @@ fn _matmul_gpu[
                         warp_specialize_gemm_with_multicasting[
                             transpose_b=transpose_b,
                             elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                             config=M4096_N8192_K7168_config,
                             schedule = MatmulSchedule.TILE2D,
                         ](
@@ -1075,6 +1100,7 @@ fn _matmul_gpu[
                         warp_specialize_gemm_with_multicasting[
                             transpose_b=transpose_b,
                             elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                             config=default_bf16_config,
                             schedule = MatmulSchedule.NONE,
                         ](
@@ -1104,6 +1130,7 @@ fn _matmul_gpu[
                         warp_specialize_gemm_with_multicasting[
                             transpose_b=transpose_b,
                             elementwise_lambda_fn=elementwise_lambda_fn,
+                            elementwise_compute_lambda_fn=elementwise_compute_lambda_fn,
                             config=default_bf16_config,
                             schedule = MatmulSchedule.NONE,
                         ](
@@ -1130,1181 +1157,92 @@ fn _matmul_gpu[
             ):
                 alias static_K = a_shape.get[1]()
                 alias static_N = c_shape.get[1]()
+                alias Ms = InlineArray[Int32, 10](
+                    16, 32, 64, 128, 256, 512, 768, 1024, 2048, 4096
+                )
+                try:
 
-                @parameter
-                if static_K == 4096 and static_N == 4096:
-                    if m <= 16:
-                        alias M16_N4096_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=Index(16, 64, 128),
-                            warp_tile_shape=Index(16, 32, 32),
-                            num_pipeline_stages=4,
-                            num_k_partitions=1,
-                            num_warp_k_partitions=2,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M16_N4096_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M16_N4096_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if m <= 32:
-                        alias M32_N4096_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=Index(32, 64, 64),
-                            warp_tile_shape=Index(16, 64, 32),
-                            num_pipeline_stages=6,
-                            num_k_partitions=1,
-                            num_warp_k_partitions=2,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M32_N4096_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M32_N4096_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if m <= 64:
-                        alias M64_N4096_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=Index(64, 64, 64),
-                            warp_tile_shape=Index(32, 64, 32),
-                            num_pipeline_stages=5,
-                            num_k_partitions=1,
-                            num_warp_k_partitions=2,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M64_N4096_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M64_N4096_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if m <= 128:
-                        alias M128_N4096_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=Index(64, 128, 32),
-                            warp_tile_shape=Index(64, 64, 32),
-                            num_pipeline_stages=4,
-                            num_k_partitions=1,
-                            num_warp_k_partitions=2,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M128_N4096_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M128_N4096_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if 128 < m <= 256:
-                        alias M256_N4096_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_64X256X32[0],
-                            warp_tile_shape=tile_shapes_64X256X32[1],
-                            num_pipeline_stages=4,
-                            num_k_partitions=1,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M256_N4096_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M256_N4096_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if 256 < m <= 512:
-                        alias M512_N4096_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_128X128X32[0],
-                            warp_tile_shape=tile_shapes_128X128X32[1],
-                            num_pipeline_stages=4,
-                            num_k_partitions=2,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M512_N4096_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M512_N4096_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if 512 < m <= 768:
-                        alias M768_N4096_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_128X256X64[0],
-                            warp_tile_shape=tile_shapes_128X256X64[1],
-                            num_pipeline_stages=3,
-                            num_k_partitions=1,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M768_N4096_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M768_N4096_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if 768 < m <= 1280:
-                        alias tile_shapes = _get_block_warp_tile_shape[
-                            128, 128, 32
-                        ]()
-                        alias M896_N4096_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_128X128X32[0],
-                            warp_tile_shape=tile_shapes_128X128X32[1],
-                            num_pipeline_stages=4,
-                            num_k_partitions=1,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M896_N4096_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M896_N4096_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if 1280 < m <= 1606:
-                        alias M1606_N4096_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_128X256X64[0],
-                            warp_tile_shape=tile_shapes_128X256X64[1],
-                            num_pipeline_stages=3,
-                            num_k_partitions=1,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M1606_N4096_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M1606_N4096_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if 1606 < m <= 2048:
-                        alias tile_shapes = _get_block_warp_tile_shape[
-                            128, 128, 32
-                        ]()
-                        alias M2048_N4096_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_128X128X32[0],
-                            warp_tile_shape=tile_shapes_128X128X32[1],
-                            num_pipeline_stages=4,
-                            num_k_partitions=1,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M2048_N4096_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M2048_N4096_K4096_config,
-                            ctx,
-                        )
-                        return
+                    @parameter
+                    for k in range(0, 10):
+                        alias M = Ms[k]
+                        if M <= m:
+                            alias key = String(M, "_", static_N, "_", static_K)
+                            alias curr_config = create_matmul_configs_ampere[
+                                key, a_type, b_type, c_type, transpose_b
+                            ]()
+                            if curr_config.num_pipeline_stages == 0:
+                                raise "no match for the triple"
+                            else:
+                                multistage_gemm[
+                                    c_type=c_type,
+                                    c_shape=c_shape,
+                                    a_type=a_type,
+                                    a_shape=a_shape,
+                                    b_type=b_type,
+                                    b_shape=b_shape,
+                                    transpose_b=transpose_b,
+                                    config=curr_config,
+                                    elementwise_lambda_fn=elementwise_lambda_fn,
+                                ](
+                                    rebind[
+                                        NDBuffer[c_type, 2, c.origin, c_shape]
+                                    ](c),
+                                    rebind[
+                                        NDBuffer[a_type, 2, a.origin, a_shape]
+                                    ](a),
+                                    rebind[
+                                        NDBuffer[b_type, 2, b.origin, b_shape]
+                                    ](b),
+                                    curr_config,
+                                    ctx,
+                                )
+                                return
+                    raise "no match for the triple"
+                except:
+                    var best_config = select_config[
+                        a_type, b_type, c_type, transpose_b
+                    ](m, n, k, ctx)
 
-                @parameter
-                if static_K == 4096 and static_N == 14336:
-                    if m <= 16:
-                        alias M16_N14336_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=Index(16, 64, 128),
-                            warp_tile_shape=Index(16, 32, 32),
-                            num_pipeline_stages=4,
-                            num_k_partitions=1,
-                            num_warp_k_partitions=2,
-                        )
+                    if best_config == kernels.ampere_256x64_4:
+                        alias config = kernels.ampere_256x64_4
                         multistage_gemm[
                             transpose_b=transpose_b,
-                            config=M16_N14336_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            config=config,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
                             rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M16_N14336_K4096_config,
+                            best_config,
                             ctx,
                         )
-                        return
-                    if m <= 32:
-                        alias M32_N14336_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=Index(32, 64, 64),
-                            warp_tile_shape=Index(16, 64, 32),
-                            num_pipeline_stages=6,
-                            num_k_partitions=1,
-                            num_warp_k_partitions=2,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M32_N14336_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M32_N14336_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if m <= 64:
-                        alias M64_N14336_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=Index(64, 64, 64),
-                            warp_tile_shape=Index(32, 64, 32),
-                            num_pipeline_stages=5,
-                            num_k_partitions=1,
-                            num_warp_k_partitions=2,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M64_N14336_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M64_N14336_K4096_config,
-                            ctx,
-                        )
-                        return
 
-                @parameter
-                if static_N == 4096 and static_K == 14336:
-                    if m <= 16:
-                        alias M16_N4096_K14336_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=Index(16, 64, 128),
-                            warp_tile_shape=Index(16, 32, 32),
-                            num_pipeline_stages=4,
-                            num_k_partitions=1,
-                            num_warp_k_partitions=2,
-                        )
+                    elif best_config == kernels.ampere_256x128_3:
                         multistage_gemm[
                             transpose_b=transpose_b,
-                            config=M16_N4096_K14336_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            config = kernels.ampere_256x128_3,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
                             rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M16_N4096_K14336_config,
+                            best_config,
                             ctx,
                         )
-                        return
-                    if m <= 32:
-                        alias M32_N4096_K14336_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=Index(32, 64, 64),
-                            warp_tile_shape=Index(16, 64, 32),
-                            num_pipeline_stages=6,
-                            num_k_partitions=1,
-                            num_warp_k_partitions=2,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M32_N4096_K14336_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M32_N4096_K14336_config,
-                            ctx,
-                        )
-                        return
-                    if m <= 64:
-                        alias M64_N4096_K14336_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=Index(64, 64, 64),
-                            warp_tile_shape=Index(32, 64, 32),
-                            num_pipeline_stages=5,
-                            num_k_partitions=1,
-                            num_warp_k_partitions=2,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M64_N4096_K14336_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M64_N4096_K14336_config,
-                            ctx,
-                        )
-                        return
-                    if m <= 128:
-                        alias M128_N4096_K14336_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_64X256X64[0],
-                            warp_tile_shape=tile_shapes_64X256X64[1],
-                            num_pipeline_stages=4,
-                            num_k_partitions=3,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M128_N4096_K14336_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M128_N4096_K14336_config,
-                            ctx,
-                        )
-                        return
-                    if m <= 512:
-                        alias M512_N4096_K14336_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_256X128X64[0],
-                            warp_tile_shape=tile_shapes_256X128X64[1],
-                            num_pipeline_stages=3,
-                            num_k_partitions=3,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M512_N4096_K14336_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M512_N4096_K14336_config,
-                            ctx,
-                        )
-                        return
-                    if m <= 768:
-                        alias M768_N4096_K14336_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_128X256X64[0],
-                            warp_tile_shape=tile_shapes_128X256X64[1],
-                            num_pipeline_stages=3,
-                            num_k_partitions=1,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M768_N4096_K14336_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M768_N4096_K14336_config,
-                            ctx,
-                        )
-                        return
-                    if m <= 896:
-                        alias M896_N4096_K14336_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_128X128X64[0],
-                            warp_tile_shape=tile_shapes_128X128X64[1],
-                            num_pipeline_stages=4,
-                            num_k_partitions=3,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M896_N4096_K14336_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M896_N4096_K14336_config,
-                            ctx,
-                        )
-                        return
-                    if m <= 1024:
-                        alias M1024_N4096_K14336_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_128X128X32[0],
-                            warp_tile_shape=tile_shapes_128X128X32[1],
-                            num_pipeline_stages=4,
-                            num_k_partitions=2,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M1024_N4096_K14336_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M1024_N4096_K14336_config,
-                            ctx,
-                        )
-                        return
-                    if m <= 1152:
-                        alias M1152_N4096_K14336_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_128X256X64[0],
-                            warp_tile_shape=tile_shapes_128X256X64[1],
-                            num_pipeline_stages=3,
-                            num_k_partitions=3,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M1152_N4096_K14336_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M1152_N4096_K14336_config,
-                            ctx,
-                        )
-                        return
-                    if m <= 1280:
-                        alias M1280_N4096_K14336_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_256X128X64[0],
-                            warp_tile_shape=tile_shapes_256X128X64[1],
-                            num_pipeline_stages=3,
-                            num_k_partitions=2,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M1280_N4096_K14336_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M1280_N4096_K14336_config,
-                            ctx,
-                        )
-                        return
-                    if m <= 1606:
-                        alias M1606_N4096_K14336_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_128X256X64[0],
-                            warp_tile_shape=tile_shapes_128X256X64[1],
-                            num_pipeline_stages=3,
-                            num_k_partitions=1,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M1606_N4096_K14336_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M1606_N4096_K14336_config,
-                            ctx,
-                        )
-                        return
-                    if m <= 2048:
-                        alias M2048_N4096_K14336_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_256X128X64[0],
-                            warp_tile_shape=tile_shapes_256X128X64[1],
-                            num_pipeline_stages=3,
-                            num_k_partitions=2,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M2048_N4096_K14336_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M2048_N4096_K14336_config,
-                            ctx,
-                        )
-                        return
 
-                @parameter
-                if static_N == 128256 and static_K == 4096:
-                    if m <= 128:
-                        alias M128_N128256_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_128X256X64[0],
-                            warp_tile_shape=tile_shapes_128X256X64[1],
-                            num_pipeline_stages=3,
-                            num_k_partitions=1,
-                        )
+                    else:  # Default kernel 128x128_4
                         multistage_gemm[
                             transpose_b=transpose_b,
-                            config=M128_N128256_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
+                            config = kernels.ampere_128x128_4,
+                            elementwise_lambda_fn=elementwise_lambda_wrapper,
                         ](
                             rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                             rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
                             rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M128_N128256_K4096_config,
+                            best_config,
                             ctx,
                         )
-                        return
-                    if 768 < m <= 896:
-                        alias M768_N128256_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_128X128X64[0],
-                            warp_tile_shape=tile_shapes_128X128X64[1],
-                            num_pipeline_stages=4,
-                            num_k_partitions=1,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M768_N128256_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M768_N128256_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if 896 < m <= 2048 or m <= 768:
-                        alias M2048_N128256_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_256X128X64[0],
-                            warp_tile_shape=tile_shapes_256X128X64[1],
-                            num_pipeline_stages=3,
-                            num_k_partitions=1,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M2048_N128256_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M2048_N128256_K4096_config,
-                            ctx,
-                        )
-                        return
-
-                @parameter
-                if static_N == 28672 and static_K == 4096:
-                    if m <= 16:
-                        alias M16_N28672_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=Index(16, 64, 128),
-                            warp_tile_shape=Index(16, 32, 32),
-                            num_pipeline_stages=4,
-                            num_k_partitions=1,
-                            num_warp_k_partitions=2,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M16_N28672_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M16_N28672_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if m <= 32:
-                        alias M32_N28672_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=Index(32, 64, 64),
-                            warp_tile_shape=Index(16, 64, 32),
-                            num_pipeline_stages=6,
-                            num_k_partitions=1,
-                            num_warp_k_partitions=2,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M32_N28672_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M32_N28672_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if m <= 64:
-                        alias M64_N28672_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=Index(64, 64, 64),
-                            warp_tile_shape=Index(32, 64, 32),
-                            num_pipeline_stages=5,
-                            num_k_partitions=1,
-                            num_warp_k_partitions=2,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M64_N28672_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M64_N28672_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if m <= 128:
-                        alias M128_N28672_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_128X128X32[0],
-                            warp_tile_shape=tile_shapes_128X128X32[1],
-                            num_pipeline_stages=4,
-                            num_k_partitions=1,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M128_N28672_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M128_N28672_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if m <= 256:
-                        alias M256_N28672_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_64X256X64[0],
-                            warp_tile_shape=tile_shapes_64X256X64[1],
-                            num_pipeline_stages=4,
-                            num_k_partitions=1,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M256_N28672_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M256_N28672_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if m <= 512:
-                        alias M512_N28672_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_128X128X32[0],
-                            warp_tile_shape=tile_shapes_128X128X32[1],
-                            num_pipeline_stages=4,
-                            num_k_partitions=1,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M512_N28672_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M512_N28672_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if m <= 768:
-                        alias M768_N28672_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_256X128X64[0],
-                            warp_tile_shape=tile_shapes_256X128X64[1],
-                            num_pipeline_stages=3,
-                            num_k_partitions=1,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M768_N28672_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M768_N28672_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if m <= 896:
-                        alias M896_N28672_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_128X256X64[0],
-                            warp_tile_shape=tile_shapes_128X256X64[1],
-                            num_pipeline_stages=3,
-                            num_k_partitions=1,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M896_N28672_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M896_N28672_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if m <= 1024:
-                        alias M1024_N28672_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_256X128X64[0],
-                            warp_tile_shape=tile_shapes_256X128X64[1],
-                            num_pipeline_stages=3,
-                            num_k_partitions=1,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M1024_N28672_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M1024_N28672_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if m <= 1152:
-                        alias M1152_N28672_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_128X256X64[0],
-                            warp_tile_shape=tile_shapes_128X256X64[1],
-                            num_pipeline_stages=3,
-                            num_k_partitions=1,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M1152_N28672_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M1152_N28672_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if m <= 1280:
-                        alias M1280_N28672_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_256X128X64[0],
-                            warp_tile_shape=tile_shapes_256X128X64[1],
-                            num_pipeline_stages=3,
-                            num_k_partitions=1,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M1280_N28672_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M1280_N28672_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if m <= 1606:
-                        alias M1606_N28672_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_128X256X64[0],
-                            warp_tile_shape=tile_shapes_128X256X64[1],
-                            num_pipeline_stages=3,
-                            num_k_partitions=1,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M1606_N28672_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M1606_N28672_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if m <= 2048:
-                        alias M2048_N28672_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_256X128X64[0],
-                            warp_tile_shape=tile_shapes_256X128X64[1],
-                            num_pipeline_stages=3,
-                            num_k_partitions=1,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M2048_N28672_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M2048_N28672_K4096_config,
-                            ctx,
-                        )
-                        return
-
-                @parameter
-                if static_N == 6144 and static_K == 4096:
-                    if m <= 16:
-                        alias M16_N6144_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=Index(16, 64, 128),
-                            warp_tile_shape=Index(16, 32, 32),
-                            num_pipeline_stages=4,
-                            num_k_partitions=1,
-                            num_warp_k_partitions=2,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M16_N6144_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M16_N6144_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if 16 < m <= 32:
-                        alias M32_N6144_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=Index(32, 64, 64),
-                            warp_tile_shape=Index(16, 64, 32),
-                            num_pipeline_stages=6,
-                            num_k_partitions=1,
-                            num_warp_k_partitions=2,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M32_N6144_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M32_N6144_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if 32 < m <= 64:
-                        alias M64_N6144_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=Index(64, 64, 64),
-                            warp_tile_shape=Index(32, 64, 32),
-                            num_pipeline_stages=5,
-                            num_k_partitions=1,
-                            num_warp_k_partitions=2,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M64_N6144_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M64_N6144_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if 64 < m <= 128:
-                        alias M128_N6144_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=Index(64, 128, 64),
-                            warp_tile_shape=Index(64, 64, 32),
-                            num_pipeline_stages=3,
-                            num_k_partitions=1,
-                            num_warp_k_partitions=2,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M128_N6144_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M128_N6144_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if 128 < m <= 256:
-                        alias M256_N6144_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_128X128X64[0],
-                            warp_tile_shape=tile_shapes_128X128X64[1],
-                            num_pipeline_stages=4,
-                            num_k_partitions=1,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M256_N6144_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M256_N6144_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if 256 < m <= 512:
-                        alias M512_N6144_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_256X128X64[0],
-                            warp_tile_shape=tile_shapes_256X128X64[1],
-                            num_pipeline_stages=3,
-                            num_k_partitions=1,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M512_N6144_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M512_N6144_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if 512 < m <= 768:
-                        alias M768_N6144_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_128X128X32[0],
-                            warp_tile_shape=tile_shapes_128X128X32[1],
-                            num_pipeline_stages=4,
-                            num_k_partitions=1,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M768_N6144_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M768_N6144_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if 768 < m <= 896:
-                        alias M896_N6144_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_128X256X32[0],
-                            warp_tile_shape=tile_shapes_128X256X32[1],
-                            num_pipeline_stages=3,
-                            num_k_partitions=1,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M896_N6144_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M896_N6144_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if 896 < m <= 1024:
-                        alias M1024_N6144_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_256X128X64[0],
-                            warp_tile_shape=tile_shapes_256X128X64[1],
-                            num_pipeline_stages=3,
-                            num_k_partitions=1,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M1024_N6144_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M1024_N6144_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if 1024 < m <= 1152:
-                        alias M768_N6144_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_128X256X64[0],
-                            warp_tile_shape=tile_shapes_128X256X64[1],
-                            num_pipeline_stages=3,
-                            num_k_partitions=1,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M768_N6144_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M768_N6144_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if 1152 < m <= 1280:
-                        alias M768_N6144_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_128X128X32[0],
-                            warp_tile_shape=tile_shapes_128X128X32[1],
-                            num_pipeline_stages=4,
-                            num_k_partitions=1,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M768_N6144_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M768_N6144_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if 1280 < m <= 1606:
-                        alias M1606_N6144_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_128X256X64[0],
-                            warp_tile_shape=tile_shapes_128X256X64[1],
-                            num_pipeline_stages=3,
-                            num_k_partitions=1,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M1606_N6144_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M1606_N6144_K4096_config,
-                            ctx,
-                        )
-                        return
-                    if 1606 < m <= 2048:
-                        alias M2048_N6144_K4096_config = MatmulConfig[
-                            a_type, b_type, c_type, transpose_b
-                        ](
-                            block_tile_shape=tile_shapes_256X128X64[0],
-                            warp_tile_shape=tile_shapes_256X128X64[1],
-                            num_pipeline_stages=3,
-                            num_k_partitions=1,
-                        )
-                        multistage_gemm[
-                            transpose_b=transpose_b,
-                            config=M2048_N6144_K4096_config,
-                            elementwise_lambda_fn=elementwise_lambda_fn,
-                        ](
-                            rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
-                            rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
-                            rebind[NDBuffer[b_type, 2, b.origin, b_shape]](b),
-                            M2048_N6144_K4096_config,
-                            ctx,
-                        )
-                        return
+                    return
 
             var best_config = select_config[
                 a_type, b_type, c_type, transpose_b
@@ -2315,7 +1253,7 @@ fn _matmul_gpu[
                 multistage_gemm[
                     transpose_b=transpose_b,
                     config=config,
-                    elementwise_lambda_fn=elementwise_lambda_fn,
+                    elementwise_lambda_fn=elementwise_lambda_wrapper,
                 ](
                     rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                     rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -2328,7 +1266,7 @@ fn _matmul_gpu[
                 multistage_gemm[
                     transpose_b=transpose_b,
                     config = kernels.ampere_256x128_3,
-                    elementwise_lambda_fn=elementwise_lambda_fn,
+                    elementwise_lambda_fn=elementwise_lambda_wrapper,
                 ](
                     rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                     rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -2341,7 +1279,7 @@ fn _matmul_gpu[
                 multistage_gemm[
                     transpose_b=transpose_b,
                     config = kernels.ampere_128x128_4,
-                    elementwise_lambda_fn=elementwise_lambda_fn,
+                    elementwise_lambda_fn=elementwise_lambda_wrapper,
                 ](
                     rebind[NDBuffer[c_type, 2, c.origin, c_shape]](c),
                     rebind[NDBuffer[a_type, 2, a.origin, a_shape]](a),
@@ -2357,7 +1295,7 @@ fn _matmul_gpu[
         if n == 1 or m == 1:
             gemv_gpu[
                 transpose_b=transpose_b,
-                elementwise_lambda_fn=elementwise_lambda_fn,
+                elementwise_lambda_fn=elementwise_lambda_wrapper,
             ](c, a, b, ctx)
             return
 
@@ -2369,7 +1307,7 @@ fn _matmul_gpu[
             b_type,
             BLOCK_DIM,
             transpose_b,
-            elementwise_lambda_fn=elementwise_lambda_fn,
+            elementwise_lambda_fn=elementwise_lambda_wrapper,
         ]
     ](
         c.data,

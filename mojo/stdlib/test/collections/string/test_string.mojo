@@ -32,7 +32,7 @@ from testing import (
 from math import isinf, isnan
 
 
-@value
+@fieldwise_init
 struct AString(Stringable):
     fn __str__(self) -> String:
         return "a string"
@@ -498,44 +498,70 @@ def test_atof():
     assert_equal(
         FloatLiteral.infinity, atof("1e309")
     )  # Overflows double precision
-    assert_equal(0.0, atof("1e-309"))  # Underflows to zero
+    assert_equal(0.0, atof("1e-325"))  # Underflows to zero
 
     # Negative cases
     with assert_raises(contains="String is not convertible to float: ''"):
         _ = atof("")
 
     with assert_raises(
-        contains="String is not convertible to float: ' 123 asd'"
+        contains=(
+            "String is not convertible to float: ' 123 asd'. "
+            "The last character of '123 asd' should be a "
+            "digit or dot to convert it to a float."
+        )
     ):
         _ = atof(" 123 asd")
 
     with assert_raises(
-        contains="String is not convertible to float: ' f.9123 '"
+        contains=(
+            "String is not convertible to float: ' f.9123 '. "
+            "The first character of 'f.9123' should be a "
+            "digit or dot to convert it to a float."
+        )
     ):
         _ = atof(" f.9123 ")
 
     with assert_raises(
-        contains="String is not convertible to float: ' 989343E-1A3 '"
+        contains=(
+            "String is not convertible to float: ' 989343E-1A3 '. "
+            "Invalid character(s) in the number: '989343E-1A3'"
+        )
     ):
         _ = atof(" 989343E-1A3 ")
 
     with assert_raises(
-        contains="String is not convertible to float: ' 124124124_2134124124 '"
+        contains=(
+            "String is not convertible to float: ' 124124124_2134124124 '. "
+            "Invalid character(s) in the number: '124124124_2134124124'"
+        )
     ):
         _ = atof(" 124124124_2134124124 ")
 
     with assert_raises(
-        contains="String is not convertible to float: ' 123.2E '"
+        contains=(
+            "String is not convertible to float: ' 123.2E '. "
+            "The last character of '123.2E' should be a digit "
+            "or dot to convert it to a float."
+        )
     ):
         _ = atof(" 123.2E ")
 
     with assert_raises(
-        contains="String is not convertible to float: ' --958.23 '"
+        contains=(
+            "String is not convertible to float: ' --958.23 '. "
+            "The first character of '-958.23' should be a digit "
+            "or dot to convert it to a float."
+        )
     ):
         _ = atof(" --958.23 ")
 
     with assert_raises(
-        contains="String is not convertible to float: ' ++94. '"
+        contains=(
+            "String is not convertible to float: ' ++94. '. "
+            "The first character of '+94.' should be "
+            "a digit or dot to convert it to a float."
+        )
     ):
         _ = atof(" ++94. ")
 
@@ -1556,6 +1582,25 @@ def test_python_object():
         _ = String(a)
 
 
+def test_copyinit():
+    alias sizes = (1, 2, 4, 8, 16, 32, 64, 128, 256, 512)
+    assert_equal(len(sizes), 10)
+    var test_current_size = 1
+
+    @parameter
+    for sizes_index in range(len(sizes)):
+        alias current_size = sizes[sizes_index]
+        x = String("")
+        for i in range(current_size):
+            x += String(i)[0]
+        y = x
+        assert_equal(test_current_size, current_size)
+        assert_equal(len(y), current_size)
+        # TODO: check pointer equality?
+        test_current_size *= 2
+    assert_equal(test_current_size, 1024)
+
+
 def main():
     test_constructors()
     test_copy()
@@ -1604,3 +1649,4 @@ def main():
     test_variadic_ctors()
     test_sso()
     test_python_object()
+    test_copyinit()

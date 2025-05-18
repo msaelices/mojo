@@ -49,6 +49,9 @@ what we publish.
 
 - `try` and `raise` now work at comptime.
 
+- List literals are being redesigned and are temporarily disabled. The
+  `ListLiteral` type has been removed.
+
 ### Standard library changes
 
 - The `CollectionElement` trait has been removed.
@@ -116,3 +119,5 @@ Changes to Python-Mojo interoperability:
 
 - [#4352](https://github.com/modular/modular/issues/4352) - `math.sqrt`
   products incorrect results for large inputs.
+- [#4518](https://github.com/modular/modular/issues/4518) - Try Except Causes
+  False Positive "Uninitialized Value".
