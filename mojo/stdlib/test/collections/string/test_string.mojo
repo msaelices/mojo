@@ -32,7 +32,7 @@ from testing import (
 from math import isinf, isnan
 
 
-@value
+@fieldwise_init
 struct AString(Stringable):
     fn __str__(self) -> String:
         return "a string"
@@ -867,7 +867,7 @@ def test_splitlines():
     var unicode_line_sep = List[UInt8](0xE2, 0x80, 0xA8)
     var unicode_paragraph_sep = List[UInt8](0xE2, 0x80, 0xA9)
 
-    for elt in List(next_line, unicode_line_sep, unicode_paragraph_sep):
+    for elt in [next_line, unicode_line_sep, unicode_paragraph_sep]:
         u = String(bytes=elt[])
         item = String().join("hello", u, "world", u, "mojo", u, "language", u)
         assert_equal(item.splitlines(), hello_mojo)
@@ -1220,7 +1220,7 @@ def test_string_char_slices_iter():
         "álO",
         "етйувтсвардЗ",
     )
-    var items_amount_characters = List(5, 12, 9, 5, 7, 6, 5, 5, 2, 3, 12)
+    var items_amount_characters = [5, 12, 9, 5, 7, 6, 5, 5, 2, 3, 12]
     for item_idx in range(len(items)):
         var item = items[item_idx]
         var ptr = item.unsafe_ptr()
@@ -1582,6 +1582,25 @@ def test_python_object():
         _ = String(a)
 
 
+def test_copyinit():
+    alias sizes = (1, 2, 4, 8, 16, 32, 64, 128, 256, 512)
+    assert_equal(len(sizes), 10)
+    var test_current_size = 1
+
+    @parameter
+    for sizes_index in range(len(sizes)):
+        alias current_size = sizes[sizes_index]
+        x = String("")
+        for i in range(current_size):
+            x += String(i)[0]
+        y = x
+        assert_equal(test_current_size, current_size)
+        assert_equal(len(y), current_size)
+        # TODO: check pointer equality?
+        test_current_size *= 2
+    assert_equal(test_current_size, 1024)
+
+
 def main():
     test_constructors()
     test_copy()
@@ -1630,3 +1649,4 @@ def main():
     test_variadic_ctors()
     test_sso()
     test_python_object()
+    test_copyinit()

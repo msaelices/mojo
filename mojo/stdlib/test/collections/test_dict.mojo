@@ -388,13 +388,9 @@ def test_dict_update_empty_new():
     assert_equal(len(orig), 2)
 
 
-@value
+@fieldwise_init("implicit")
 struct DummyKey(KeyElement):
     var value: Int
-
-    @implicit
-    fn __init__(out self, value: Int):
-        self.value = value
 
     fn __init__(out self, *, other: Self):
         self = other
@@ -410,7 +406,7 @@ struct DummyKey(KeyElement):
 
 
 def test_mojo_issue_1729():
-    var keys = List(
+    var keys = [
         7005684093727295727,
         2833576045803927472,
         -446534169874157203,
@@ -419,7 +415,7 @@ def test_mojo_issue_1729():
         7237741981002255125,
         -649171104678427962,
         -6981562940350531355,
-    )
+    ]
     var d = Dict[DummyKey, Int]()
     for i in range(len(keys)):
         d[DummyKey(keys[i])] = i

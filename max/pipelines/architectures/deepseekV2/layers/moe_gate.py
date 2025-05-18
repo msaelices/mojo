@@ -75,7 +75,7 @@ class MaxMoEGate(Module):
         self.gate_score = Linear(
             in_dim=gating_dim,
             out_dim=n_routed_experts,
-            dtype=DType.float32,
+            dtype=DType.bfloat16,
             device=device,
             has_bias=False,
         )
