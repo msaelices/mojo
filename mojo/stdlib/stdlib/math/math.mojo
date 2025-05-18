@@ -2447,7 +2447,7 @@ fn ulp[
 
 # TODO: implement for IntLiteral
 @always_inline
-fn factorial(n: Int) -> Int:
+fn factorial(n: Int) raises -> Int:
     """Computes the factorial of the integer.
 
     Args:
