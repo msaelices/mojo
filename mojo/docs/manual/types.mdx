@@ -534,7 +534,7 @@ type at compile time using a [parameter](/mojo/manual/parameters/). For
 example, you can create a `List` of `Int` values like this:
 
 ```mojo
-var l = List[Int](1, 2, 3, 4)
+var l: List[Int] = [1, 2, 3, 4]
 # l.append(3.14) # error: FloatLiteral cannot be converted to Int
 ```
 
@@ -544,7 +544,7 @@ integer literals, Mojo creates a `List[Int]`.
 
 ```mojo
 # Inferred type == Int
-var l1 = List(1, 2, 3, 4)
+var l1 = [1, 2, 3, 4]
 ```
 
 Where you need a more flexible collection, the
@@ -575,9 +575,7 @@ ability to append to the list, pop items out of the list, and access list items
 using subscript notation.
 
 ```mojo
-from collections import List
-
-var list = List(2, 3, 5)
+var list = [2, 3, 5]
 list.append(7)
 list.append(11)
 print("Popping last item from list: ", list.pop())
@@ -597,14 +595,13 @@ the list. Because the list is being created with a set of `Int` values, Mojo can
 
 There are some notable limitations when using `List`:
 
-* You can't currently initialize a list from a list literal, like this:
+* You can initialize a list using list literals:
 
   ```mojo
-  # Doesn't work!
   var list: List[Int] = [2, 3, 5]
   ```
 
-  But you can use variadic arguments to achieve the same thing:
+  Alternatively, you can use variadic arguments to achieve the same thing:
 
   ```mojo
   var list = List(2, 3, 5)
@@ -625,8 +622,7 @@ There are some notable limitations when using `List`:
   item itself. You can access the item using the dereference operator, `[]`:
 
 ```mojo
-#: from collections import List
-var list = List(2, 3, 4)
+#: var list = [2, 3, 4]
 for item in list:
       print(item[], end=", ")
 ```
@@ -639,8 +635,7 @@ Subscripting in to a list, however, returns the item directly—no need to
 dereference:
 
 ```mojo
-#: from collections import List
-#: var list = List[Int](2, 3, 4)
+#: var list = [2, 3, 4]
 for i in range(len(list)):
     print(list[i], end=", ")
 ```
