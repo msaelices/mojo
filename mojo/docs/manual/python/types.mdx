@@ -72,22 +72,15 @@ For example, to create a Python dictionary, use the
 from python import Python
 
 def main():
-    # Create a Python dictionary using the Python.dict() method
     py_dict = Python.dict()
     py_dict["item_name"] = "whizbang"
     py_dict["price"] = 11.75
     py_dict["inventory"] = 100
     print(py_dict)
-    
-    # Alternatively, you can create Python dictionary using dictionary literal
-    # syntax for PythonObject:
-    py_dict2 = {"item_name": "gadget", "price": 8.50, "inventory": 42}
-    print(py_dict2)
 ```
 
 ```output
 {'item_name': 'whizbang', 'price': 11.75, 'inventory': 100}
-{'item_name': 'gadget', 'price': 8.5, 'inventory': 42}
 ```
 
 With the [`Python.list()`](/mojo/stdlib/python/python/Python#list) method, you
