@@ -35,7 +35,7 @@ what we publish.
 
 ### Language changes
 
-- The type [`Dict`(/mojo/stdlib/collections/dict/Dict/) is now part of the 
+- The type [`Dict`](/mojo/stdlib/collections/dict/Dict/) is now part of the
   prelude, so there is no need to import them anymore.
 
 - The Mojo compiler will now synthesize `__moveinit__` and `__copyinit__` and
