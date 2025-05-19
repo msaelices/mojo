@@ -11,9 +11,10 @@
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
 
-from testing import assert_equal
 from gpu import *
 from gpu.host import DeviceBuffer, DeviceContext, DeviceFunction
+from memory import UnsafePointer
+from testing import assert_equal
 
 
 fn vec_func(
@@ -68,7 +69,7 @@ fn test(ctx: DeviceContext) raises:
 
     ctx.synchronize()
 
-    var expected = List(7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0)
+    var expected = [7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0]
     for i in range(10):
         print("at index", i, "the value is", out_host[i])
         assert_equal(out_host[i], expected[i])

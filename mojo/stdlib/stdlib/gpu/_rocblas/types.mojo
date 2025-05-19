@@ -11,8 +11,12 @@
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
 
+from os import abort
 
-@value
+from memory import UnsafePointer
+
+
+@fieldwise_init
 @register_passable("trivial")
 struct Handle:
     var _value: UnsafePointer[NoneType]
@@ -24,7 +28,7 @@ struct Handle:
         return self._value == other._value
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct Operation:
     var _value: Int32
@@ -47,7 +51,7 @@ struct Operation:
         return Int(self._value)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct Fill:
     var _value: Int32
@@ -70,7 +74,7 @@ struct Fill:
         return Int(self._value)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct Diagonal:
     var _value: Int32
@@ -92,7 +96,7 @@ struct Diagonal:
         return Int(self._value)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct Side:
     var _value: Int32
@@ -115,7 +119,7 @@ struct Side:
         return Int(self._value)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct DataType:
     var _value: Int32
@@ -197,7 +201,7 @@ struct ComputeType:
         return Int(self._value)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct Status(Writable):
     var _value: Int32
@@ -274,7 +278,7 @@ struct Status(Writable):
         return abort("unreachable: invalid Status entry")
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct PointerMode:
     var _value: Int32
@@ -296,13 +300,13 @@ struct PointerMode:
         return Int(self._value)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct MallocBase:
     var _value: Int32
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct Algorithm:
     var _value: Int32
@@ -324,7 +328,7 @@ struct Algorithm:
         return Int(self._value)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct GEAMExOp:
     var _value: Int32

@@ -27,14 +27,11 @@ from memory import UnsafePointer, memcpy
 from nn.mha import flash_attention
 from nn.mha_mask import CausalMask
 from nn.mha_score_mod import IdentityScoreMod
+from tensor_internal import IOUnknown, ManagedTensorSlice
+from tensor_internal.managed_tensor_slice import StaticTensorSpec
 from testing import assert_almost_equal
 
 from utils import Index, IndexList
-
-from tensor_internal import ManagedTensorSlice
-from tensor_internal import IOUnknown
-from tensor_internal.managed_tensor_slice import StaticTensorSpec
-
 
 alias kv_params_llama3 = KVCacheStaticParams(num_heads=8, head_size=128)
 alias llama_num_q_heads = 32
@@ -269,7 +266,7 @@ def execute_ragged_flash_attention[
 def execute_flash_attention_suite(ctx: DeviceContext):
     alias types = (DType.float32, DType.bfloat16)
 
-    for bs_ref in List[Int](1, 16):
+    for bs_ref in [1, 16]:
 
         @parameter
         for type_idx in range(len(types)):

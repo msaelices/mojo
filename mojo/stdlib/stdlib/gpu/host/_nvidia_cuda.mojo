@@ -11,8 +11,9 @@
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
 
-from sys import external_call
+from sys import external_call, sizeof
 
+from gpu._utils import to_llvm_ptr
 from gpu.host import DeviceContext, DeviceStream
 from gpu.host.device_context import (
     _CharPtr,
@@ -23,6 +24,8 @@ from gpu.host.device_context import (
 )
 from memory import UnsafePointer, stack_allocation
 from memory.unsafe import bitcast
+
+from utils import IndexList, StaticTuple
 
 
 struct _CUctx_st:
@@ -82,7 +85,7 @@ fn CUDA(stream: DeviceStream) raises -> CUstream:
 # ===----------------------------------------------------------------------=== #
 
 
-@value
+@fieldwise_init("implicit")
 @register_passable("trivial")
 struct TensorMapDataType:
     var _value: Int32
@@ -101,10 +104,6 @@ struct TensorMapDataType:
     alias TFLOAT32 = Self(11)
     alias TFLOAT32_FTZ = Self(12)
 
-    @implicit
-    fn __init__(out self, value: Int32):
-        self._value = value
-
     @staticmethod
     fn from_dtype[dtype: DType]() -> Self:
         constrained[
@@ -121,7 +120,7 @@ struct TensorMapDataType:
             return Self.BFLOAT16
 
 
-@value
+@fieldwise_init("implicit")
 @register_passable("trivial")
 struct TensorMapInterleave:
     var _value: Int32
@@ -130,12 +129,8 @@ struct TensorMapInterleave:
     alias INTERLEAVE_16B = Self(1)
     alias INTERLEAVE_32B = Self(2)
 
-    @implicit
-    fn __init__(out self, value: Int32):
-        self._value = value
 
-
-@value
+@fieldwise_init("implicit")
 @register_passable("trivial")
 struct TensorMapSwizzle(
     Copyable,
@@ -151,10 +146,6 @@ struct TensorMapSwizzle(
     alias SWIZZLE_32B = Self(1)
     alias SWIZZLE_64B = Self(2)
     alias SWIZZLE_128B = Self(3)
-
-    @implicit
-    fn __init__(out self, value: Int32):
-        self._value = value
 
     @always_inline("nodebug")
     fn __int__(self) -> Int:
@@ -190,7 +181,7 @@ struct TensorMapSwizzle(
             writer.write("invalid swizzle")
 
 
-@value
+@fieldwise_init("implicit")
 @register_passable("trivial")
 struct TensorMapL2Promotion:
     var _value: Int32
@@ -200,22 +191,14 @@ struct TensorMapL2Promotion:
     alias L2_128B = Self(2)
     alias L2_256B = Self(3)
 
-    @implicit
-    fn __init__(out self, value: Int32):
-        self._value = value
 
-
-@value
-@register_passable
+@fieldwise_init("implicit")
+@register_passable("trivial")
 struct TensorMapFloatOOBFill:
     var _value: Int32
 
     alias NONE = Self(0)
     alias NAN_REQUEST_ZERO_FMA = Self(1)
-
-    @implicit
-    fn __init__(out self, value: Int32):
-        self._value = value
 
 
 # The TMA descriptor is a 128-byte opaque object filled by the driver API.

@@ -151,11 +151,13 @@ struct List[T: Copyable & Movable, hint_trivial_type: Bool = False](
         self = Self()
         self.resize(length, fill)
 
-    fn __init__(out self, owned *values: T):
+    @always_inline
+    fn __init__(out self, owned *values: T, __list_literal__: () = ()):
         """Constructs a list from the given values.
 
         Args:
             values: The values to populate the list with.
+            __list_literal__: Tell Mojo to use this method for list literals.
         """
         self = Self(elements=values^)
 
@@ -1100,9 +1102,10 @@ struct List[T: Copyable & Movable, hint_trivial_type: Bool = False](
             ),
         )
 
-        return (self.data + self._len).origin_cast[
-            mut = Origin(__origin_of(self)).mut, origin = __origin_of(self)
-        ]()
+        # self.unsafe_ptr() + self._len won't work because .unsafe_ptr()
+        # takes a ref that might mutate self
+        var length = self._len
+        return self.unsafe_ptr() + length
 
     fn _cast_hint_trivial_type[
         hint_trivial_type: Bool

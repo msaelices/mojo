@@ -29,8 +29,14 @@ These structures enable optimizing GPU kernel performance by controlling executi
 at a granular level, similar to CUDA's native launch attribute system.
 """
 
+from sys import sizeof
 
-@value
+from memory import UnsafePointer
+
+from utils import StaticTuple
+
+
+@fieldwise_init
 @register_passable("trivial")
 struct LaunchAttributeID(Writable):
     """Identifies the type of launch attribute for GPU kernel execution.
@@ -234,7 +240,7 @@ struct LaunchAttributeID(Writable):
         return writer.write(self._value)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct LaunchAttributeValue:
     """Represents a value for a CUDA launch attribute.
@@ -290,7 +296,7 @@ struct LaunchAttributeValue:
         self._storage = ptr.bitcast[Self._storage_type]()[]
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct AccessProperty(Writable):
     """Specifies performance hint with AccessPolicyWindow for hit_prop and
@@ -394,7 +400,7 @@ struct AccessProperty(Writable):
         return writer.write("PERSISTING")
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct LaunchAttribute(Copyable, Movable):
     """Represents a complete launch attribute with ID and value.

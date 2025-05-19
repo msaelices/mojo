@@ -13,8 +13,9 @@
 
 from collections.string import StaticString
 from os import abort
+from sys.ffi import _find_dylib
 from sys.ffi import _get_dylib_function as _ffi_get_dylib_function
-from sys.ffi import _Global, _OwnedDLHandle, _find_dylib
+from sys.ffi import _Global, _OwnedDLHandle
 
 from .infer import *
 
@@ -58,7 +59,7 @@ fn cudnnBackendInitialize(descriptor: UnsafePointer[NoneType]) -> cudnnStatus_t:
     ]()(descriptor)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct cudnnBackendKnobType_t(Writable):
     var _value: Int8
@@ -209,7 +210,7 @@ struct cudnnBackendKnobType_t(Writable):
         return Int(self._value)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct cudnnPointwiseMode_t(Writable):
     var _value: Int8
@@ -396,7 +397,7 @@ struct cudnnPointwiseMode_t(Writable):
         return Int(self._value)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct cudnnBackendDescriptorType_t(Writable):
     var _value: Int8
@@ -591,7 +592,7 @@ fn cudnnBackendSetAttribute(
     )
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct cudnnBackendBehaviorNote_t(Writable):
     var _value: Int8
@@ -644,7 +645,7 @@ struct cudnnBackendBehaviorNote_t(Writable):
         return Int(self._value)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct cudnnBackendLayoutType_t(Writable):
     var _value: Int8
@@ -696,7 +697,7 @@ struct cudnnBackendLayoutType_t(Writable):
         return Int(self._value)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct cudnnBackendNormFwdPhase_t(Writable):
     var _value: Int8
@@ -739,7 +740,7 @@ struct cudnnBackendNormFwdPhase_t(Writable):
         return Int(self._value)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct cudnnBackendHeurMode_t(Writable):
     var _value: Int8
@@ -797,7 +798,7 @@ struct cudnnFractionStruct:
     var denominator: Int64
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct cudnnBackendNumericalNote_t(Writable):
     var _value: Int8
@@ -878,7 +879,7 @@ fn cudnnBackendCreateDescriptor(
     ]()(descriptor_type, descriptor)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct cudnnBackendAttributeType_t(Writable):
     var _value: Int8
@@ -1005,7 +1006,7 @@ struct cudnnBackendAttributeType_t(Writable):
         return Int(self._value)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct cudnnRngDistribution_t(Writable):
     var _value: Int8
@@ -1057,7 +1058,7 @@ fn cudnnBackendFinalize(descriptor: UnsafePointer[NoneType]) -> cudnnStatus_t:
     ]()(descriptor)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct cudnnBackendTensorReordering_t(Writable):
     var _value: Int8
@@ -1103,7 +1104,7 @@ struct cudnnBackendTensorReordering_t(Writable):
         return Int(self._value)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct cudnnBackendAttributeName_t(Writable):
     var _value: Int8
@@ -1872,7 +1873,7 @@ struct cudnnBackendAttributeName_t(Writable):
         return Int(self._value)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct cudnnBackendNormMode_t(Writable):
     var _value: Int8
@@ -1924,7 +1925,7 @@ struct cudnnBackendNormMode_t(Writable):
         return Int(self._value)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct cudnnSignalMode_t(Writable):
     var _value: Int8
@@ -1970,7 +1971,7 @@ struct cudnnSignalMode_t(Writable):
 alias cudnnBackendDescriptor_t = UnsafePointer[NoneType]
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct cudnnBnFinalizeStatsMode_t(Writable):
     var _value: Int8
@@ -2013,7 +2014,7 @@ struct cudnnBnFinalizeStatsMode_t(Writable):
         return Int(self._value)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct cudnnGenStatsMode_t(Writable):
     var _value: Int8
@@ -2077,7 +2078,7 @@ fn cudnnBackendExecute(
     ]()(handle, execution_plan, variant_pack)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct cudnnResampleMode_t(Writable):
     var _value: Int8
@@ -2163,7 +2164,7 @@ fn cudnnBackendGetAttribute(
     )
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct cudnnPaddingMode_t(Writable):
     var _value: Int8

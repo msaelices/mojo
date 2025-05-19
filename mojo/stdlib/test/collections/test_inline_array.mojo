@@ -108,8 +108,8 @@ def test_array_int():
     test_init_fill_scalars[
         Int64.dtype,
         Int8.dtype,
-        sizes = List(1, 32, 64, 129, 256, 512, 768, 1000),
-        batch_sizes = List(1, 8, 32, 64, 128),
+        sizes= [1, 32, 64, 129, 256, 512, 768, 1000],
+        batch_sizes= [1, 8, 32, 64, 128],
     ]()
 
     test_init_fill[2048, 512](Int64.MAX)
@@ -117,7 +117,7 @@ def test_array_int():
 
 
 def test_array_str():
-    var arr = InlineArray[String, 3]("hi", "hello", "hey")
+    var arr: InlineArray[String, 3] = ["hi", "hello", "hey"]
 
     assert_equal(arr[0], "hi")
     assert_equal(arr[1], "hello")

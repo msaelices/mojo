@@ -14,15 +14,26 @@
 
 from collections import Dict, KeyElement, Optional
 from collections.dict import OwnedKwargsDict
-
-from test_utils import CopyCounter, AbortOnCopy
 from os import abort
+
+from test_utils import AbortOnCopy, CopyCounter
 from testing import assert_equal, assert_false, assert_raises, assert_true
 
 
 def test_dict_construction():
     _ = Dict[Int, Int]()
     _ = Dict[String, Int]()
+
+
+def test_dict_literals():
+    a = {String("foo"): 1, String("bar"): 2}
+    assert_equal(a["foo"], 1)
+
+    b = {1: 4, 2: 7, 3: 18}
+    assert_equal(b[1], 4)
+    assert_equal(b[2], 7)
+    assert_equal(b[3], 18)
+    assert_false(4 in b)
 
 
 def test_dict_fromkeys():
@@ -388,13 +399,9 @@ def test_dict_update_empty_new():
     assert_equal(len(orig), 2)
 
 
-@value
+@fieldwise_init("implicit")
 struct DummyKey(KeyElement):
     var value: Int
-
-    @implicit
-    fn __init__(out self, value: Int):
-        self.value = value
 
     fn __init__(out self, *, other: Self):
         self = other
@@ -410,7 +417,7 @@ struct DummyKey(KeyElement):
 
 
 def test_mojo_issue_1729():
-    var keys = List(
+    var keys = [
         7005684093727295727,
         2833576045803927472,
         -446534169874157203,
@@ -419,7 +426,7 @@ def test_mojo_issue_1729():
         7237741981002255125,
         -649171104678427962,
         -6981562940350531355,
-    )
+    ]
     var d = Dict[DummyKey, Int]()
     for i in range(len(keys)):
         d[DummyKey(keys[i])] = i
@@ -622,6 +629,7 @@ def test_compile_time_dict():
 
 def main():
     test_dict()
+    test_dict_literals()
     test_dict_fromkeys()
     test_dict_fromkeys_optional()
     test_dict_string_representation_string_int()

@@ -19,13 +19,10 @@ from sys import (
     has_accelerator,
     has_amd_gpu_accelerator,
     has_nvidia_gpu_accelerator,
+    sizeof,
 )
-from sys.ffi import (
-    _get_dylib_function as _ffi_get_dylib_function,
-    _Global,
-    _OwnedDLHandle,
-    _try_find_dylib,
-)
+from sys.ffi import _get_dylib_function as _ffi_get_dylib_function
+from sys.ffi import _Global, _OwnedDLHandle, _try_find_dylib
 from sys.param_env import env_get_int
 
 from memory import UnsafePointer, stack_allocation
@@ -135,7 +132,8 @@ alias EventPayload = UInt64
 alias NVTXVersion = 2
 
 
-@value
+@fieldwise_init
+@register_passable("trivial")
 struct Color(Intable):
     var _value: Int
 
@@ -153,7 +151,7 @@ struct Color(Intable):
         return self._value
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct _C_EventAttributes:
     var version: UInt16
@@ -200,7 +198,7 @@ fn color_from_category(category: Int) -> Color:
     return Color.PURPLE
 
 
-@register_passable
+@register_passable("trivial")
 struct EventAttributes:
     var _value: _C_EventAttributes
 

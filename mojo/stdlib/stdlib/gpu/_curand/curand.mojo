@@ -14,12 +14,9 @@
 from collections.string import StaticString
 from os import abort
 from pathlib import Path
-from sys.ffi import (
-    _get_dylib_function as _ffi_get_dylib_function,
-    _Global,
-    _OwnedDLHandle,
-    _find_dylib,
-)
+from sys.ffi import _find_dylib
+from sys.ffi import _get_dylib_function as _ffi_get_dylib_function
+from sys.ffi import _Global, _OwnedDLHandle
 
 from gpu.host._nvidia_cuda import CUstream
 from memory import UnsafePointer
@@ -152,7 +149,8 @@ fn curandGenerateLongLong(
     ]()(generator, output_ptr, num)
 
 
-@value
+@fieldwise_init
+@register_passable("trivial")
 struct libraryPropertyType_t:
     var _value: Int32
     alias MAJOR_VERSION = Self(0)
@@ -182,7 +180,7 @@ fn curandGetProperty(
     ]()(type, value)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct curandRngType(Writable):
     """
@@ -537,7 +535,7 @@ alias curandGenerator_st = NoneType
 alias curandGenerator_t = UnsafePointer[curandGenerator_st]
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct curandMethod(Writable):
     """\\cond UNHIDE_ENUMS ."""
@@ -700,7 +698,7 @@ alias curandHistogramM2K_st = Int16
 alias curandMethod_t = curandMethod
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct curandStatus(Writable):
     """
@@ -780,7 +778,7 @@ struct curandStatus(Writable):
         return Int(self._value)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct curandDirectionVectorSet(Writable):
     """
@@ -1250,7 +1248,7 @@ alias curandHistogramM2_t = UnsafePointer[curandHistogramM2_st]
 alias curandDirectionVectors64_t = StaticTuple[UInt64, 64]
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct curandOrdering(Writable):
     """

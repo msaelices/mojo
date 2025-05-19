@@ -11,11 +11,13 @@
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
 
+from sys import is_gpu
+
 from asyncrt_test_utils import create_test_device_context, expect_eq
+from builtin.device_passable import DevicePassable
 from gpu import *
 from gpu.host import DeviceContext
-
-from builtin.device_passable import DevicePassable
+from memory import UnsafePointer
 
 alias T = DType.float64
 alias S = Scalar[T]
@@ -27,7 +29,7 @@ trait MaybeZeroSized:
         ...
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct ZeroSized(MaybeZeroSized, DevicePassable):
     alias device_type: AnyTrivialRegType = Self
@@ -43,9 +45,6 @@ struct ZeroSized(MaybeZeroSized, DevicePassable):
     fn get_device_type_name() -> String:
         return Self.get_type_name()
 
-    fn __init__(out self):
-        pass
-
     @always_inline
     fn value(self) -> S:
         return 2
@@ -60,7 +59,7 @@ struct ZeroSized(MaybeZeroSized, DevicePassable):
         writer.write(")")
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct NotZeroSized(MaybeZeroSized, DevicePassable):
     alias device_type: AnyTrivialRegType = Self

@@ -13,8 +13,9 @@
 
 from collections.string import StaticString
 from os import abort
+from sys.ffi import _find_dylib
 from sys.ffi import _get_dylib_function as _ffi_get_dylib_function
-from sys.ffi import _Global, _OwnedDLHandle, _find_dylib
+from sys.ffi import _Global, _OwnedDLHandle
 
 from memory import UnsafePointer
 
@@ -66,7 +67,8 @@ alias cudnnSeqDataStruct = UnsafePointer[NoneType]
 alias cudnnPersistentRNNPlan = NoneType
 
 
-@value
+@fieldwise_init
+@register_passable("trivial")
 struct cudnnRNNInputMode_t:
     var _value: Int32
 
@@ -76,7 +78,8 @@ struct cudnnRNNInputMode_t:
     """Fixed identity matrix in the first layer input GEMM."""
 
 
-@value
+@fieldwise_init
+@register_passable("trivial")
 struct cudnnDirectionMode_t:
     var _value: Int32
 
@@ -86,7 +89,8 @@ struct cudnnDirectionMode_t:
     """Output concatination at each layer."""
 
 
-@value
+@fieldwise_init
+@register_passable("trivial")
 struct cudnnRNNClipMode_t:
     var _value: Int32
 
@@ -96,7 +100,8 @@ struct cudnnRNNClipMode_t:
     """Enables LSTM cell clipping."""
 
 
-@value
+@fieldwise_init
+@register_passable("trivial")
 struct cudnnRNNMode_t:
     var _value: Int32
     alias RNN_RELU = Self(0)
@@ -109,7 +114,8 @@ struct cudnnRNNMode_t:
     """Using h' = tanh(r * Uh(t-1) + Wx) and h = (1 - z) * h' + z * h(t-1)."""
 
 
-@value
+@fieldwise_init
+@register_passable("trivial")
 struct cudnnMultiHeadAttnWeightKind_t:
     var _value: Int32
 
@@ -138,7 +144,8 @@ struct cudnnMultiHeadAttnWeightKind_t:
     "Output projection bias."
 
 
-@value
+@fieldwise_init
+@register_passable("trivial")
 struct cudnnRNNBiasMode_t:
     var _value: Int32
 
@@ -152,7 +159,8 @@ struct cudnnRNNBiasMode_t:
     """Rrnn cell formulas use one recurrent bias in recurrent GEMMs."""
 
 
-@value
+@fieldwise_init
+@register_passable("trivial")
 struct cudnnRNNDataLayout_t:
     var _value: Int32
     alias SEQ_MAJOR_UNPACKED = Self(0)
@@ -203,7 +211,7 @@ fn cudnnGetRNNDescriptor_v6(
     )
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct cudnnForwardMode_t(Writable):
     var _value: Int8
@@ -764,7 +772,7 @@ fn cudnnGetRNNDescriptor_v8(
     )
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct cudnnSeqDataAxis_t(Writable):
     var _value: Int8

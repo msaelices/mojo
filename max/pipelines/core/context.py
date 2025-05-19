@@ -103,6 +103,16 @@ class InputContext(Protocol):
         """All tokens in the context."""
         ...
 
+    @property
+    def prompt_tokens(self) -> np.ndarray:
+        """Prompt tokens in the context."""
+        ...
+
+    @property
+    def generated_tokens(self) -> np.ndarray:
+        """All generated tokens in the context."""
+        ...
+
     def update(
         self,
         new_token: int,
@@ -230,6 +240,7 @@ class TextContext:
         self._end_idx = self._active_idx
         self._completion_start_idx = self._active_idx
         self._completion_end_idx = self._active_idx
+        self._prompt_len = len(tokens)
 
         # Which prefix of tokens have been committed into the prefix cache.
         # This should be a multiple of page_size and less than start_idx.
@@ -371,6 +382,14 @@ class TextContext:
     def tokens(self) -> np.ndarray:
         return self._tokens[: self._end_idx]
 
+    @property
+    def prompt_tokens(self) -> np.ndarray:
+        return self._tokens[: self._prompt_len]
+
+    @property
+    def generated_tokens(self) -> np.ndarray:
+        return self._tokens[self._prompt_len : self._end_idx]
+
     def _upsize(self) -> None:
         if self._end_idx >= self.size:
             self.size += CHUNK_SIZE
@@ -385,7 +404,7 @@ class TextContext:
         """Updates the next_tokens and extends existing tokens to include all generated tokens."""
         # This is required for chunked prefill.
         # The scheduler will update the active_idx via bump_token_indices and pass through the model
-        # To accomodate for this, if we identify that the active_idx is not at the end of the completed
+        # To accommodate this, if we identify that the active_idx is not at the end of the completed
         # token array, we only update the start_idx and active_idx, leaving the token array alone.
         if self._active_idx < self._end_idx:
             self._start_idx = self._active_idx

@@ -34,11 +34,11 @@ from sys._assembly import inlined_assembly
 from sys.ffi import _external_call_const
 from sys.info import _is_sm_9x_or_newer
 
+from algorithm import vectorize
 from bit import count_leading_zeros, count_trailing_zeros
 from builtin.dtype import _integral_type_of
 from builtin.simd import _modf, _simd_apply
 from memory import Span, UnsafePointer
-from algorithm import vectorize
 
 from utils.index import IndexList
 from utils.numerics import FPUtils, isnan, nan
@@ -1075,27 +1075,15 @@ fn isclose[
         a.dtype is DType.bool or a.dtype.is_numeric(),
         "input type must be boolean, integral, or floating-point",
     ]()
+    alias T = __type_of(a)
 
     @parameter
     if a.dtype is DType.bool or a.dtype.is_integral():
         return a == b
-    else:
-        var both_nan = isnan(a) & isnan(b)
-        if equal_nan and all(both_nan):
-            return True
-
-        var res = (a == b) | (
-            isfinite(a)
-            & isfinite(b)
-            & (
-                abs(a - b)
-                <= max(
-                    __type_of(a)(atol), __type_of(a)(rtol) * max(abs(a), abs(b))
-                )
-            )
-        )
-
-        return res | both_nan if equal_nan else res
+    var both_nan = isnan(a) & isnan(b)
+    var both_finite = isfinite(a) & isfinite(b)
+    var in_range = abs(a - b) <= max(T(atol), T(rtol) * max(abs(a), abs(b)))
+    return (a == b) | (both_nan & equal_nan) | (both_finite & in_range)
 
 
 # ===----------------------------------------------------------------------=== #

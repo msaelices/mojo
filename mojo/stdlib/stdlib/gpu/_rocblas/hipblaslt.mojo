@@ -12,15 +12,16 @@
 # ===----------------------------------------------------------------------=== #
 
 from collections.string import StaticString
+from os import abort
 from pathlib import Path
-from sys.ffi import (
-    _get_dylib_function as _ffi_get_dylib_function,
-    _Global,
-    _OwnedDLHandle,
-    _find_dylib,
-)
+from sys.ffi import _find_dylib
+from sys.ffi import _get_dylib_function as _ffi_get_dylib_function
+from sys.ffi import _Global, _OwnedDLHandle
 
 from gpu.host._amdgpu_hip import hipStream_t
+from memory import UnsafePointer
+
+from utils import StaticTuple
 
 alias hipblasLtHandle_t = UnsafePointer[NoneType]
 alias hipblasLtMatmulDesc_t = UnsafePointer[NoneType]
@@ -28,7 +29,7 @@ alias hipblasLtMatrixLayout_t = UnsafePointer[NoneType]
 alias hipblasLtMatmulPreference_t = UnsafePointer[NoneType]
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct Status(Writable):
     var _value: Int32
@@ -89,7 +90,7 @@ struct Status(Writable):
         return Int(self._value)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct hipDataType_t:
     var _value: Int32
@@ -110,7 +111,7 @@ struct hipDataType_t:
         return not (self == other)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct hipblasComputeType_t:
     var _value: Int32
@@ -130,7 +131,7 @@ struct hipblasComputeType_t:
         return not (self == other)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct hipblasOperation_t:
     var _value: Int32
@@ -149,7 +150,7 @@ struct hipblasOperation_t:
         return not (self == other)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct hipblasLtMatmulDescAttributes_t:
     var _value: Int32

@@ -12,8 +12,8 @@
 # ===----------------------------------------------------------------------=== #
 # RUN: %mojo -debug-level full %s
 
-from testing import assert_equal, assert_false, assert_true
 from python import PythonObject
+from testing import assert_equal, assert_false, assert_true
 
 
 def test_default():
@@ -39,7 +39,7 @@ def test_bool_none():
     assert_equal(Bool(test), False)
 
 
-@value
+@fieldwise_init
 struct MyTrue:
     fn __bool__(self) -> Bool:
         return True
