@@ -16,7 +16,7 @@ that are automatically imported into every Mojo program.
 
 from collections import (
     Dict,
-    InlineArray, 
+    InlineArray,
     KeyElement,
     List,
     Optional,

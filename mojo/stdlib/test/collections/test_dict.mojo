@@ -54,7 +54,7 @@ def test_dict_fromkeys():
 
 def test_dict_fromkeys_optional():
     alias keys = List[String]("a", "b", "c")
-    var expected_dict :Dict[String, Optional[Int]] = {
+    var expected_dict: Dict[String, Optional[Int]] = {
         "a": None,
         "b": None,
         "c": None,
