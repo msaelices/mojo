@@ -73,7 +73,7 @@ from sys.intrinsics import likely, unlikely
 from bit import count_leading_zeros, count_trailing_zeros
 from memory import Span, UnsafePointer, memcmp, memcpy, pack_bits
 from memory.memory import _memcmp_impl_unconstrained
-from python import Python, PythonObject, PythonConvertible
+from python import Python, PythonConvertible, PythonObject
 
 from utils.write import _WriteBufferStack, _TotalWritableBytes
 
@@ -2169,10 +2169,10 @@ struct StringSlice[mut: Bool, //, origin: Origin[mut]](
             The joined string.
 
         Notes:
-            - Defaults to writing to the stack if total bytes of `elems` is 
+            - Defaults to writing to the stack if total bytes of `elems` is
             inline, otherwise will process it by chunks.
-            - The `buffer_size` defaults to 4096 bytes to match the default 
-            page size on arm64 and x86-64, but you can increase this if you're 
+            - The `buffer_size` defaults to 4096 bytes to match the default
+            page size on arm64 and x86-64, but you can increase this if you're
             joining a very large `List` of elements to write into the stack
             instead of the heap.
         """
@@ -2190,7 +2190,7 @@ struct StringSlice[mut: Bool, //, origin: Origin[mut]](
                 result.write(self, elems[i])
             return result^
 
-        var buffer = _WriteBufferStack[buffer_size](result)        
+        var buffer = _WriteBufferStack[buffer_size](result)
 
         buffer.write(elems[0])
         for i in range(1, len(elems)):
