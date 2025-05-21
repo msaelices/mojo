@@ -97,7 +97,7 @@ from utils.numerics import get_accum_type, min_or_neg_inf, neg_inf
 from utils.static_tuple import StaticTuple
 
 
-# The motivationn here is to be able to pass `StaticInt[1]()`
+# The motivation here is to be able to pass `StaticInt[1]()`
 # to indicate `decoding=True`, and have this not generate any code
 # when passing as a function argument.
 # That is, we want different specializations of a function to have
@@ -1644,7 +1644,7 @@ fn _mha_sm90[
                 Int(num_k_iters_0 * pipeline_idx)
             )
 
-            # these copies get commited with the first `K`
+            # these copies get committed with the first `K`
             @parameter
             for q_id in range(num_k_iters_0):
                 cp_async_k_major(q_smem_subi.next_unsafe(q_id)[], q_gmem_iter[])

@@ -21,8 +21,34 @@ from memory import UnsafePointer
 
 from utils import StaticTuple
 
-from .backend import *
-from .infer import *
+from .infer import (
+    # Types
+    cudnnMathType_t,
+    cudnnDeterminism_t,
+    cudnnTensorTransformStruct,
+    cudnnConvolutionFwdAlgo_t,
+    cudnnTensorFormat_t,
+    cudnnStatus_t,
+    cudnnConvolutionBwdDataAlgo_t,
+    cudnnDataType_t,
+    cudnnNanPropagation_t,
+    cudnnOpTensorOp_t,
+    cudnnReduceTensorOp_t,
+    cudnnReduceTensorIndices_t,
+    cudnnIndicesType_t,
+    cudnnConvolutionBwdFilterAlgo_t,
+    cudnnOpTensorStruct,
+    cudnnReduceTensorStruct,
+    cudnnContext,
+    cudnnPoolingStruct,
+    cudnnActivationDescriptor_t,
+    cudnnPoolingMode_t,
+    cudnnLRNMode_t,
+    cudnnDivNormMode_t,
+    cudnnErrQueryMode_t,
+    # Functions needed by downstream code
+    cudnnDestroyFilterDescriptor,
+)
 
 # ===-----------------------------------------------------------------------===#
 # Library Load
@@ -1305,7 +1331,7 @@ fn cudnnGetConvolutionNdForwardOutputDim(
     input_tensor_desc: UnsafePointer[cudnnTensorStruct],
     filter_desc: UnsafePointer[cudnnFilterStruct],
     nb_dims: Int16,
-    tensor_ouput_dim_a: UnsafePointer[NoneType],
+    tensor_output_dim_a: UnsafePointer[NoneType],
 ) -> cudnnStatus_t:
     return _get_dylib_function[
         "cudnnGetConvolutionNdForwardOutputDim",
@@ -1316,7 +1342,7 @@ fn cudnnGetConvolutionNdForwardOutputDim(
             Int16,
             UnsafePointer[NoneType],
         ) -> cudnnStatus_t,
-    ]()(conv_desc, input_tensor_desc, filter_desc, nb_dims, tensor_ouput_dim_a)
+    ]()(conv_desc, input_tensor_desc, filter_desc, nb_dims, tensor_output_dim_a)
 
 
 fn cudnnGetConvolutionForwardAlgorithmMaxCount(

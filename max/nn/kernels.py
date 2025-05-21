@@ -342,7 +342,7 @@ def fused_qkv_ragged_matmul_quantized(
 
     # In the group-wise quantization scheme, every `group_size` quantized weights
     # share the same scale. If `has_zp` is `True`, there is also a group-wise zero
-    # point that need to be substracted from the quantized weights.
+    # point that need to be subtracted from the quantized weights.
     # Since the new extensibility API doesn't currently support `bool` type parameters,
     # we pass `has_zp` as an interger (`has_zp_int`).
     # For GPTQ, `has_zp_int` will always be 0.
@@ -1939,6 +1939,13 @@ def dynamic_scaled_matmul(
         msg = "only channel-wise scaling is supported for b"
         raise ValueError(msg)
 
+    if (a.dtype != b.dtype) or (a_scales.dtype != b_scales.dtype):
+        msg = (
+            f"a and b dtypes {a.dtype}, {b.dtype} must match, "
+            f"as do a and b scales dtypes {a_scales.dtype}, {b_scales.dtype}"
+        )
+        raise TypeError(msg)
+
     result = ops.custom(
         "mo.matmul_dynamic_scaled_fp8",
         values=[a, b, a_scales, b_scales],
@@ -1949,6 +1956,7 @@ def dynamic_scaled_matmul(
                 device=a.device,
             )
         ],
+        device=a.device,
     )[0].tensor
 
     return result

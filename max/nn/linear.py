@@ -26,12 +26,9 @@ from max.dtype import DType
 from max.graph import (
     BufferValue,
     DeviceRef,
-    Graph,
-    TensorType,
     TensorValue,
     TensorValueLike,
     Weight,
-    _ChainType,
     ops,
 )
 from max.graph.quantization import QuantizationConfig, QuantizationEncoding
@@ -383,14 +380,44 @@ class ColumnParallelLinear(Linear):
 
     def __init__(
         self,
-        *args,
+        in_dim: int,
+        out_dim: int,
+        dtype: DType,
         devices: Sequence[DeviceRef],
+        tied_weight: Weight | None = None,
         **kwargs,
     ) -> None:
-        assert len(devices) != 0, "Need devices"
-        new_args = list(args)
-        new_args.append(devices[0])
-        super().__init__(*new_args, **kwargs)
+        """
+        Args:
+            in_dim: The dimensionality of the input space.
+            out_dim: The dimensionality of the output space.
+            dtype: The data type for both weights and bias.
+            devices: The target devices for computation.
+                Weights remain on CPU until sharded and moved to device during
+                computation.
+        """
+        if len(devices) == 0:
+            raise ValueError(
+                "ColumnParallelLinear requires a non-empty devices argument"
+            )
+
+        if tied_weight and (
+            kwargs.get("float8_config") is not None
+            or kwargs.get("has_bias") is not None
+        ):
+            raise ValueError(
+                "float8 and bias are both unsupported by "
+                "ColumnParallelLinear currently"
+            )
+
+        super().__init__(in_dim, out_dim, dtype, devices[0], **kwargs)
+
+        if tied_weight:
+            # Overwrite the weight we just constructed with the tied weight.
+            # In contrast with overriding outside the constructor, this ensures
+            # that the sharding strategy captures the tied weight correctly.
+            self.weight = tied_weight
+            self.set_shared_weight("weight", tied_weight)
 
         self.devices = devices
         self.num_devices = len(self.devices)
@@ -408,9 +435,7 @@ class ColumnParallelLinear(Linear):
         # are not recorded by the nn.Module and do not appear in the state dict.
         self.distributed_linear_layers = []
         for n, device in enumerate(self.devices):
-            arguments = list(args)
-            arguments.append(device)
-            layer = Linear(*arguments, **kwargs)
+            layer = Linear(in_dim, out_dim, dtype, device, **kwargs)
             layer.device = device
             layer.weight = self.weight.shard(n, device)
             if self.bias is not None:
@@ -890,45 +915,6 @@ class MLP(Module):
         assert activation_function in _ACTIVATION_FUNCTIONS.keys()
         self.activation_function = _ACTIVATION_FUNCTIONS[activation_function]
 
-    def build_subgraph(self, name: str, x_type: TensorType) -> Module:
-        raw_state_dict = self.raw_state_dict()
-        weights = [
-            value
-            for _, value in sorted(raw_state_dict.items(), key=lambda x: x[0])
-        ]
-        weight_mlir_values = [w._mlir_value for w in weights]
-
-        graph_inputs = [_ChainType(), x_type] + [w.type for w in weights]
-
-        subgraph = Graph.current._subgraphs.get(name)
-
-        if subgraph is None:
-            with Graph.current.add_subgraph(
-                name, input_types=graph_inputs
-            ) as subgraph:
-                subgraph._current_chain._mlir_value = subgraph.inputs[
-                    0
-                ]._mlir_value
-                x = subgraph.inputs[1]
-                subgraph._mlir_value_map.update(
-                    {
-                        w: subgraph_input._mlir_value
-                        for w, subgraph_input in zip(
-                            weight_mlir_values, subgraph.inputs[2:]
-                        )
-                    }
-                )
-
-                subgraph.output(subgraph._current_chain, self(x))
-
-        class MLPSubgraph(Module):
-            def __call__(self, x: TensorValueLike) -> TensorValue:
-                return ops.call(
-                    subgraph, TensorValue(x), *[w.tensor for w in weights]
-                )[0].tensor
-
-        return MLPSubgraph()
-
     def __call__(self, x: TensorValueLike) -> TensorValue:
         if (
             self.gate_proj.bias is None
@@ -1036,24 +1022,6 @@ class DistributedMLP(MLP):
             self.list_of_mlps.append(layer)
 
         self.allreduce = Allreduce(num_accelerators=len(self.devices))
-
-    def build_subgraph(self, name: str, x_type: list[TensorType]) -> Module:  # type: ignore[override]
-        mlp_subgraphs = []
-        for i, mlp in enumerate(self.list_of_mlps):
-            mlp_subgraphs.append(
-                mlp.build_subgraph(f"{name}_mlp_{i}", x_type[i])
-            )
-
-        outer_self = self
-
-        class DistributedMLPSubgraph(Module):
-            def __call__(
-                self, x: list[TensorValue], signal_buffers: list[BufferValue]
-            ) -> list[TensorValue]:
-                mlp_outs = [mlp(x[i]) for i, mlp in enumerate(mlp_subgraphs)]
-                return outer_self.allreduce(mlp_outs, signal_buffers)
-
-        return DistributedMLPSubgraph()
 
     def __call__(  # type: ignore[override]
         self, x: list[TensorValue], signal_buffers: list[BufferValue]

@@ -15,30 +15,27 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import os
 import signal
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from functools import partial
-from typing import Callable, Generic, Optional, TypeVar
+from typing import Any, Callable, Generic, Optional, TypeVar
 
 import numpy as np
 from max.nn.kv_cache import KVCacheStrategy
 from max.pipelines.core import (
+    AudioGenerationRequest,
+    PipelineAudioTokenizer,
     PipelineTask,
     PipelineTokenizer,
     TokenGeneratorRequest,
 )
-from max.pipelines.lib import PipelineRole
 from max.pipelines.lib.config import PipelineConfig
 from max.profiler import Tracer
 from max.serve.pipelines.stop_detection import StopDetector
-from max.serve.scheduler.queues import (
-    BatchingStrategy,
-    BatchQueueConfig,
-    EngineQueue,
-)
+from max.serve.scheduler import TokenGeneratorSchedulerConfig
+from max.serve.scheduler.queues import EngineQueue
 from max.serve.telemetry.metrics import METRICS
 from max.serve.telemetry.stopwatch import StopWatch, record_ms
 from max.support.human_readable_formatter import to_human_readable_bytes
@@ -60,172 +57,6 @@ class EmbeddingsGeneratorOutput:
     embeddings: np.ndarray
 
 
-@dataclass(frozen=True)
-class TokenGeneratorPipelineConfig:
-    """
-    Example config
-
-    .. code-block:: json
-
-        {
-            "context_encoding": {
-                "strategy": "dynamic",
-                "size": 1,
-                "timeout": 0.1
-            },
-            "token_generation": {
-                "strategy": "continuous",
-                "size": 64,
-                "timeout": 0.0
-            }
-        }
-    """
-
-    token_generation: BatchQueueConfig
-    context_encoding: Optional[BatchQueueConfig] = None
-    pipeline_role: PipelineRole = PipelineRole.PrefillAndDecode
-
-    @property
-    def max_batch_size_tg(self) -> int:
-        return self.token_generation.size
-
-    @property
-    def max_batch_size_ce(self) -> int:
-        if self.context_encoding:
-            return self.context_encoding.size
-
-        return self.token_generation.size
-
-    @property
-    def max_forward_steps_tg(self) -> int:
-        return self.token_generation.max_forward_steps
-
-    @property
-    def max_forward_steps_ce(self) -> int:
-        if self.context_encoding:
-            return self.context_encoding.max_forward_steps
-
-        return self.token_generation.max_forward_steps
-
-    @property
-    def target_tokens_per_batch_tg(self) -> Optional[int]:
-        return self.token_generation.target_sum_seq_len
-
-    @property
-    def target_tokens_per_batch_ce(self) -> Optional[int]:
-        if self.context_encoding:
-            return self.context_encoding.target_sum_seq_len
-
-        return self.token_generation.target_sum_seq_len
-
-    @property
-    def enable_chunked_prefill(self) -> bool:
-        return self.token_generation.enable_chunked_prefill
-
-    @property
-    def enable_in_flight_batching(self) -> bool:
-        return self.token_generation.enable_in_flight_batching
-
-    @property
-    def batch_timeout(self) -> Optional[float]:
-        if self.context_encoding:
-            timeout = self.context_encoding.timeout
-        else:
-            timeout = self.token_generation.timeout
-
-        if math.isclose(timeout, 0.0):
-            return None
-
-        return timeout
-
-    @classmethod
-    def no_cache(
-        cls,
-        batch_size: int,
-        pipeline_role: PipelineRole = PipelineRole.PrefillAndDecode,
-    ) -> TokenGeneratorPipelineConfig:
-        """The no-cache config uses a single queue with no cache.
-        Requests are dequeued into a batch and the entire batch is
-        executed until all requests are completed.
-        """
-        token_generation_config = BatchQueueConfig(
-            strategy=BatchingStrategy.CONTINUOUS,
-            size=batch_size,
-            enable_chunked_prefill=False,
-        )
-        config = cls(
-            token_generation=token_generation_config,
-            pipeline_role=pipeline_role,
-        )
-        return config
-
-    @classmethod
-    def continuous_heterogenous(
-        cls,
-        tg_batch_size: int,
-        ce_batch_size: int,
-        ce_batch_timeout=0.1,
-        max_forward_steps=1,
-        target_ce_batch_tokens=4096,
-        enable_chunked_prefill: bool = True,
-        enable_in_flight_batching: bool = False,
-        pipeline_role: PipelineRole = PipelineRole.PrefillAndDecode,
-    ) -> TokenGeneratorPipelineConfig:
-        """The continuous-hetrogenous config creates 2 queues.
-        Context-encoding is done via dynamic batching.
-        Token-generation is done via continuous batching.
-        """
-        token_generation_config = BatchQueueConfig(
-            strategy=BatchingStrategy.CONTINUOUS,
-            size=tg_batch_size,
-            timeout=0.0,
-            max_forward_steps=max_forward_steps,
-            enable_chunked_prefill=enable_chunked_prefill,
-            enable_in_flight_batching=enable_in_flight_batching,
-        )
-        context_encoding_config = BatchQueueConfig(
-            strategy=BatchingStrategy.DYNAMIC,
-            size=ce_batch_size,
-            timeout=ce_batch_timeout,
-            target_sum_seq_len=target_ce_batch_tokens,
-        )
-        config = cls(
-            context_encoding=context_encoding_config,
-            token_generation=token_generation_config,
-            pipeline_role=pipeline_role,
-        )
-        return config
-
-    @classmethod
-    def paged(
-        cls,
-        tg_batch_size: int,
-        ce_batch_size: int,
-        ce_batch_timeout: float = 0.1,
-        max_forward_steps: int = 1,
-        target_ce_batch_tokens: int = 4096,
-        enable_chunked_prefill: bool = True,
-        enable_in_flight_batching: bool = False,
-        pipeline_role: PipelineRole = PipelineRole.PrefillAndDecode,
-    ) -> TokenGeneratorPipelineConfig:
-        """The paged config creates 2 queues.
-        Context-encoding is done via dynamic batching.
-        Token-generation is done via continuous batching.
-
-        This config is identical to the config returned by continuous_heterogenous.
-        """
-        return cls.continuous_heterogenous(
-            tg_batch_size=tg_batch_size,
-            ce_batch_size=ce_batch_size,
-            ce_batch_timeout=ce_batch_timeout,
-            max_forward_steps=max_forward_steps,
-            target_ce_batch_tokens=target_ce_batch_tokens,
-            enable_chunked_prefill=enable_chunked_prefill,
-            enable_in_flight_batching=enable_in_flight_batching,
-            pipeline_role=pipeline_role,
-        )
-
-
 @dataclass
 class TokenGeneratorStats:
     token_gen_batch_size: int = 0
@@ -236,7 +67,7 @@ TokenGeneratorContext = TypeVar("TokenGeneratorContext")
 
 
 class TokenGeneratorPipeline(Generic[TokenGeneratorContext]):
-    """Base class for LLM pipelines."""
+    """Base class for LLM text generation pipelines."""
 
     def __init__(
         self,
@@ -494,14 +325,14 @@ def batch_config_from_pipeline_config(
     pipeline_config: PipelineConfig,
     pipeline_task: PipelineTask = PipelineTask.TEXT_GENERATION,
     batch_timeout: float = 0.0,
-) -> TokenGeneratorPipelineConfig:
+) -> TokenGeneratorSchedulerConfig:
     assert pipeline_config.max_batch_size is not None
     if pipeline_task == PipelineTask.EMBEDDINGS_GENERATION:
         logger.info(
             "Server configured with no cache and batch size %s",
             pipeline_config.max_batch_size,
         )
-        return TokenGeneratorPipelineConfig.no_cache(
+        return TokenGeneratorSchedulerConfig.no_cache(
             batch_size=pipeline_config.max_batch_size,
             pipeline_role=pipeline_config.pipeline_role,
         )
@@ -511,7 +342,7 @@ def batch_config_from_pipeline_config(
     kv_cache_config = pipeline_config.model_config.kv_cache_config
     cache_strategy = kv_cache_config.cache_strategy
     if cache_strategy == KVCacheStrategy.CONTINUOUS:
-        batch_config = TokenGeneratorPipelineConfig.continuous_heterogenous(
+        batch_config = TokenGeneratorSchedulerConfig.continuous_heterogenous(
             tg_batch_size=pipeline_config.max_batch_size,
             ce_batch_size=min(
                 pipeline_config.max_batch_size,
@@ -525,7 +356,7 @@ def batch_config_from_pipeline_config(
             pipeline_role=pipeline_config.pipeline_role,
         )
     elif cache_strategy == KVCacheStrategy.PAGED:
-        batch_config = TokenGeneratorPipelineConfig.paged(
+        batch_config = TokenGeneratorSchedulerConfig.paged(
             tg_batch_size=pipeline_config.max_batch_size,
             ce_batch_size=min(
                 pipeline_config.max_batch_size,
@@ -565,3 +396,161 @@ def batch_config_from_pipeline_config(
     logger.info(log_str)
 
     return batch_config
+
+
+@dataclass(frozen=True)
+class AudioGeneratorOutput:
+    audio_data: bytes
+    metadata: dict[str, Any]
+
+
+AudioGeneratorContext = TypeVar("AudioGeneratorContext")
+
+
+# TODO: Implement this
+class AudioGeneratorPipeline(Generic[AudioGeneratorContext]):
+    """Base class for LLM audio generation pipelines."""
+
+    def __init__(
+        self,
+        model_name: str,
+        tokenizer: PipelineAudioTokenizer,
+        engine_queue: EngineQueue,
+    ):
+        self.logger = logging.getLogger(self.__class__.__name__)
+        # This logger is too verbose to expose to end users. Disable propagation to the root logger by default.
+        self.logger.propagate = False
+        self.logger.info("%s: Constructed", model_name)
+        self.debug_logging = self.logger.isEnabledFor(logging.DEBUG)
+
+        self.model_name = model_name
+        self.tokenizer = tokenizer
+        self.engine_queue = engine_queue
+        self.stats = TokenGeneratorStats()
+
+        self._background_tasks: set[asyncio.Task] = set()
+
+    async def _collect_audio_metadata(self, response, context):
+        # Collect metadata about generated audio like duration, sample rate etc.
+        audio_metadata = {}
+        if hasattr(response, "sample_rate"):
+            audio_metadata["sample_rate"] = response.sample_rate
+        if hasattr(response, "duration"):
+            audio_metadata["duration"] = response.duration
+        return audio_metadata
+
+    async def next_chunk(
+        self, request: AudioGenerationRequest
+    ) -> AsyncGenerator[AudioGeneratorOutput, None]:
+        """Generates and streams audio for the provided request."""
+        total_sw = StopWatch()
+        self.logger.debug(
+            "%s [%d]: Started: Elapsed: %0.2f ms",
+            request.id,
+            request.index,
+            total_sw.elapsed_ms,
+        )
+
+        try:
+            with record_ms(METRICS.input_time):
+                context = await self.tokenizer.new_context(request)
+
+            with record_ms(METRICS.output_time):
+                async for response in self.engine_queue.stream(
+                    request.id, context
+                ):
+                    audio_metadata = await self._collect_audio_metadata(
+                        response, context
+                    )
+
+                    output = AudioGeneratorOutput(
+                        audio_data=response.audio_data, metadata=audio_metadata
+                    )
+
+                    yield output
+        finally:
+            if self.debug_logging:
+                self.logger.debug(
+                    "%s [%d]: Completed: Elapsed: %0.2f ms",
+                    request.id,
+                    request.index,
+                    total_sw.elapsed_ms,
+                )
+
+    async def generate_full_audio(
+        self, request: AudioGenerationRequest
+    ) -> AudioGeneratorOutput:
+        """Generates complete audio for the provided request."""
+        audio_chunks = []
+        async for chunk in self.next_chunk(request):
+            audio_chunks.append(chunk.audio_data)
+
+        # Combine audio chunks and metadata
+        combined_audio = b"".join(audio_chunks)
+        return AudioGeneratorOutput(
+            audio_data=combined_audio,
+            metadata=chunk.metadata,  # Use metadata from last chunk
+        )
+
+    async def __aenter__(self):
+        self.logger.info("%s: Starting workers:", self.model_name)
+        assert not self._background_tasks
+        if not self.engine_queue.is_worker_healthy():
+            raise RuntimeError("Worker process not healthy not starting worker")
+
+        # Add global fanout worker.
+        self.create_background_task(self.engine_queue.response_worker)
+
+        if not self.engine_queue.is_worker_healthy():
+            raise RuntimeError(
+                "Worker process not healthy after running background task"
+            )
+
+        self.logger.info(
+            "%s: Started workers: %d tasks",
+            self.model_name,
+            len(self._background_tasks),
+        )
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback):
+        self.logger.info("%s: Stopping workers", self.model_name)
+        for task in self._background_tasks:
+            task.cancel()
+        # await asyncio.sleep(0.1)
+        # TODO: also cancel any `queue.get()` tasks
+
+    def create_background_task(self, fn: Callable):
+        task_name = fn.__name__
+        task = asyncio.create_task(fn())
+        task.add_done_callback(partial(self.log_task_done, task_name=task_name))
+        self._background_tasks.add(task)
+        self.logger.info(
+            "%s: Task Added: %s, %s, %d total",
+            self.model_name,
+            task_name,
+            type(fn),
+            len(self._background_tasks),
+        )
+
+    def log_task_done(self, task: asyncio.Task, task_name: str):
+        # TODO - should gracefully shut down here.
+        self._background_tasks.remove(task)
+        self.logger.info(
+            "%s: Task completed: %s, %d remaining",
+            self.model_name,
+            task_name,
+            len(self._background_tasks),
+        )
+        # Cancel remaining tasks.
+        for t in self._background_tasks:
+            if not t.done():
+                t.cancel("Terminating task")
+        if task.cancelled():
+            return
+        e = task.exception()
+        if e:
+            self.logger.error("Task completed with error. Stopping", exc_info=e)
+            # Shut server down.
+            # Sending SIGTERM is ugly, but simplifies the internal plumbing.
+            os.kill(os.getpid(), signal.SIGTERM)

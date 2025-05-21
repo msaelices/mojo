@@ -25,6 +25,7 @@ from python._cpython import (
     PyMethodDef,
     PyObject,
     PyObjectPtr,
+    PyTypeObject,
     PyType_Slot,
     PyType_Spec,
     destructor,
@@ -63,6 +64,13 @@ alias Typed_initproc = fn (
     PyObjectPtr,
 ) -> c_int
 
+# Must be ABI compatible with `newfunc`
+alias Typed_newfunc = fn (
+    UnsafePointer[PyTypeObject],
+    TypedPythonObject["Tuple"],
+    PyObjectPtr,
+) -> PyObjectPtr
+
 
 struct PyMojoObject[T: AnyType]:
     """Storage backing a PyObject* wrapping a Mojo value."""
@@ -71,84 +79,13 @@ struct PyMojoObject[T: AnyType]:
     var mojo_value: T
 
 
-fn python_type_object[
-    T: Defaultable & Representable
+fn default_tp_new_wrapper[
+    T: Defaultable
 ](
-    type_name: StaticString,
-    owned methods: List[PyMethodDef] = List[PyMethodDef](),
-) raises -> TypedPythonObject["Type"]:
-    """Construct a Python 'type' describing PyMojoObject[T].
-
-    Parameters:
-        T: The mojo type to wrap.
-
-    Args:
-        type_name: The name of the Mojo type.
-        methods: The methods to add to the type.
-    """
-
-    var cpython = Python().cpython()
-
-    var slots = List[PyType_Slot](
-        # All wrapped Mojo types are allocated generically.
-        PyType_Slot.tp_new(
-            cpython.lib.get_function[newfunc]("PyType_GenericNew")
-        ),
-        PyType_Slot.tp_init(empty_tp_init_wrapper[T]),
-        PyType_Slot.tp_dealloc(tp_dealloc_wrapper[T]),
-        PyType_Slot.tp_repr(tp_repr_wrapper[T]),
-    )
-
-    if methods:
-        # FIXME: Avoid leaking the methods data pointer in this way.
-        slots.append(PyType_Slot.tp_methods(methods.steal_data()))
-
-    # Zeroed item terminator
-    slots.append(PyType_Slot.null())
-
-    var type_spec = PyType_Spec(
-        # FIXME(MOCO-1306): This should be `T.__name__`.
-        type_name.unsafe_ptr().bitcast[sys.ffi.c_char](),
-        sizeof[PyMojoObject[T]](),
-        0,
-        Py_TPFLAGS_DEFAULT,
-        # Note: This pointer is only "read-only" by PyType_FromSpec.
-        slots.unsafe_ptr(),
-    )
-
-    # Construct a Python 'type' object from our type spec.
-    var type_obj = cpython.PyType_FromSpec(UnsafePointer(to=type_spec))
-
-    if type_obj.is_null():
-        raise cpython.get_error()
-
-    return TypedPythonObject["Type"](
-        unsafe_unchecked_from=PythonObject(from_owned_ptr=type_obj)
-    )
-
-
-# Impedance match between:
-#
-#   Mojo:   fn(UnsafePointer[T]) -> None
-#   Python: fn(PyObjectPtr, PyObjectPtr, PyObjectPtr)
-#
-# The latter is the C function signature that the CPython API expects a
-# PyObject initializer function to have. The former is an unsafe form of the
-# `fn(mut self)` signature that Mojo types with default constructors provide.
-#
-# To support CPython calling a Mojo types default constructor, we need to
-# provide a wrapper function (around the Mojo constructor) that has the
-# signature the C API expects.
-#
-# This function creates that wrapper function, and returns a pointer pointer to
-# it.
-fn empty_tp_init_wrapper[
-    T: Defaultable & Representable
-](
-    py_self: PyObjectPtr,
+    subtype: UnsafePointer[PyTypeObject],
     args: TypedPythonObject["Tuple"],
     keyword_args: PyObjectPtr,
-) -> c_int:
+) -> PyObjectPtr:
     """Python-compatible wrapper around a Mojo initializer function.
 
     Parameters:
@@ -156,6 +93,15 @@ fn empty_tp_init_wrapper[
     """
 
     var cpython = Python().cpython()
+
+    # Allocates and zero-initializes the new object.
+    # For some objects, zeroed values are valid. But that isn't guaranteed
+    # for any given Mojo object, so we further call `T`'s default initializer.
+    var py_self = cpython.PyType_GenericAlloc(subtype, 0)
+
+    # If we failed to allocate, return NULL.
+    if not py_self.unsized_obj_ptr:
+        return py_self
 
     try:
         if len(args) != 0 or keyword_args != PyObjectPtr():
@@ -167,16 +113,19 @@ fn empty_tp_init_wrapper[
 
         # Call the user-provided initialization function on uninit memory.
         __get_address_as_uninit_lvalue(obj_ptr.address) = T()
-        return 0
+        return py_self
 
     except e:
+        # Free the object memory we just allocated but failed to initialize.
+        cpython.PyObject_Free(py_self.unsized_obj_ptr.bitcast[NoneType]())
+
         # TODO(MSTDL-933): Add custom 'MojoError' type, and raise it here.
         var error_type = cpython.get_error_global("PyExc_ValueError")
         cpython.PyErr_SetString(
             error_type,
             e.unsafe_cstr_ptr(),
         )
-        return -1
+        return PyObjectPtr()
 
 
 fn tp_dealloc_wrapper[T: Defaultable & Representable](py_self: PyObjectPtr):
@@ -187,6 +136,10 @@ fn tp_dealloc_wrapper[T: Defaultable & Representable](py_self: PyObjectPtr):
     #   evaluate arbitrary code?
     # Destroy this `Person` instance.
     self_ptr.destroy_pointee()
+
+    var cpython = Python().cpython()
+
+    cpython.PyObject_Free(py_self.unsized_obj_ptr.bitcast[NoneType]())
 
 
 fn tp_repr_wrapper[
@@ -256,7 +209,7 @@ struct PythonModuleBuilder:
         Returns:
             A reference to a type builder registered in the module builder.
         """
-        self.type_builders.append(PythonTypeBuilder.__init__[T](type_name))
+        self.type_builders.append(PythonTypeBuilder.bind[T](type_name))
         return self.type_builders[-1]
 
     fn def_py_c_function(
@@ -800,44 +753,110 @@ struct PythonModuleBuilder:
         return self.module
 
 
-@value
-struct PythonTypeBuilder:
-    """A builder for a Python type binding.
+struct PythonTypeBuilder(Movable, Copyable):
+    """A builder for a Python 'type' binding.
+
+    This is typically used to build a type description of a `PyMojoObject[T]`.
 
     This builder is used to declare method bindings for a Python type, and then
     create the type binding.
     """
 
     var type_name: StaticString
+    var basicsize: Int
+    var _slots: List[PyType_Slot]
     var methods: List[PyMethodDef]
-    var get_type_obj: fn (
-        StaticString, List[PyMethodDef]
-    ) raises -> TypedPythonObject["Type"]
 
     # ===-------------------------------------------------------------------===#
     # Life cycle methods
     # ===-------------------------------------------------------------------===#
 
-    fn __init__[
-        T: Defaultable & Representable
-    ](out self, type_name: StaticString):
+    fn __init__(out self, type_name: StaticString, *, basicsize: Int):
         """Construct a new builder for a Python type binding.
 
-        Parameters:
-            T: The mojo type to bind in the module.
-
         Args:
-            type_name: The name the type will be exposed as in the module.
+            type_name: The name the type will be exposed as in the Python module.
+            basicsize: The required allocation size to hold an instance of this
+              type as a Python object.
         """
+
         self.type_name = type_name
+        self.basicsize = basicsize
+        self._slots = List[PyType_Slot]()
         self.methods = List[PyMethodDef]()
 
-        fn get_type_obj(
-            type_name: StaticString, methods: List[PyMethodDef]
-        ) raises -> TypedPythonObject["Type"]:
-            return python_type_object[T](type_name, methods)
+    @staticmethod
+    fn bind[
+        T: Defaultable & Representable
+    ](type_name: StaticString) -> PythonTypeBuilder:
+        """Construct a new builder for a Python type that binds a Mojo type.
 
-        self.get_type_obj = get_type_obj
+        Parameters:
+            T: The mojo type to bind.
+
+        Args:
+            type_name: The name the type will be exposed as in the Python module.
+
+        Returns:
+            A new type builder instance.
+        """
+        var b = PythonTypeBuilder(
+            type_name,
+            basicsize=sizeof[PyMojoObject[T]](),
+        )
+        b._slots = List[PyType_Slot](
+            # All wrapped Mojo types are allocated generically.
+            PyType_Slot.tp_new(default_tp_new_wrapper[T]),
+            PyType_Slot.tp_dealloc(tp_dealloc_wrapper[T]),
+            PyType_Slot.tp_repr(tp_repr_wrapper[T]),
+        )
+        b.methods = List[PyMethodDef]()
+
+        return b^
+
+    fn finalize(mut self) raises -> TypedPythonObject["Type"]:
+        var cpython = Python().cpython()
+
+        if self.methods:
+            self.methods.append(PyMethodDef())  # Zeroed item as terminator
+            # FIXME: Avoid leaking the methods data pointer in this way.
+            self._slots.append(
+                PyType_Slot.tp_methods(self.methods.steal_data())
+            )
+
+        # Zeroed item terminator
+        self._slots.append(PyType_Slot.null())
+
+        var type_spec = PyType_Spec(
+            # FIXME(MOCO-1306): This should be `T.__name__`.
+            self.type_name.unsafe_ptr().bitcast[sys.ffi.c_char](),
+            self.basicsize,
+            0,
+            Py_TPFLAGS_DEFAULT,
+            # Note: This pointer is only "read-only" by PyType_FromSpec.
+            self._slots.unsafe_ptr(),
+        )
+
+        # Construct a Python 'type' object from our type spec.
+        var type_obj = cpython.PyType_FromSpec(UnsafePointer(to=type_spec))
+
+        if type_obj.is_null():
+            raise cpython.get_error()
+
+        return TypedPythonObject["Type"](
+            unsafe_unchecked_from=PythonObject(from_owned_ptr=type_obj)
+        )
+
+    fn finalize(mut self, module: PythonModule) raises:
+        """Finalize the builder, creating the type binding with the registered
+        methods.
+
+        Raises:
+            If we fail to add the type to the module.
+        """
+        var type_obj = self.finalize()
+        Python.add_object(module, self.type_name, type_obj)
+        self.methods.clear()
 
     # ===-------------------------------------------------------------------===#
     # Methods
@@ -1306,18 +1325,6 @@ struct PythonTypeBuilder:
             method(py_self, a0, a1)
 
         return self.def_method[wrapper](method_name, docstring)
-
-    fn finalize(mut self, module: PythonModule) raises:
-        """Finalize the builder, creating the type binding with the registered
-        methods.
-
-        Raises:
-            If we fail to add the type to the module.
-        """
-        self.methods.append(PyMethodDef())  # Zeroed item as terminator
-        var type_obj = self.get_type_obj(self.type_name, self.methods)
-        Python.add_object(module, self.type_name, type_obj)
-        self.methods.clear()
 
 
 # ===-----------------------------------------------------------------------===#
