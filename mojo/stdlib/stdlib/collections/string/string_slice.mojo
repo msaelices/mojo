@@ -2211,8 +2211,8 @@ struct StringSlice[mut: Bool, //, origin: Origin[mut]](
             The joined string.
 
         Notes:
-            - Defaults to writing to the stack if total bytes of `elems` is
-            inline, otherwise will process it by chunks.
+            - Defaults to writing directly to the string if the bytes
+            fit in an inline `String`, otherwise will process it by chunks.
             - The `buffer_size` defaults to 4096 bytes to match the default
             page size on arm64 and x86-64, but you can increase this if you're
             joining a very large `List` of elements to write into the stack
