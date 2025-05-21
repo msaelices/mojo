@@ -380,14 +380,44 @@ class ColumnParallelLinear(Linear):
 
     def __init__(
         self,
-        *args,
+        in_dim: int,
+        out_dim: int,
+        dtype: DType,
         devices: Sequence[DeviceRef],
+        tied_weight: Weight | None = None,
         **kwargs,
     ) -> None:
-        assert len(devices) != 0, "Need devices"
-        new_args = list(args)
-        new_args.append(devices[0])
-        super().__init__(*new_args, **kwargs)
+        """
+        Args:
+            in_dim: The dimensionality of the input space.
+            out_dim: The dimensionality of the output space.
+            dtype: The data type for both weights and bias.
+            devices: The target devices for computation.
+                Weights remain on CPU until sharded and moved to device during
+                computation.
+        """
+        if len(devices) == 0:
+            raise ValueError(
+                "ColumnParallelLinear requires a non-empty devices argument"
+            )
+
+        if tied_weight and (
+            kwargs.get("float8_config") is not None
+            or kwargs.get("has_bias") is not None
+        ):
+            raise ValueError(
+                "float8 and bias are both unsupported by "
+                "ColumnParallelLinear currently"
+            )
+
+        super().__init__(in_dim, out_dim, dtype, devices[0], **kwargs)
+
+        if tied_weight:
+            # Overwrite the weight we just constructed with the tied weight.
+            # In contrast with overriding outside the constructor, this ensures
+            # that the sharding strategy captures the tied weight correctly.
+            self.weight = tied_weight
+            self.set_shared_weight("weight", tied_weight)
 
         self.devices = devices
         self.num_devices = len(self.devices)
@@ -405,9 +435,7 @@ class ColumnParallelLinear(Linear):
         # are not recorded by the nn.Module and do not appear in the state dict.
         self.distributed_linear_layers = []
         for n, device in enumerate(self.devices):
-            arguments = list(args)
-            arguments.append(device)
-            layer = Linear(*arguments, **kwargs)
+            layer = Linear(in_dim, out_dim, dtype, device, **kwargs)
             layer.device = device
             layer.weight = self.weight.shard(n, device)
             if self.bias is not None:
