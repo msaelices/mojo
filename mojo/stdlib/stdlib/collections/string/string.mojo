@@ -99,6 +99,7 @@ from sys.intrinsics import _type_is_eq
 from bit import count_leading_zeros
 from memory import Span, UnsafePointer, memcpy, memset
 from python import PythonConvertible, PythonObject, ConvertibleFromPython
+from builtin.identifiable import TypeIdentifiable
 
 from utils import IndexList, Variant, Writable, Writer, write_args
 from utils.write import (
@@ -297,6 +298,7 @@ struct String(
     _HashableWithHasher,
     PathLike,
     _CurlyEntryFormattable,
+    TypeIdentifiable,
     PythonConvertible,
     ConvertibleFromPython,
 ):
@@ -326,6 +328,9 @@ struct String(
     alias OCT_DIGITS = "01234567"
     alias PUNCTUATION = """!"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"""
     alias PRINTABLE = Self.DIGITS + Self.ASCII_LETTERS + Self.PUNCTUATION + " \t\n\r\v\f"
+
+    # TODO(MSTDL-1580): Replace with compiler-provided type ID.
+    alias TYPE_ID = "stdlib.String"
 
     # ===------------------------------------------------------------------=== #
     # Life cycle methods
