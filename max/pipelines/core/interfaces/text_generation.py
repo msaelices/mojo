@@ -22,10 +22,11 @@ from typing import (
     Optional,
     Protocol,
     TypedDict,
-    TypeVar,
     Union,
     runtime_checkable,
 )
+
+from typing_extensions import TypeVar
 
 from .response import TextGenerationResponse
 
@@ -81,6 +82,41 @@ class TokenGeneratorRequestMessage(TypedDict):
           ]
         }
     """
+
+
+@dataclass(frozen=True)
+class SamplingParams:
+    top_k: int = 1
+    """Limits the sampling to the K most probable tokens. This defaults to 1, which enables greedy sampling."""
+
+    temperature: float = 1
+    """Controls the randomness of the model's output; higher values produce more diverse responses."""
+
+    frequency_penalty: float = 0.0
+    """The frequency penalty to apply to the model's output. A positive value will penalize new tokens
+    based on their frequency in the generated text: tokens will receive a penalty proportional to the
+    count of appearances."""
+
+    presence_penalty: float = 0.0
+    """The presence penalty to apply to the model's output. A positive value will penalize new tokens
+    that have already appeared in the generated text at least once by applying a constant penalty."""
+
+    repetition_penalty: float = 1.0
+    """The repetition penalty to apply to the model's output. Values > 1 will penalize new tokens
+    that have already appeared in the generated text at least once by dividing the logits by the
+    repetition penalty."""
+
+    enable_structured_output: bool = False
+    """Enable structured generation/guided decoding for the server. This allows the user to pass a json
+    schema in the response_format field, which the LLM will adhere to."""
+
+    enable_variable_logits: bool = False
+    """Enable the sampling graph to accept a ragged tensor of different sequences as inputs, along with
+    their associated logit_offsets. This is needed to produce additional logits for echo and speculative
+    decoding purposes."""
+
+    do_penalties: bool = False
+    """Whether to apply frequency and presence penalties to the model's output."""
 
 
 @dataclass(frozen=True)
@@ -175,6 +211,11 @@ class TokenGeneratorRequest:
     Optional dictionary of options to pass when applying the chat template.
     """
 
+    sampling_params: SamplingParams = SamplingParams()
+    """
+    Token sampling configuration parameters for the request.
+    """
+
     def __str__(self) -> str:
         txt = f"Id: {self.id}"
         if self.max_new_tokens:
@@ -186,11 +227,15 @@ TokenGeneratorContext = TypeVar("TokenGeneratorContext")
 TokenGeneratorBatchKey = TypeVar("TokenGeneratorBatchKey")
 
 TokenizerEncoded = TypeVar("TokenizerEncoded")
+PipelineTokenizerRequest = TypeVar(
+    "PipelineTokenizerRequest", contravariant=True
+)
 
 
 @runtime_checkable
 class PipelineTokenizer(
-    Generic[TokenGeneratorContext, TokenizerEncoded], Protocol
+    Generic[TokenGeneratorContext, TokenizerEncoded, PipelineTokenizerRequest],
+    Protocol,
 ):
     """Interface for LLM tokenizers."""
 
@@ -223,18 +268,18 @@ class PipelineTokenizer(
             { "type": "image" }
 
         Their content is provided as byte arrays through the top-level property
-        on the request object, i.e., :obj:`TokenGeneratorRequest.images`.
+        on the request object, i.e., :obj:`PipelineTokenizerRequest.images`.
         """
         ...
 
     async def new_context(
-        self, request: TokenGeneratorRequest
+        self, request: PipelineTokenizerRequest
     ) -> TokenGeneratorContext:
         """Creates a new context from a request object. This is sent to the
         worker process once and then cached locally.
 
         Args:
-            request (TokenGeneratorRequest): Incoming request.
+            request (PipelineTokenizerRequest): Incoming request.
 
         Returns:
             TokenGeneratorContext: Initialized context.

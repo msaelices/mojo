@@ -99,7 +99,6 @@ from sys.intrinsics import _type_is_eq
 from bit import count_leading_zeros
 from memory import Span, UnsafePointer, memcpy, memset
 from python import PythonConvertible, PythonObject, ConvertibleFromPython
-from builtin.identifiable import TypeIdentifiable
 
 from utils import IndexList, Variant, Writable, Writer, write_args
 from utils.write import (
@@ -298,7 +297,6 @@ struct String(
     _HashableWithHasher,
     PathLike,
     _CurlyEntryFormattable,
-    TypeIdentifiable,
     PythonConvertible,
     ConvertibleFromPython,
 ):
@@ -328,9 +326,6 @@ struct String(
     alias OCT_DIGITS = "01234567"
     alias PUNCTUATION = """!"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"""
     alias PRINTABLE = Self.DIGITS + Self.ASCII_LETTERS + Self.PUNCTUATION + " \t\n\r\v\f"
-
-    # TODO(MSTDL-1580): Replace with compiler-provided type ID.
-    alias TYPE_ID = "stdlib.String"
 
     # ===------------------------------------------------------------------=== #
     # Life cycle methods
@@ -648,10 +643,8 @@ struct String(
         """
 
         @parameter
-        fn write_arg[T: Writable](arg: T):
-            arg.write_to(self)
-
-        args.each[write_arg]()
+        for i in range(args.__len__()):
+            args[i].write_to(self)
 
     @staticmethod
     @no_inline
@@ -690,7 +683,6 @@ struct String(
         ```mojo
         var msg = String("my message", 42, 42.2, True)
         ```
-        .
         """
         var string = String()
         write_buffered(string, args, sep=sep, end=end)
@@ -1009,7 +1001,7 @@ struct String(
         """
         return self
 
-    fn to_python_object(self) -> PythonObject:
+    fn to_python_object(owned self) -> PythonObject:
         """Convert this value to a PythonObject.
 
         Returns:

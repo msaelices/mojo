@@ -23,14 +23,23 @@ from functools import partial
 import uvloop
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
-from max.pipelines.core import PipelinesFactory, PipelineTokenizer
+from max.pipelines.core import (
+    PipelineAudioTokenizer,
+    PipelinesFactory,
+    PipelineTask,
+    PipelineTokenizer,
+)
 from max.serve.config import APIType, MetricRecordingMethod, Settings
+from max.serve.kvcache_agent.dispatcher_factory import DispatcherFactory
 from max.serve.pipelines.echo_gen import (
     EchoPipelineTokenizer,
     EchoTokenGenerator,
 )
 from max.serve.pipelines.kvcache_worker import start_kvcache_agent
-from max.serve.pipelines.llm import TokenGeneratorPipeline
+from max.serve.pipelines.llm import (
+    AudioGeneratorPipeline,
+    TokenGeneratorPipeline,
+)
 from max.serve.pipelines.model_worker import start_model_worker
 from max.serve.pipelines.telemetry_worker import start_telemetry_consumer
 from max.serve.recordreplay.jsonl import JSONLFileRecorder
@@ -62,6 +71,7 @@ class ServingTokenGeneratorSettings:
     model_factory: PipelinesFactory
     pipeline_config: TokenGeneratorSchedulerConfig
     tokenizer: PipelineTokenizer
+    pipeline_task: PipelineTask = PipelineTask.TEXT_GENERATION
 
 
 @asynccontextmanager
@@ -84,12 +94,15 @@ async def lifespan(
     logger.info("Starting server...")
     try:
         async with AsyncExitStack() as exit_stack:
+            # create dispatcher factory
+            dispatcher_factory = DispatcherFactory(settings.dispatcher_config)
+
             if settings.experimental_enable_kvcache_agent:
-                kvcache_agent_queue = await exit_stack.enter_async_context(
-                    start_kvcache_agent(settings)
+                logger.info("Starting KV Cache Agent...")
+                await exit_stack.enter_async_context(
+                    start_kvcache_agent(settings, dispatcher_factory)
                 )
-            else:
-                kvcache_agent_queue = None
+                logger.info("KV Cache Agent started.")
 
             # start telemetry worker and configure Metrics to use it
             metric_client = await exit_stack.enter_async_context(
@@ -104,16 +117,37 @@ async def lifespan(
                     serving_settings.pipeline_config,
                     settings,
                     metric_client,
-                    kvcache_agent_queue,
+                    dispatcher_factory,
                 )
             )
 
             METRICS.pipeline_load(serving_settings.model_name)
-            pipeline: TokenGeneratorPipeline = TokenGeneratorPipeline(
-                model_name=serving_settings.model_name,
-                tokenizer=serving_settings.tokenizer,
-                engine_queue=engine_queue,
-            )
+            pipeline: TokenGeneratorPipeline | AudioGeneratorPipeline
+            if serving_settings.pipeline_task in (
+                PipelineTask.TEXT_GENERATION,
+                PipelineTask.EMBEDDINGS_GENERATION,
+            ):
+                pipeline = TokenGeneratorPipeline(
+                    model_name=serving_settings.model_name,
+                    tokenizer=serving_settings.tokenizer,
+                    engine_queue=engine_queue,
+                )
+            elif (
+                serving_settings.pipeline_task == PipelineTask.AUDIO_GENERATION
+            ):
+                assert isinstance(
+                    serving_settings.tokenizer, PipelineAudioTokenizer
+                )
+                pipeline = AudioGeneratorPipeline(
+                    model_name=serving_settings.model_name,
+                    tokenizer=serving_settings.tokenizer,
+                    engine_queue=engine_queue,
+                )
+            else:
+                raise ValueError(
+                    f"Unsupported pipeline task: {serving_settings.pipeline_task}"
+                )
+
             app.state.pipeline = pipeline
             await exit_stack.enter_async_context(pipeline)
             logger.info(

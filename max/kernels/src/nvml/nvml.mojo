@@ -41,8 +41,8 @@ fn _get_nvml_library_paths() raises -> List[Path]:
     )
     paths.append(common_path)
     for fd in CUDA_NVML_LIBRARY_DIR.listdir():
-        var path = CUDA_NVML_LIBRARY_DIR / fd[]
-        if CUDA_NVML_LIBRARY_BASE_NAME in String(fd[]):
+        var path = CUDA_NVML_LIBRARY_DIR / fd
+        if CUDA_NVML_LIBRARY_BASE_NAME in String(fd):
             paths.append(path)
     return paths
 
@@ -449,8 +449,7 @@ struct Device(Writable):
         if result != Result.INSUFFICIENT_SIZE:
             _check_error(result)
 
-        var clocks = List[UInt32]()
-        clocks.resize(Int(num_clocks), value=0)
+        var clocks = List[UInt32](length=UInt(num_clocks), fill=0)
 
         _check_error(
             _get_dylib_function[
@@ -458,12 +457,12 @@ struct Device(Writable):
                 fn (
                     _DeviceImpl, UnsafePointer[UInt32], UnsafePointer[UInt32]
                 ) -> Result,
-            ]()(self.device, UnsafePointer(to=num_clocks), clocks.data)
+            ]()(self.device, UnsafePointer(to=num_clocks), clocks.unsafe_ptr())
         )
 
         var res = List[Int, hint_trivial_type=True](capacity=len(clocks))
         for clock in clocks:
-            res.append(Int(clock[]))
+            res.append(Int(clock))
 
         return res
 
@@ -493,8 +492,7 @@ struct Device(Writable):
         if result != Result.INSUFFICIENT_SIZE:
             _check_error(result)
 
-        var clocks = List[UInt32]()
-        clocks.resize(Int(num_clocks), value=0)
+        var clocks = List[UInt32](length=UInt(num_clocks), fill=0)
 
         _check_error(
             _get_dylib_function[
@@ -509,13 +507,13 @@ struct Device(Writable):
                 self.device,
                 UInt32(memory_clock_mhz),
                 UnsafePointer(to=num_clocks),
-                clocks.data,
+                clocks.unsafe_ptr(),
             )
         )
 
         var res = List[Int, hint_trivial_type=True](capacity=len(clocks))
         for clock in clocks:
-            res.append(Int(clock[]))
+            res.append(Int(clock))
 
         return res
 

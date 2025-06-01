@@ -25,7 +25,7 @@ from memory import UnsafePointer
 from nn.mha import flash_attention, mha_gpu_naive
 from nn.mha_mask import CausalMask, MaterializedMask
 from nn.mha_score_mod import IdentityScoreMod
-from nn.mha_utils import MHAConfig
+from nn.mha_utils import MHAConfig, FlashAttentionAlgorithm
 from testing import assert_almost_equal
 
 from utils.index import Index
@@ -216,7 +216,15 @@ fn test[
         Index(batch_size, seq_len, num_heads, depth),
     )
 
-    flash_attention(
+    alias config_baseline = MHAConfig(
+        qkv_type,
+        num_heads,
+        depth,
+        BK=OptionalReg[UInt](128 // sizeof[qkv_type]()),
+        num_pipeline_stages=2,
+        algorithm=FlashAttentionAlgorithm(2),
+    )
+    flash_attention[config=config_baseline](
         output_device_ref,
         q_device,
         k_device,
@@ -370,6 +378,14 @@ def main():
             group=4,
         ](1000, 2000, ctx)
 
+        test[
+            DType.bfloat16,
+            DType.bfloat16,
+            64,
+            32,
+            group=4,
+        ](201, 600, ctx)
+
         # BF16 token gen
 
         test[
@@ -454,6 +470,14 @@ def main():
             32,
             group=4,
         ](1, 5000, ctx)
+
+        test[
+            DType.bfloat16,
+            DType.bfloat16,
+            64,
+            32,
+            group=4,
+        ](1, 600, ctx)
 
         @parameter
         if ctx.device_info is A100 or ctx.device_info is H100:

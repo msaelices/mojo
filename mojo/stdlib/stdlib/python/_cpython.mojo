@@ -36,13 +36,10 @@ from sys.ffi import (
 )
 
 from memory import UnsafePointer
-from python._bindings import (
-    PyMojoObject,
+from python.bindings import (
     Typed_initproc,
     Typed_newfunc,
-    get_py_type_object,
 )
-from builtin.identifiable import TypeIdentifiable
 
 # ===-----------------------------------------------------------------------===#
 # Raw Bindings
@@ -198,37 +195,6 @@ struct PyObjectPtr(Copyable, Movable):
     # ===-------------------------------------------------------------------===#
     # Methods
     # ===-------------------------------------------------------------------===#
-
-    fn try_cast_to_mojo_value[
-        T: TypeIdentifiable,
-    ](owned self) -> Optional[UnsafePointer[T]]:
-        var cpython = Python().cpython()
-        var type = PyObjectPtr(cpython.Py_TYPE(self).bitcast[PyObject]())
-
-        var expected_type_obj: TypedPythonObject["Type"]
-
-        try:
-            expected_type_obj = get_py_type_object[T]()
-        except e:
-            # TODO: Return None here instead? This is defensive for now.
-            return abort[Optional[UnsafePointer[T]]](String(e))
-
-        if type == expected_type_obj.unsafe_as_py_object_ptr():
-            return self.unchecked_cast_to_mojo_value[T]()
-        else:
-            return None
-
-    fn unchecked_cast_to_mojo_object[
-        T: AnyType
-    ](owned self) -> UnsafePointer[PyMojoObject[T]]:
-        """Assume that this Python object contains a wrapped Mojo value."""
-        return self.unsized_obj_ptr.bitcast[PyMojoObject[T]]()
-
-    fn unchecked_cast_to_mojo_value[T: AnyType](owned self) -> UnsafePointer[T]:
-        var mojo_obj_ptr = self.unchecked_cast_to_mojo_object[T]()
-
-        # TODO(MSTDL-950): Should use something like `addr_of!`
-        return UnsafePointer[T](to=mojo_obj_ptr[].mojo_value)
 
     fn is_null(self) -> Bool:
         """Check if the pointer is null.
@@ -837,20 +803,28 @@ struct CPython(Copyable, Movable):
             print("PYTHONEXECUTABLE:", getenv("PYTHONEXECUTABLE"))
             print("libpython selected:", python_lib)
 
+        # Note:
+        #   MOJO_PYTHON_LIBRARY can be "" when the current Mojo program
+        #   is a dynamic library being loaded as a Python extension module,
+        #   and we need to find CPython symbols that are statically linked
+        #   into the `python` main executable. On those paltforms where
+        #   `python` executable can be statically linked (Linux), it's
+        #   important that we don't load a second copy of CPython symbols
+        #   into the process by loading the `libpython` dynamic library.
         try:
-            # Note:
-            #   MOJO_PYTHON_LIBRARY can be "" when the current Mojo program
-            #   is a dynamic library being loaded as a Python extension module,
-            #   and we need to find CPython symbols that are statically linked
-            #   into the `python` main executable. On those paltforms where
-            #   `python` executable can be statically linked (Linux), it's
-            #   important that we don't load a second copy of CPython symbols
-            #   into the process by loading the `libpython` dynamic library.
-            self.lib = DLHandle(python_lib) if python_lib != "" else DLHandle()
+            # Try to load the library from the current process.
+            self.lib = DLHandle()
+            if not self.lib.check_symbol("Py_Initialize"):
+                try:
+                    # If the library is not present in the current process, try to load it from the environment variable.
+                    self.lib = DLHandle(python_lib)
+                except e:
+                    raise e
         except e:
             self.lib = abort[DLHandle](
                 String("Failed to load libpython from", python_lib, ":\n", e)
             )
+
         self.total_ref_count = UnsafePointer[Int].alloc(1)
         self.logging_enabled = logging_enabled
         if not self.init_error:
@@ -975,10 +949,8 @@ struct CPython(Copyable, Movable):
         #   Once Mojo argument splatting is supported, this should just
         #   be: `print(*args)`
         @parameter
-        fn print_arg[T: Writable](arg: T):
-            print(arg, sep="", end="", flush=False)
-
-        args.each[print_arg]()
+        for i in range(args.__len__()):
+            print(args[i], sep="", end="", flush=False)
 
         print(flush=True)
 
@@ -1891,6 +1863,12 @@ struct CPython(Copyable, Movable):
     # ===-------------------------------------------------------------------===#
     # Floating-Point Objects
     # ===-------------------------------------------------------------------===#
+
+    fn PyNumber_Float(self, obj: PyObjectPtr) -> PyObjectPtr:
+        """[Reference](
+        https://docs.python.org/3/c-api/number.html#c.PyNumber_Float).
+        """
+        return self.lib.call["PyNumber_Float", PyObjectPtr](obj)
 
     fn PyFloat_FromDouble(self, value: Float64) -> PyObjectPtr:
         """[Reference](

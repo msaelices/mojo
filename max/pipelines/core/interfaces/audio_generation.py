@@ -13,11 +13,24 @@
 
 """Interfaces for text generation pipeline behaviors."""
 
+from __future__ import annotations
+
 import enum
 from dataclasses import dataclass
-from typing import Generic, Protocol, TypeVar, runtime_checkable
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Generic,
+    Protocol,
+    TypeVar,
+    runtime_checkable,
+)
 
-from .response import TextGenerationStatus
+if TYPE_CHECKING:
+    import torch
+
+from .response import AudioGenerationResponse
+from .text_generation import SamplingParams
 
 
 class AudioFormat(enum.Enum):
@@ -29,45 +42,46 @@ class AudioFormat(enum.Enum):
 @dataclass(frozen=True)
 class AudioGenerationRequest:
     id: str
-    """
-    A unique identifier for the request. This ID can be used to trace and log
+    """A unique identifier for the request. This ID can be used to trace and log
     the request throughout its lifecycle, facilitating debugging and tracking.
     """
+
     input: str
+    """The text to generate audio for. The maximum length is 4096 characters.
     """
-    The text to generate audio for. The maximum length is 4096 characters.
-    """
+
     index: int
-    """
-    The sequence order of this request within a batch. This is useful for
+    """The sequence order of this request within a batch. This is useful for
     maintaining the order of requests when processing multiple requests
     simultaneously, ensuring that responses can be matched back to their
     corresponding requests accurately.
     """
+
     model: str
-    """
-    The name of the model to be used for generating audio chunks. This should match
+    """The name of the model to be used for generating audio chunks. This should match
     the available models on the server and determines the behavior and
     capabilities of the response generation.
     """
-    voice: str
+
+    voice: str | None = None
+    """The voice to use for audio generation.
     """
-    The voice to use for audio generation.
-    """
+
     instructions: str = ""
-    """
-    Control the voice of your generated audio with additional instructions.
+    """Control the voice of your generated audio with additional instructions.
     Currently unused.
     """
+
     response_format: AudioFormat = AudioFormat.WAV
-    """
-    The format to audio in. Currently only supports wav.
-    """
+    """The format to audio in. Currently only supports wav."""
+
     speed: float = 1.0
-    """
-    The speed of the generated audio. Select a value from 0.25 to 4.0.
+    """The speed of the generated audio. Select a value from 0.25 to 4.0.
     Defaults to 1.0.
     """
+
+    sampling_params: SamplingParams = SamplingParams()
+    """Request sampling configuration options."""
 
 
 AudioGeneratorContext = TypeVar("AudioGeneratorContext")
@@ -75,6 +89,13 @@ AudioGeneratorContext = TypeVar("AudioGeneratorContext")
 TokenizerEncoded = TypeVar("TokenizerEncoded")
 
 DecoderOutput = TypeVar("DecoderOutput")
+
+
+@dataclass(frozen=True)
+class AudioGeneratorOutput:
+    audio_data: torch.Tensor
+    metadata: dict[str, Any]
+    is_done: bool
 
 
 @runtime_checkable
@@ -170,37 +191,24 @@ class PipelineAudioTokenizer(
 
 
 @runtime_checkable
-class AudioGenerator(Generic[AudioGeneratorContext, DecoderOutput], Protocol):
+class AudioGenerator(Generic[AudioGeneratorContext], Protocol):
     """Interface for audio generation models."""
 
     def next_chunk(
         self, batch: dict[str, AudioGeneratorContext], num_tokens: int
-    ) -> dict[str, TextGenerationStatus]:
+    ) -> dict[str, AudioGenerationResponse]:
         """Computes the next audio chunk for a single batch.
 
-        The new speech tokens are saved to the context.
+        The new speech tokens are saved to the context. The most recently
+        generated audio is return through the `AudioGenerationResponse`.
 
         Args:
             batch (dict[str, AudioGeneratorContext]): Batch of contexts.
             num_tokens (int): Number of speech tokens to generate.
 
         Returns:
-            dict[str, TextGenerationStatus]: Dictionary mapping request IDs to
-                speech token generation status.
-        """
-        ...
-
-    def decode(
-        self, batch: dict[str, AudioGeneratorContext], num_tokens: int
-    ) -> dict[str, DecoderOutput]:
-        """Decodes speech tokens to audio bytes.
-
-        Args:
-            batch (dict[str, AudioGeneratorContext]): Batch of audio generation contexts.
-            num_tokens (int): Number of speech tokens to decode.
-
-        Returns:
-            dict[str, DecoderOutput]: Dictionary mapping request IDs to WAV audio data.
+            dict[str, AudioGenerationResponse]: Dictionary mapping request IDs to
+                audio generation responses.
         """
         ...
 
@@ -210,4 +218,9 @@ class AudioGenerator(Generic[AudioGeneratorContext, DecoderOutput], Protocol):
         Args:
             context (AudioGeneratorContext): Finished context.
         """
+        ...
+
+    @property
+    def decoder_sample_rate(self) -> int:
+        """The sample rate of the decoder."""
         ...
