@@ -551,7 +551,7 @@ generic container. A single `List` can only hold a single type of data.
 For example, you can create a list of integer values like this:
 
 ```mojo
-var list = [1, 2, 3]
+var list = List[Int](1, 2, 3)  # or: var list = [1, 2, 3]
 for i in range(len(list)):
     print(list[i], sep=" ", end="")
 ```
@@ -646,7 +646,7 @@ struct MyStack[type: Copyable & Movable](Stacklike):
 
     fn dump[WritableEltType: Writable & Copyable & Movable](self: MyStack[WritableEltType]):
         for item in self.list:
-            print(item[])
+            print(item)
 ```
 
 The `MyStack` type adds a `dump()` method that prints the contents of the stack.

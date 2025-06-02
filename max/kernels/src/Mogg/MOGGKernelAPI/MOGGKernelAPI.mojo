@@ -5322,7 +5322,7 @@ struct SplitOutputShapeHelper:
 struct Conv:
     @staticmethod
     fn execute[
-        filter_packed: Bool,
+        filter_layout: StaticString,
         lambdas_have_fusion: Bool,
         static_strides: DimList,
         static_dilations: DimList,
@@ -5398,12 +5398,18 @@ struct Conv:
             ](),  # filter C, RSCF or FRSCf
         )
 
+        alias filter_packed = filter_layout == "FRSCf" or filter_layout == "FQRSCf"
+        alias filter_is_fcrs = filter_layout == "FCRS"
+
         var input_buf = managed_tensor_slice_to_ndbuffer(input)
         var filter_buf = managed_tensor_slice_to_ndbuffer(filter)
         var output_buf = managed_tensor_slice_to_ndbuffer(output)
 
         @parameter
         if is_cpu[target]():
+            constrained[
+                not filter_is_fcrs, "Filter layout FCRS is not supported on CPU"
+            ]()
             conv_nhwc_direct[
                 input.rank,
                 filter.rank,
@@ -5461,6 +5467,7 @@ struct Conv:
                 filter.type,
                 output.type,
                 output_fn,
+                filter_is_fcrs,
             ](
                 input_buf,
                 filter_buf,
@@ -8441,7 +8448,7 @@ struct Struct_unfused_qkv_matmul_ragged_paged_gguf_quantized:
 # ===-----------------------------------------------------------------------===#
 
 
-@compiler.register("topk_fused_sampling")
+@compiler.register("sampler.topk_fused_sampling")
 struct Struct_topk_fused_sampling:
     @always_inline
     @staticmethod
@@ -8455,6 +8462,7 @@ struct Struct_topk_fused_sampling:
         out_idxs: OutputTensor[type=out_idx_type, rank=rank],
         K: Scalar,
         temperature: Scalar[type],
+        seed: UInt64,
         input: InputTensor[type=type, rank=rank],
         ctx: DeviceContextPtr,
     ) raises:
@@ -8477,7 +8485,7 @@ struct Struct_topk_fused_sampling:
                     )
                     return
                 _topk_fused_sampling_cpu(
-                    Int(K), input_buf, out_idxs_buf, temperature
+                    Int(K), input_buf, out_idxs_buf, temperature, seed
                 )
             else:
                 var cuda_ctx = ctx.get_device_context()
@@ -8487,6 +8495,7 @@ struct Struct_topk_fused_sampling:
                     input_buf,
                     out_idxs_buf,
                     temperature=temperature,
+                    seed=seed,
                 )
 
 

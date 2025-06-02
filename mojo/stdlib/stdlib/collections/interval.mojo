@@ -48,7 +48,6 @@ In essence, this data structure provides a fast and efficient way to manage and
 query interval data, particularly for finding overlaps.
 """
 
-from collections import Optional
 
 from builtin.string_literal import StaticString
 from memory import UnsafePointer
@@ -973,8 +972,8 @@ struct IntervalTree[
                 work_list.append((node[].right, level + 1, mid, right))
 
         # Output the completed grid row by row
-        for row in grid:
-            var row_str = String(StaticString("").join(row[]).rstrip())
+        for ref row in grid:
+            var row_str = String(StaticString("").join(row).rstrip())
             if row_str:
                 writer.write(row_str, "\n")
 

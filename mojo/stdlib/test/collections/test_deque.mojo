@@ -291,7 +291,7 @@ fn test_impl_appendleft_with_maxlen() raises:
 
 fn test_impl_extend() raises:
     q = Deque[Int](maxlen=4)
-    lst = List[Int](0, 1, 2)
+    lst = [0, 1, 2]
 
     q.extend(lst)
     assert_equal(q._head, 0)
@@ -973,14 +973,14 @@ fn test_iter() raises:
 
     i = 0
     for e in q:
-        assert_equal(e[], q[i])
+        assert_equal(e, q[i])
         i += 1
     assert_equal(i, len(q))
 
-    for e in q:
-        if e[] == 1:
-            e[] = 4
-            assert_equal(e[], 4)
+    for ref e in q:
+        if e == 1:
+            e = 4
+            assert_equal(e, 4)
     assert_equal(q[0], 4)
 
 
@@ -994,20 +994,20 @@ fn test_iter_with_list() raises:
 
     i = 0
     for e in q:
-        assert_equal(e[], q[i])
+        assert_equal(e, q[i])
         i += 1
     assert_equal(i, len(q))
 
-    for e in q:
-        if e[] == lst1:
-            e[][0] = 7
-            assert_equal(e[], [7, 2, 3])
+    for ref e in q:
+        if e == lst1:
+            e[0] = 7
+            assert_equal(e, [7, 2, 3])
     assert_equal(q[0], [7, 2, 3])
 
-    for e in q:
-        if e[] == lst2:
-            e[] = [1, 2, 3]
-            assert_equal(e[], [1, 2, 3])
+    for ref e in q:
+        if e == lst2:
+            e = [1, 2, 3]
+            assert_equal(e, [1, 2, 3])
     assert_equal(q[1], [1, 2, 3])
 
 
@@ -1017,7 +1017,7 @@ fn test_reversed_iter() raises:
     i = 0
     for e in reversed(q):
         i -= 1
-        assert_equal(e[], q[i])
+        assert_equal(e, q[i])
     assert_equal(-i, len(q))
 
 

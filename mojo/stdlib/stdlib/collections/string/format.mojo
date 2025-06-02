@@ -71,7 +71,7 @@ This module has no public API; its functionality is available through the
 methods.
 """
 
-from collections import Optional
+
 from collections.string.string import _chr_ascii
 
 from memory import UnsafePointer
@@ -219,11 +219,11 @@ struct _FormatCurlyEntry(Copyable, Movable, ExplicitlyCopyable):
             )
 
         var auto_arg_index = 0
-        for e in entries:
+        for ref e in entries:
             debug_assert(offset < fmt_len, "offset >= fmt_src.byte_length()")
-            res += _build_slice(ptr, offset, e[].first_curly)
-            e[]._format_entry[len_pos_args](res, args, auto_arg_index)
-            offset = e[].last_curly + 1
+            res += _build_slice(ptr, offset, e.first_curly)
+            e._format_entry[len_pos_args](res, args, auto_arg_index)
+            offset = e.last_curly + 1
 
         res += _build_slice(ptr, offset, fmt_len)
         return res^

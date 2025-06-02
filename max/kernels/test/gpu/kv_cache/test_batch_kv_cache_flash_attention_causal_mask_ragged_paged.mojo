@@ -94,9 +94,9 @@ def execute_ragged_flash_attention[
     ref_output_device = ref_output_host.copy_to_device(ctx)
 
     var num_continuous_blocks = batch_size + 2
-    var num_paged_blocks = ceildiv(
-        max_full_context_length, page_size
-    ) * batch_size
+    var num_paged_blocks = (
+        ceildiv(max_full_context_length, page_size) * batch_size
+    )
 
     # initialize our KVCache
     kv_block_continuous_host = HostNDBuffer[type, 6](
@@ -278,12 +278,11 @@ def execute_ragged_flash_attention[
 def execute_flash_attention_suite(ctx: DeviceContext):
     alias types = (DType.float32, DType.bfloat16)
 
-    for bs_ref in [1, 4]:
+    for bs in [1, 4]:
 
         @parameter
         for type_idx in range(len(types)):
             alias type = types[type_idx]
-            bs = bs_ref[]
             ce_cache_sizes = List[Int]()
             ce_seq_lens = List[Int]()
             tg_cache_sizes = List[Int]()
@@ -306,15 +305,15 @@ def execute_flash_attention_suite(ctx: DeviceContext):
 
     # edge cases
     print("CE", 1, DType.bfloat16)
-    var short_ce_seq_len = List[Int](2)
-    var short_ce_cache_size = List[Int](0)
+    var short_ce_seq_len = [2]
+    var short_ce_cache_size = [0]
     execute_ragged_flash_attention[
         llama_num_q_heads, DType.bfloat16, kv_params_llama3
     ](short_ce_seq_len, short_ce_cache_size, 2, 1, ctx)
 
     print("TG", 2, DType.bfloat16)
-    tg_seq_lens = List[Int](1, 1)
-    tg_variable_cache_lens = List[Int](1024, 11)
+    tg_seq_lens = [1, 1]
+    tg_variable_cache_lens = [1024, 11]
     execute_ragged_flash_attention[
         llama_num_q_heads, DType.bfloat16, kv_params_llama3
     ](tg_seq_lens, tg_variable_cache_lens, 2, 0, ctx)

@@ -15,7 +15,6 @@
 These are Mojo built-ins, so you don't need to import them.
 """
 
-from collections import List
 from collections.string.format import _CurlyEntryFormattable
 from collections.string.string_slice import CodepointSliceIter, StaticString
 from os import PathLike
@@ -191,7 +190,7 @@ struct StringLiteral[value: __mlir_type.`!kgen.string`](
     # Trait implementations
     # ===-------------------------------------------------------------------===#
 
-    fn to_python_object(self) -> PythonObject:
+    fn to_python_object(owned self) -> PythonObject:
         """Convert this value to a PythonObject.
 
         Returns:

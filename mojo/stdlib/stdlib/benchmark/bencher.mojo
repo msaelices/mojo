@@ -12,7 +12,6 @@
 # ===----------------------------------------------------------------------=== #
 
 import time
-from collections import Dict, Optional
 from collections.string import StaticString, StringSlice
 from collections.string.string import _calc_initial_buffer_size_int32
 from os import abort
@@ -123,9 +122,9 @@ struct BenchMetric(Copyable, Movable, Stringable, Writable):
         Returns:
             The selected metric.
         """
-        for m in metric_list:
-            if m[].check_name(name):
-                return m[]
+        for ref m in metric_list:
+            if m.check_name(name):
+                return m
 
         alias sep = StaticString("-") * 80 + "\n"
         var err = String(
@@ -135,8 +134,8 @@ struct BenchMetric(Copyable, Movable, Stringable, Writable):
             "Couldn't match metric [" + name + "]\n",
             "Available throughput metrics (case-insensitive) in the list:\n",
         )
-        for m in metric_list:
-            err += String("    metric: [" + m[].name.lower(), "]\n")
+        for ref m in metric_list:
+            err += String("    metric: [" + m.name.lower(), "]\n")
         err += String(
             sep, sep, "[ERROR]: metric [", name, "] is NOT supported!\n"
         )
@@ -440,6 +439,17 @@ struct BenchId:
         self.func_name = func_name
         self.input_id = None
 
+    @implicit
+    fn __init__(out self, func_name: StringLiteral):
+        """Constructs a Benchmark Id object from input function name.
+
+        Args:
+            func_name: The target function name.
+        """
+
+        self.func_name = String(func_name)
+        self.input_id = None
+
 
 struct BenchmarkInfo(Copyable, Movable):
     """Defines a Benchmark Info struct to record execution Statistics."""
@@ -669,8 +679,8 @@ struct Bench(Writable, Stringable):
             measures: Variadic arg used to represent a list of ThroughputMeasure's.
         """
         var measures_list = List[ThroughputMeasure]()
-        for m in measures:
-            measures_list.append(m[])
+        for ref m in measures:
+            measures_list.append(m)
         self.bench_with_input[T, bench_fn](bench_id, input, measures_list)
 
     fn bench_with_input[
@@ -680,7 +690,7 @@ struct Bench(Writable, Stringable):
         mut self,
         bench_id: BenchId,
         input: T,
-        measures: List[ThroughputMeasure] = List[ThroughputMeasure](),
+        measures: List[ThroughputMeasure] = {},
     ) raises:
         """Benchmarks an input function with input args of type AnyTrivialRegType.
 
@@ -727,16 +737,79 @@ struct Bench(Writable, Stringable):
             measures: Variadic arg used to represent a list of ThroughputMeasure's.
         """
         var measures_list = List[ThroughputMeasure]()
-        for m in measures:
-            measures_list.append(m[])
+        for ref m in measures:
+            measures_list.append(m)
         self.bench_with_input[T, bench_fn](bench_id, input, measures_list)
+
+    @always_inline
+    fn bench_function[
+        bench_fn: fn () raises capturing [_] -> None,
+    ](
+        mut self,
+        bench_id: BenchId,
+        measures: List[ThroughputMeasure] = {},
+    ) raises:
+        """Benchmarks or Tests an input function.
+
+        Parameters:
+            bench_fn: The function to be benchmarked.
+
+        Args:
+            bench_id: The benchmark Id object used for identification.
+            measures: Optional arg used to represent a list of ThroughputMeasure's.
+        """
+
+        @parameter
+        @always_inline
+        fn bench_iter(mut b: Bencher):
+            @parameter
+            @always_inline
+            fn call_func():
+                try:
+                    bench_fn()
+                except e:
+                    abort(String(e))
+
+            b.iter[call_func]()
+
+        self.bench_function[bench_iter](bench_id, measures=measures)
+
+    @always_inline
+    fn bench_function[
+        bench_fn: fn () capturing [_] -> None,
+    ](
+        mut self,
+        bench_id: BenchId,
+        measures: List[ThroughputMeasure] = {},
+    ) raises:
+        """Benchmarks or Tests an input function.
+
+        Parameters:
+            bench_fn: The function to be benchmarked.
+
+        Args:
+            bench_id: The benchmark Id object used for identification.
+            measures: Optional arg used to represent a list of ThroughputMeasure's.
+        """
+
+        @parameter
+        @always_inline
+        fn bench_iter(mut b: Bencher):
+            @parameter
+            @always_inline
+            fn call_func():
+                bench_fn()
+
+            b.iter[call_func]()
+
+        self.bench_function[bench_iter](bench_id, measures=measures)
 
     fn bench_function[
         bench_fn: fn (mut Bencher) capturing [_] -> None
     ](
         mut self,
         bench_id: BenchId,
-        measures: List[ThroughputMeasure] = List[ThroughputMeasure](),
+        measures: List[ThroughputMeasure] = {},
     ) raises:
         """Benchmarks or Tests an input function.
 
@@ -767,8 +840,8 @@ struct Bench(Writable, Stringable):
             measures: Variadic arg used to represent a list of ThroughputMeasure's.
         """
         var measures_list = List[ThroughputMeasure]()
-        for m in measures:
-            measures_list.append(m[])
+        for ref m in measures:
+            measures_list.append(m)
         self.bench_function[bench_fn](bench_id, measures_list)
 
     # TODO (#31795): overload should not be needed
@@ -777,7 +850,7 @@ struct Bench(Writable, Stringable):
     ](
         mut self,
         bench_id: BenchId,
-        measures: List[ThroughputMeasure] = List[ThroughputMeasure](),
+        measures: List[ThroughputMeasure] = {},
     ) raises:
         """Benchmarks or Tests an input function.
 
@@ -819,8 +892,8 @@ struct Bench(Writable, Stringable):
             measures: Variadic arg used to represent a list of ThroughputMeasure's.
         """
         var measures_list = List[ThroughputMeasure]()
-        for m in measures:
-            measures_list.append(m[])
+        for ref m in measures:
+            measures_list.append(m)
         self.bench_function[bench_fn](bench_id, measures_list)
 
     fn _test[bench_fn: fn (mut Bencher) capturing [_] -> None](mut self) raises:
@@ -838,7 +911,7 @@ struct Bench(Writable, Stringable):
     ](
         mut self,
         bench_id: BenchId,
-        measures: List[ThroughputMeasure] = List[ThroughputMeasure](),
+        measures: List[ThroughputMeasure] = {},
     ) raises:
         """Benchmarks an input function.
 
@@ -966,12 +1039,12 @@ struct Bench(Writable, Stringable):
         if self.config.format == Format.table and len(self.info_vec) > 0:
             for metric in metrics:
                 try:
-                    total_width += metrics[metric[]].max_width + 3
+                    total_width += metrics[metric].max_width + 3
                 except e:
                     abort(String(e))
             if self.config.verbose_timing:
                 for timing_width in timing_widths:
-                    total_width += timing_width[] + 3
+                    total_width += timing_width + 3
             else:
                 total_width += timing_widths[0] + 3
 
@@ -983,8 +1056,8 @@ struct Bench(Writable, Stringable):
         else:
             sep = ","
 
-        var first_sep = "| " if self.config.format == Format.table else StaticString(
-            ""
+        var first_sep = (
+            "| " if self.config.format == Format.table else StaticString("")
         )
         var line_sep = "-" * total_width
 
@@ -1003,8 +1076,7 @@ struct Bench(Writable, Stringable):
             return
 
         # Write the metrics labels
-        for metric in metrics:
-            name = metric[]
+        for name in metrics:
             writer.write(sep, name)
             try:
                 writer.write(self.pad(metrics[name].max_width, name))
@@ -1046,8 +1118,7 @@ struct Bench(Writable, Stringable):
             var iters_pad = self.pad(iters_width, String(run.result.iters()))
             writer.write(sep, run.result.iters(), iters_pad)
 
-            for metric in metrics:
-                var name = metric[]
+            for var name in metrics:
                 try:
                     var rates = metrics[name].rates
                     var max_width = metrics[name].max_width

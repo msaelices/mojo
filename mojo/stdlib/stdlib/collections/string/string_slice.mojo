@@ -48,7 +48,6 @@ print(format_string.format("bats", 6)) # bats: 6
 ```
 """
 
-from collections import List, Optional
 from collections.string._unicode import (
     is_lowercase,
     is_uppercase,
@@ -838,7 +837,7 @@ struct StringSlice[mut: Bool, //, origin: Origin[mut]](
         debug_assert(span.step.or_else(1) == 1, "Slice step must be 1")
         return Self(unsafe_from_utf8=self._slice[span])
 
-    fn to_python_object(self) -> PythonObject:
+    fn to_python_object(owned self) -> PythonObject:
         """Convert this value to a PythonObject.
 
         Returns:
@@ -2026,9 +2025,9 @@ struct StringSlice[mut: Bool, //, origin: Origin[mut]](
                 )
                 var char_end = Int(isnewline) * (eol_start + char_len)
                 var next_idx = char_end * Int(char_end < length)
-                var is_r_n = b0 == `\r` and next_idx != 0 and ptr[
-                    next_idx
-                ] == `\n`
+                var is_r_n = (
+                    b0 == `\r` and next_idx != 0 and ptr[next_idx] == `\n`
+                )
                 eol_length = Int(isnewline) * char_len + Int(is_r_n)
                 if isnewline:
                     break

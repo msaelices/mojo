@@ -10,7 +10,7 @@ bazel_dep(name = "grpc", version = "1.68.0", repo_name = "com_github_grpc_grpc")
 bazel_dep(name = "platforms", version = "0.0.11")
 bazel_dep(name = "protobuf", version = "29.3")
 bazel_dep(name = "protoc-gen-validate", version = "1.2.1.bcr.1")
-bazel_dep(name = "rules_cc", version = "0.0.17")
+bazel_dep(name = "rules_cc", version = "0.1.1")
 bazel_dep(name = "rules_mojo", version = "0.1.0")
 bazel_dep(name = "rules_pkg", version = "1.0.1")
 bazel_dep(name = "rules_proto", version = "7.0.2")
@@ -20,10 +20,10 @@ bazel_dep(name = "rules_shell", version = "0.4.1")
 # TODO: Remove when 0.3.0 is released
 archive_override(
     module_name = "rules_mojo",
-    integrity = "sha256-dH3c36ID639D1vbXkOK2hOxRjB0UUnQwkr2CeKF7GWQ=",
-    strip_prefix = "rules_mojo-fcfda29454093baff7901178d4dae91a9a042178",
+    integrity = "sha256-0UmIEqwKiq3Z9Xbn5wJaTGeUoDStdHSDvrnrp5KDbFo=",
+    strip_prefix = "rules_mojo-efd192b4c7502a2c93419645f712b8bb4ce42254",
     urls = [
-        "https://github.com/modular/rules_mojo/archive/fcfda29454093baff7901178d4dae91a9a042178.tar.gz",
+        "https://github.com/modular/rules_mojo/archive/efd192b4c7502a2c93419645f712b8bb4ce42254.tar.gz",
     ],
 )
 

@@ -78,7 +78,7 @@ from builtin.format_int import _try_write_int
 from builtin.io import _snprintf
 from documentation import doc_private
 from memory import Span, UnsafePointer, bitcast, memcpy
-from python import PythonConvertible, PythonObject
+from python import PythonConvertible, PythonObject, Python
 
 from utils import IndexList, StaticTuple
 from utils._visualizers import lldb_formatter_wrapping_type
@@ -483,6 +483,36 @@ struct SIMD[dtype: DType, size: Int](
             If the type does not have a float point representation.
         """
         self = value.__float__()
+
+    @always_inline
+    fn __init__[
+        *, `_`: Int = 0
+    ](out self: Float64, value: PythonObject, /) raises:
+        """Initialize a Float64 from a PythonObject.
+
+        Parameters:
+            _: A dummy parameter to ensure this overload has lower priority than
+                the others. Its value is ignored.
+
+        Args:
+            value: The PythonObject to convert.
+
+        Raises:
+            If the conversion to double fails.
+        """
+        # TODO(MSTDL-1587): Remove the dummy parameter.
+        var float_obj = value.__float__()
+        var cpython = Python().cpython()
+        self = Float64(cpython.PyFloat_AsDouble(float_obj.py_object))
+        if self == -1.0 and cpython.PyErr_Occurred():
+            # Note that -1.0 does not guarantee an error, it just means we need
+            # to check if there was an exception. This is also very unlikely,
+            # since the __float__ call above will throw if the underlying Python
+            # method fails. Therefore this can only happen if a custom __float__
+            # implementation is incorrect, and returns a non-double value.
+            raise cpython.get_error()
+
+        _ = float_obj
 
     @always_inline("nodebug")
     @implicit
@@ -1438,7 +1468,7 @@ struct SIMD[dtype: DType, size: Int](
     # Trait implementations
     # ===------------------------------------------------------------------=== #
 
-    fn to_python_object(self) -> PythonObject:
+    fn to_python_object(owned self) -> PythonObject:
         """Convert this value to a PythonObject.
 
         Returns:
@@ -3144,7 +3174,7 @@ fn _convert_float8_to_f32_scaler[
     ]()
     var mantissa: UInt32 = (f8 & FP8_MANTISSA_MASK).cast[DType.uint32]()
 
-    var f: UInt32 = (sign << (FP32_NUM_BITS - 1))
+    var f: UInt32 = sign << (FP32_NUM_BITS - 1)
 
     if IS_E4M3 and exp == 15 and mantissa == 0x7:
         f = kF32_NaN
@@ -3349,7 +3379,7 @@ fn _convert_f32_to_float8_scaler[
     var NUM_BITS_SHIFT: Int32 = FP32_NUM_MANTISSA_BITS - (
         FP8_NUM_MANTISSA_BITS + 1
     )
-    var round_bit: Int32 = ((mantissa >> NUM_BITS_SHIFT) & 1)
+    var round_bit: Int32 = (mantissa >> NUM_BITS_SHIFT) & 1
     sticky_bit |= ((mantissa & ((1 << NUM_BITS_SHIFT) - 1)) != 0).cast[
         DType.int32
     ]()

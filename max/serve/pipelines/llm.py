@@ -20,12 +20,14 @@ import signal
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Callable, Generic, Optional, TypeVar
+from typing import Callable, Generic, Optional, TypeVar
 
 import numpy as np
+import torch
 from max.nn.kv_cache import KVCacheStrategy
 from max.pipelines.core import (
     AudioGenerationRequest,
+    AudioGeneratorOutput,
     PipelineAudioTokenizer,
     PipelineTask,
     PipelineTokenizer,
@@ -398,18 +400,16 @@ def batch_config_from_pipeline_config(
     return batch_config
 
 
-@dataclass(frozen=True)
-class AudioGeneratorOutput:
-    audio_data: bytes
-    metadata: dict[str, Any]
-
-
 AudioGeneratorContext = TypeVar("AudioGeneratorContext")
 
 
 # TODO: Implement this
 class AudioGeneratorPipeline(Generic[AudioGeneratorContext]):
     """Base class for LLM audio generation pipelines."""
+
+    # We import torch here so that only folks that use the AudioGeneratorPipeline
+    # will need to have it installed.
+    import torch
 
     def __init__(
         self,
@@ -464,7 +464,9 @@ class AudioGeneratorPipeline(Generic[AudioGeneratorContext]):
                     )
 
                     output = AudioGeneratorOutput(
-                        audio_data=response.audio_data, metadata=audio_metadata
+                        audio_data=response.audio_data,
+                        metadata=audio_metadata,
+                        is_done=response.is_done,
                     )
 
                     yield output
@@ -481,15 +483,31 @@ class AudioGeneratorPipeline(Generic[AudioGeneratorContext]):
         self, request: AudioGenerationRequest
     ) -> AudioGeneratorOutput:
         """Generates complete audio for the provided request."""
-        audio_chunks = []
+        audio_chunks: list[AudioGeneratorOutput] = []
         async for chunk in self.next_chunk(request):
-            audio_chunks.append(chunk.audio_data)
+            audio_chunks.append(chunk)
 
-        # Combine audio chunks and metadata
-        combined_audio = b"".join(audio_chunks)
+        if len(audio_chunks) == 0:
+            return AudioGeneratorOutput(
+                audio_data=torch.tensor([]),
+                metadata={},
+                is_done=True,
+            )
+
+        # Combine audio chunks and metadata.
+        combined_audio = torch.concat(
+            [chunk.audio_data for chunk in audio_chunks], dim=-1
+        )
+
+        # We should only return from the next_chunk loop when the last chunk
+        # is done.
+        last_chunk = audio_chunks[-1]
+        assert last_chunk.is_done
+
         return AudioGeneratorOutput(
             audio_data=combined_audio,
-            metadata=chunk.metadata,  # Use metadata from last chunk
+            metadata=last_chunk.metadata,
+            is_done=True,
         )
 
     async def __aenter__(self):
