@@ -447,7 +447,7 @@ fn exp2[
     xc -= m.cast[dtype]()
 
     var r = polynomial_evaluate[
-        List[SIMD[dtype, width]](
+        List[Scalar[dtype]](
             1.0,
             0.693144857883,
             0.2401793301105,
@@ -566,7 +566,7 @@ trait _Expable:
 fn _exp_taylor[
     dtype: DType, width: Int, //
 ](x: SIMD[dtype, width]) -> SIMD[dtype, width]:
-    alias coefficients = List[SIMD[dtype, width]](
+    alias coefficients = List[Scalar[dtype]](
         1.0,
         1.0,
         0.5,
@@ -773,7 +773,7 @@ fn _log_base[
 
     var y = (
         polynomial_evaluate[
-            List[SIMD[dtype, width]](
+            List[Scalar[dtype]](
                 3.3333331174e-1,
                 -2.4999993993e-1,
                 2.0000714765e-1,
@@ -934,7 +934,7 @@ fn erf[
     var x_abs = abs(x)
 
     var r_large = polynomial_evaluate[
-        List[SIMD[dtype, width]](
+        List[Scalar[dtype]](
             1.28717512e-1,
             6.34846687e-1,
             1.06777847e-1,
@@ -949,7 +949,7 @@ fn erf[
     r_large = copysign(1 - exp(-r_large), x)
 
     var r_small = polynomial_evaluate[
-        List[SIMD[dtype, width]](
+        List[Scalar[dtype]](
             1.28379151e-1,
             -3.76124859e-1,
             1.12818025e-1,
@@ -1025,7 +1025,7 @@ fn tanh[
     var x_squared = xc * xc
 
     var numerator = xc * polynomial_evaluate[
-        List[SIMD[dtype, width]](
+        List[Scalar[dtype]](
             4.89352455891786e-03,
             6.37261928875436e-04,
             1.48572235717979e-05,
@@ -1037,7 +1037,7 @@ fn tanh[
     ](x_squared)
 
     var denominator = polynomial_evaluate[
-        List[SIMD[dtype, width]](
+        List[Scalar[dtype]](
             4.89352518554385e-03,
             2.26843463243900e-03,
             1.18534705686654e-04,
@@ -1053,10 +1053,12 @@ fn tanh[
 # ===----------------------------------------------------------------------=== #
 
 
-# TODO: control symmetric behavior with flag so we can be compatible with Python
 @always_inline
 fn isclose[
-    dtype: DType, width: Int
+    dtype: DType,
+    width: Int,
+    *,
+    symmetrical: Bool = True,
 ](
     a: SIMD[dtype, width],
     b: SIMD[dtype, width],
@@ -1065,44 +1067,55 @@ fn isclose[
     rtol: Float64 = 1e-05,
     equal_nan: Bool = False,
 ) -> SIMD[DType.bool, width]:
-    """Checks if the two input values are numerically within a tolerance.
+    """Returns a boolean SIMD vector indicating which element pairs of `a` and `b`
+    are equal within a given tolerance.
 
-    When the type is integral, then equality is checked. When the type is
-    floating point, then this checks if the two input values are numerically the
-    close using the $abs(a - b) <= max(rtol * max(abs(a), abs(b)), atol)$
-    formula.
+    For floating-point dtypes, the following criteria apply:
 
-    Unlike Pythons's `math.isclose`, this implementation is symmetric. I.e.
-    `isclose(a,b) == isclose(b,a)`.
+    - Symmetric (Python `math.isclose` style), when `symmetrical` is true:
+        ```
+        |a - b| ≤ max(atol, rtol * max(|a|, |b|))
+        ```
+    - Asymmetric (NumPy style), when `symmetrical` is false:
+        ```
+        |a - b| ≤ atol + rtol * |b|
+        ```
+
+    NaN values are considered equal only if `equal_nan` is true.
 
     Parameters:
-        dtype: The `dtype` of the input and output SIMD vector.
-        width: The width of the input and output SIMD vector.
+        dtype: Element type of the input and output vectors.
+        width: Number of lanes in each SIMD vector.
+        symmetrical: If true, use the symmetric comparison formula (default: true).
 
     Args:
-        a: The first value to compare.
-        b: The second value to compare.
-        atol: The absolute tolerance.
-        rtol: The relative tolerance.
-        equal_nan: Whether to treat nans as equal.
+        a: First input vector.
+        b: Second input vector.
+        atol: Absolute tolerance.
+        rtol: Relative tolerance.
+        equal_nan: If true, treat NaNs as equal (default: false).
 
     Returns:
-        A boolean vector where a and b are equal within the specified tolerance.
+        A boolean vector where `a` and `b` are equal within the given tolerance.
     """
-
     constrained[
-        a.dtype is DType.bool or a.dtype.is_numeric(),
-        "input type must be boolean, integral, or floating-point",
+        a.dtype.is_floating_point(),
+        "isclose only supports floating-point types",
     ]()
     alias T = __type_of(a)
 
+    var check_nan = isnan(a) & isnan(b)
+    var check_fin: SIMD[DType.bool, width]
+    var in_range: SIMD[DType.bool, width]
+
     @parameter
-    if a.dtype is DType.bool or a.dtype.is_integral():
-        return a == b
-    var both_nan = isnan(a) & isnan(b)
-    var both_finite = isfinite(a) & isfinite(b)
-    var in_range = abs(a - b) <= max(T(atol), T(rtol) * max(abs(a), abs(b)))
-    return (a == b) | (both_nan & equal_nan) | (both_finite & in_range)
+    if symmetrical:
+        check_fin = isfinite(a) & isfinite(b)
+        in_range = abs(a - b) <= max(T(atol), T(rtol) * max(abs(a), abs(b)))
+    else:
+        check_fin = isfinite(b)
+        in_range = abs(a - b) <= T(atol) + T(rtol) * abs(b)
+    return (a == b) | (check_nan & equal_nan) | (check_fin & in_range)
 
 
 # ===----------------------------------------------------------------------=== #
@@ -1646,7 +1659,7 @@ fn _atanh_float32(x: SIMD) -> __type_of(x):
     # When x is in the range [0, 0.5], we use a polynomial approximation.
     # P(x) = x + x^3*(c[4] + x^2 * (c[3] + x^2 * (... x^2 * c[0]) ... )).
     var p = polynomial_evaluate[
-        List[__type_of(x)](
+        List[Scalar[x.dtype]](
             0.3333373963832855224609375,
             0.1997792422771453857421875,
             0.14672131836414337158203125,

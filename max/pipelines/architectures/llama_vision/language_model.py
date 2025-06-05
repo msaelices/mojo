@@ -55,7 +55,6 @@ class TextModel(Layer):
     layers: list[CrossAttentionDecoderLayer | SelfAttentionDecoderLayer]
     norm: RMSNormV1
     cross_attention_layers: list[int]
-    rotary_emb: OptimizedRotaryEmbedding
 
     def __call__(
         self,
@@ -109,7 +108,7 @@ class TextModel(Layer):
                 hidden_states = decoder_layer(
                     hidden_states,
                     text_kv_collection,
-                    input_row_offsets=hidden_input_row_offsets,
+                    hidden_input_row_offsets,
                 )
 
         assert hidden_states.shape == before_attention_blocks_shape
@@ -481,7 +480,6 @@ def instantiate_language_model(
         layers=layers,
         cross_attention_layers=cross_attention_layers,
         # TODO: Verify if these values passed are even correct.
-        rotary_emb=rotary_embedding,
     )
 
     return CausalLanguageModel(

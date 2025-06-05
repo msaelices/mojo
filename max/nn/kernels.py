@@ -1336,7 +1336,7 @@ def flare_mla_prefill_plan(
 
     assert kv_params.page_size is not None
     parameters: dict[str, int | str | DType] = {
-        "type": kv_params.dtype,
+        "dtype": kv_params.dtype,
         "num_heads": kv_params.n_kv_heads_per_device,
         "head_dim": kv_params.head_dim,
         "page_size": kv_params.page_size,
@@ -2199,11 +2199,42 @@ def update_frequency_data(
     )
 
 
+def scatter_set_constant(
+    data: BufferValue,
+    indices: TensorValue,
+    fill_val: float,
+) -> None:
+    """
+    Scatters values into a tensor at specified indices.
+    """
+
+    if data.rank != 2:
+        raise ValueError(
+            "scatter_set_constant currently only supports 2d tensors"
+        )
+
+    if indices.rank != 2:
+        raise ValueError(
+            "scatter_set_constant currently only supports 2d indices"
+        )
+
+    ops.inplace_custom(
+        "mo.scatter_set_constant",
+        values=[
+            data,
+            indices,
+            ops.constant(fill_val, data.dtype, device=DeviceRef.CPU()),
+        ],
+        device=data.device,
+    )
+
+
 def topk_fused_sampling(
     logits: TensorValue,
     top_k: int,
     temperature: float,
     *,
+    top_p: float = 1.0,
     seed: int = 0,
 ) -> TensorValue:
     """Performs top-k sampling with temperature scaling.
@@ -2219,8 +2250,6 @@ def topk_fused_sampling(
     Raises:
         ValueError: If input validation fails.
     """
-    if logits.rank != 2:
-        raise ValueError(f"expected logits to have rank 2, got {logits.rank}")
 
     if top_k <= 0:
         raise ValueError(f"expected top_k to be positive, got {top_k}")
@@ -2230,16 +2259,20 @@ def topk_fused_sampling(
             f"expected temperature to be positive, got {temperature}"
         )
 
+    if top_p <= 0 or top_p > 1:
+        raise ValueError(f"expected top_p to be in (0, 1], got {top_p}")
+
     batch_shape = logits.shape[:-1]
     device = logits.device
 
     return ops.custom(
-        "sampler.topk_fused_sampling",
+        "sampler.fused_token_sampling",
         values=[
             ops.constant(top_k, dtype=DType.int64, device=DeviceRef.CPU()),
             ops.constant(
                 temperature, dtype=DType.float32, device=DeviceRef.CPU()
             ),
+            ops.constant(top_p, dtype=DType.float32, device=DeviceRef.CPU()),
             ops.constant(seed, dtype=DType.uint64, device=DeviceRef.CPU()),
             logits,
         ],

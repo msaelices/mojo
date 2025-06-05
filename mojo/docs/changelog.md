@@ -94,6 +94,9 @@ what we publish.
   standard library `List[Elt]` type.  The `ListLiteral` type has been removed
   from the standard library.
 
+- `VariadicList`, `VariadicListMem`, and `VariadicPack` moved to the new
+  [`variadics`](/mojo/stdlib/builtin/variadics/) module.
+
 - Dictionary and set literals now work and default to creating instances of the
   `Dict` and `Set` types in the collections library.
 
@@ -279,6 +282,14 @@ Changes to Python-Mojo interoperability:
   Daniel Lemire. So with a bit of effort to
   pinpoints the slow parts, we can easily have state of the
   art performance in the future.
+
+- The `math.isclose` function now supports both symmetric (Python-style) and
+  asymmetric (NumPy-style) comparison modes via a new `symmetrical` parameter.
+  The default value has to the newly added symmetric support.
+  The function now only supports floating-point types, removing previous
+  pseudo-support for integer and boolean types. Support added in [PR
+  4608](https://github.com/modular/modular/pull/4608) by
+  [@soraros](https://github.com/soraros).
 
 ### Tooling changes
 
