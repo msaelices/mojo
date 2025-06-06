@@ -20,8 +20,6 @@ import multiprocessing.process
 import os
 import queue
 from collections.abc import AsyncGenerator, Generator
-from dataclasses import dataclass
-from enum import Enum
 from typing import Generic, Optional, TypeVar
 
 import sentinel
@@ -40,39 +38,6 @@ ReqOutput = TypeVar("ReqOutput")
 STOP_STREAM = sentinel.create("STOP_STREAM")
 
 
-class BatchingStrategy(Enum):
-    DYNAMIC = "dynamic"
-    """ Constructs a dynamic batch of no more than N=config.size requests.
-    Execution of the batch is started at the same time and requests are removed
-    from the batch as they are completed.
-    """
-    CONTINUOUS = "continuous"
-    """ Requests are added or removed from the batch as they arrive or
-    are completed. The batch never exceeds N=config.size requests.
-    """
-
-
-@dataclass(frozen=True)
-class BatchQueueConfig:
-    strategy: BatchingStrategy
-    size: int
-
-    timeout: float = 0.0
-    """How long to wait (in seconds) if a queue is empty."""
-
-    max_forward_steps: int = 1
-    """Maximum number of forwards steps to schedule at a time."""
-
-    enable_chunked_prefill: bool = True
-    """Enable chunked prefill to splits requests into chunks."""
-
-    enable_in_flight_batching: bool = False
-    """Enable chunked prefill to prioritize token generation requests."""
-
-    target_sum_seq_len: Optional[int] = None
-    """Target sum of the sequence lengths in the batch."""
-
-
 class EngineQueue(Generic[ReqId, ReqInput, ReqOutput]):
     """Container for managing interactions between a remote model worker process
 
@@ -89,7 +54,7 @@ class EngineQueue(Generic[ReqId, ReqInput, ReqOutput]):
         response_zmq_endpoint: str,
         cancel_zmq_endpoint: str,
         zmq_ctx: zmq.Context,
-    ):
+    ) -> None:
         super().__init__()
         self.context = context
 
@@ -110,7 +75,7 @@ class EngineQueue(Generic[ReqId, ReqInput, ReqOutput]):
 
     def use_process_healthcheck(
         self, proc: multiprocessing.process.BaseProcess
-    ):
+    ) -> None:
         """Register a Process to health check.
 
         Instead of verifying heartbeats, EngineQueue will verify that the
@@ -120,7 +85,7 @@ class EngineQueue(Generic[ReqId, ReqInput, ReqOutput]):
         """
         self._proc = proc
 
-    def is_worker_healthy(self):
+    def is_worker_healthy(self) -> bool:
         """Is the worker healthy?
 
         By default, verify health with ProcessControl.is_alive().  If a Process
@@ -149,7 +114,7 @@ class EngineQueue(Generic[ReqId, ReqInput, ReqOutput]):
             while (item := await queue.get()) is not STOP_STREAM:
                 yield item
 
-    async def response_worker(self):
+    async def response_worker(self) -> None:
         try:
             while True:
                 try:

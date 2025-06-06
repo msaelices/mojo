@@ -89,6 +89,12 @@ class SamplingParams:
     top_k: int = 1
     """Limits the sampling to the K most probable tokens. This defaults to 1, which enables greedy sampling."""
 
+    top_p: float = 1
+    """Only use the tokens whose cumulative probability within the top_p threshold. This applies to the top_k tokens."""
+
+    min_p: float = 0.0
+    """Float that represents the minimum probability for a token to be considered, relative to the probability of the most likely token. Must be in [0, 1]. Set to 0 to disable this."""
+
     temperature: float = 1
     """Controls the randomness of the model's output; higher values produce more diverse responses."""
 
@@ -117,6 +123,27 @@ class SamplingParams:
 
     do_penalties: bool = False
     """Whether to apply frequency and presence penalties to the model's output."""
+
+    max_tokens: int = 1792
+    """The maximum number of tokens to generate in the response."""
+
+    min_tokens: int = 0
+    """The minimum number of tokens to generate in the response."""
+
+    stop: Optional[list[str]] = None
+    """A list of detokenized sequences that can be used as stop criteria when generating a new sequence."""
+
+    stop_token_ids: Optional[list[int]] = None
+    """A list of token ids that are used as stopping criteria when generating a new sequence."""
+
+    def __post_init__(self):
+        if self.min_p < 0.0 or self.min_p > 1.0:
+            raise ValueError("min_p must be in [0.0, 1.0]")
+
+        if self.min_p != 0.0 and self.top_k != 1:
+            raise ValueError(
+                "We currently do not handle explicit min_p and top_k at the same time."
+            )
 
 
 @dataclass(frozen=True)

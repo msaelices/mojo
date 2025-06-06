@@ -14,9 +14,11 @@
 from collections import OptionalReg
 from collections.string import StaticString
 from math import align_down, ceildiv
+from sys.ffi import OpaquePointer, _get_global_or_null, external_call
 from sys.info import alignof, simdwidthof
 
 from algorithm import (
+    elementwise,
     sync_parallelize,
     tile,
     tile_middle_unswitch_boundaries,
@@ -50,12 +52,15 @@ from gpu._cudnn.infer import (
     cudnnDestroyTensorDescriptor,
     cudnnFilterStruct,
     cudnnSetFilter4dDescriptor,
+    cudnnSetStream,
     cudnnSetTensor4dDescriptor,
     cudnnStatus_t,
     cudnnTensorFormat_t,
     cudnnTensorStruct,
 )
-from gpu.host import DeviceContext
+from gpu.host import DeviceContext, DeviceBuffer
+from gpu.host._nvidia_cuda import CUDA
+from gpu.host.device_context import _DeviceBufferPtr
 from gpu.id import block_dim, block_idx, thread_idx
 from linalg.accumulate import _Accumulator
 from linalg.utils import partition_work
@@ -2661,7 +2666,7 @@ fn _get_group_filter_base(
 @always_inline
 fn pack_filter(
     filter: NDBuffer,
-    packed_filter: NDBuffer,
+    packed_filter: NDBuffer[mut=True, *_, **_],
     num_groups: Int,
 ):
     """This packs the filter form RSCF to FRSCf.
@@ -2689,7 +2694,11 @@ fn pack_filter(
 fn pack_filter[
     simd_size: Int,
     micro_kernel_f_size: Int,  # 64
-](filter: NDBuffer, packed_filter: NDBuffer, num_groups: Int):
+](
+    filter: NDBuffer,
+    packed_filter: NDBuffer[mut=True, *_, **_],
+    num_groups: Int,
+):
     """This packs the filter form RSCF to FRSCf.
 
     Parameters:
@@ -3087,69 +3096,132 @@ fn conv2d_gpu_naive_nhwc_rscf[
             output.store(IndexList[4](n, h, w, co), value.cast[output_type]())
 
 
+# ===----------------------------------------------------------------------=== #
+# GPU Convolution using cuDNN                                                  #
+# ===----------------------------------------------------------------------=== #
+
+
 @always_inline
 fn check_cudnn_error(stat: cudnnStatus_t):
     if stat != cudnnStatus_t.CUDNN_STATUS_SUCCESS:
         print(stat)
 
 
+@value
+@register_passable
+struct CuDNNConvMeta:
+    var ptr_handle: UnsafePointer[cudnnContext]
+    var ptr_input_desc: UnsafePointer[cudnnTensorStruct]
+    var ptr_filter_desc: UnsafePointer[cudnnFilterStruct]
+    var ptr_conv_desc: UnsafePointer[cudnnConvolutionStruct]
+    var ptr_output_desc: UnsafePointer[cudnnTensorStruct]
+
+    fn __init__(out self):
+        self.ptr_handle = UnsafePointer[cudnnContext]()
+        check_cudnn_error(cudnnCreate(UnsafePointer(to=self.ptr_handle)))
+
+        self.ptr_input_desc = UnsafePointer[cudnnTensorStruct]()
+        check_cudnn_error(
+            cudnnCreateTensorDescriptor(UnsafePointer(to=self.ptr_input_desc))
+        )
+
+        self.ptr_filter_desc = UnsafePointer[cudnnFilterStruct]()
+        check_cudnn_error(
+            cudnnCreateFilterDescriptor(UnsafePointer(to=self.ptr_filter_desc))
+        )
+
+        self.ptr_conv_desc = UnsafePointer[cudnnConvolutionStruct]()
+        check_cudnn_error(
+            cudnnCreateConvolutionDescriptor(
+                UnsafePointer(to=self.ptr_conv_desc)
+            )
+        )
+
+        self.ptr_output_desc = UnsafePointer[cudnnTensorStruct]()
+        check_cudnn_error(
+            cudnnCreateTensorDescriptor(UnsafePointer(to=self.ptr_output_desc))
+        )
+
+    fn __del__(owned self):
+        check_cudnn_error(cudnnDestroyTensorDescriptor(self.ptr_output_desc))
+        check_cudnn_error(cudnnDestroyConvolutionDescriptor(self.ptr_conv_desc))
+        check_cudnn_error(cudnnDestroyFilterDescriptor(self.ptr_filter_desc))
+        check_cudnn_error(cudnnDestroyTensorDescriptor(self.ptr_input_desc))
+        check_cudnn_error(cudnnDestroy(self.ptr_handle))
+
+
+fn _get_cudnn_meta(ctx: DeviceContext) raises -> UnsafePointer[CuDNNConvMeta]:
+    """Get the cuDNN metadata.
+    If the metadata is not found, create a new one and insert it into the global
+    cache.
+
+    Args:
+        ctx: The device context.
+
+    Returns:
+        The cuDNN metadata.
+    """
+    alias name = String("CUDA_CUDNN_META")
+    if ptr_meta := _get_global_or_null[name]().bitcast[CuDNNConvMeta]():
+        check_cudnn_error(
+            cudnnSetStream(ptr_meta[].ptr_handle, CUDA(ctx.stream()))
+        )
+        return ptr_meta
+
+    ptr_meta = UnsafePointer[CuDNNConvMeta].alloc(1)
+    ptr_meta.init_pointee_move(CuDNNConvMeta())
+
+    external_call["KGEN_CompilerRT_InsertGlobal", NoneType](
+        StringSlice(name),
+        ptr_meta.bitcast[NoneType](),
+    )
+
+    return ptr_meta
+
+
 fn conv_cudnn[
-    input_dim: DimList,
-    filter_dim: DimList,
-    output_dim: DimList,
     input_type: DType,
     filter_type: DType,
     output_type: DType,
 ](
-    input: UnsafePointer[Scalar[input_type]],
-    filter: UnsafePointer[Scalar[filter_type]],
-    output: UnsafePointer[Scalar[output_type]],
+    input: NDBuffer[input_type, 4, MutableAnyOrigin, *_, **_],
+    filter: NDBuffer[filter_type, 4, MutableAnyOrigin, *_, **_],
+    output: NDBuffer[output_type, 4, MutableAnyOrigin, *_, **_],
     stride: IndexList[2],
     dilation: IndexList[2],
     padding: IndexList[2],
     num_groups: Int,
     ctx: DeviceContext,
 ) raises:
-    var cudnn_handle = UnsafePointer[cudnnContext]()
-    check_cudnn_error(cudnnCreate(UnsafePointer(to=cudnn_handle)))
+    var ptr_meta = _get_cudnn_meta(ctx)
 
-    var input_desc = UnsafePointer[cudnnTensorStruct]()
-    check_cudnn_error(cudnnCreateTensorDescriptor(UnsafePointer(to=input_desc)))
     check_cudnn_error(
         cudnnSetTensor4dDescriptor(
-            input_desc,
+            ptr_meta[].ptr_input_desc,
             cudnnTensorFormat_t.CUDNN_TENSOR_NHWC,
             cudnnDataType_t.CUDNN_DATA_FLOAT,
-            input_dim.get[0](),
-            input_dim.get[3](),
-            input_dim.get[1](),
-            input_dim.get[2](),
+            input.dim[0](),
+            input.dim[3](),
+            input.dim[1](),
+            input.dim[2](),
         )
     )
 
-    var filter_desc = UnsafePointer[cudnnFilterStruct]()
-    check_cudnn_error(
-        cudnnCreateFilterDescriptor(UnsafePointer(to=filter_desc))
-    )
     check_cudnn_error(
         cudnnSetFilter4dDescriptor(
-            filter_desc,
+            ptr_meta[].ptr_filter_desc,
             cudnnDataType_t.CUDNN_DATA_FLOAT,
             cudnnTensorFormat_t.CUDNN_TENSOR_NCHW,
-            filter_dim.get[0](),
-            filter_dim.get[1](),
-            filter_dim.get[2](),
-            filter_dim.get[3](),
+            filter.dim[0](),
+            filter.dim[1](),
+            filter.dim[2](),
+            filter.dim[3](),
         )
     )
 
-    var conv_desc = UnsafePointer[cudnnConvolutionStruct]()
-    check_cudnn_error(
-        cudnnCreateConvolutionDescriptor(UnsafePointer(to=conv_desc))
-    )
     check_cudnn_error(
         cudnnSetConvolution2dDescriptor(
-            conv_desc,
+            ptr_meta[].ptr_conv_desc,
             padding[0],
             padding[1],
             stride[0],
@@ -3161,19 +3233,15 @@ fn conv_cudnn[
         )
     )
 
-    var output_desc = UnsafePointer[cudnnTensorStruct]()
-    check_cudnn_error(
-        cudnnCreateTensorDescriptor(UnsafePointer(to=output_desc))
-    )
     check_cudnn_error(
         cudnnSetTensor4dDescriptor(
-            output_desc,
+            ptr_meta[].ptr_output_desc,
             cudnnTensorFormat_t.CUDNN_TENSOR_NHWC,
             cudnnDataType_t.CUDNN_DATA_FLOAT,
-            output_dim.get[0](),
-            output_dim.get[3](),
-            output_dim.get[1](),
-            output_dim.get[2](),
+            output.dim[0](),
+            output.dim[3](),
+            output.dim[1](),
+            output.dim[2](),
         )
     )
 
@@ -3182,27 +3250,21 @@ fn conv_cudnn[
 
     check_cudnn_error(
         cudnnConvolutionForward(
-            cudnn_handle,
+            ptr_meta[].ptr_handle,
             UnsafePointer(to=alpha).bitcast[NoneType](),
-            input_desc,
-            input.bitcast[NoneType](),
-            filter_desc,
-            filter.bitcast[NoneType](),
-            conv_desc,
+            ptr_meta[].ptr_input_desc,
+            rebind[UnsafePointer[NoneType]](input.data.bitcast[NoneType]()),
+            ptr_meta[].ptr_filter_desc,
+            rebind[UnsafePointer[NoneType]](filter.data.bitcast[NoneType]()),
+            ptr_meta[].ptr_conv_desc,
             cudnnConvolutionFwdAlgo_t.CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_GEMM,
             UnsafePointer[Scalar[input_type]]().bitcast[NoneType](),
             0,
             UnsafePointer(to=beta).bitcast[NoneType](),
-            output_desc,
-            output.bitcast[NoneType](),
+            ptr_meta[].ptr_output_desc,
+            rebind[UnsafePointer[NoneType]](output.data.bitcast[NoneType]()),
         )
     )
-
-    check_cudnn_error(cudnnDestroyTensorDescriptor(output_desc))
-    check_cudnn_error(cudnnDestroyConvolutionDescriptor(conv_desc))
-    check_cudnn_error(cudnnDestroyFilterDescriptor(filter_desc))
-    check_cudnn_error(cudnnDestroyTensorDescriptor(input_desc))
-    check_cudnn_error(cudnnDestroy(cudnn_handle))
 
 
 fn conv_gpu[
@@ -3229,8 +3291,6 @@ fn conv_gpu[
     ctx: DeviceContext,
 ) raises:
     alias block_size = 16
-
-    constrained[not filter_is_fcrs, "Filter format FCRS is not supported"]()
 
     alias conv_gpu_n = conv2d_gpu_naive_nhwc_rscf[
         input_dim,
@@ -3260,19 +3320,78 @@ fn conv_gpu[
 
     @parameter
     if input_rank == 4:
-        var grid_dim_x = ceildiv(
-            output.dim[2](), block_size
-        )  # w / block size for 2d
-        ctx.enqueue_function[conv_gpu_n](
-            input,
-            filter,
-            output,
-            stride,
-            dilation,
-            padding,
-            grid_dim=(grid_dim_x, grid_dim_y, grid_dim_z),
-            block_dim=(block_size, block_size),
-        )
+
+        @parameter
+        if filter_is_fcrs:
+
+            @parameter
+            if maybe_epilogue_func:
+                alias epilogue = maybe_epilogue_func.value()
+                var output_tmp_data = ctx.enqueue_create_buffer[output_type](
+                    output.num_elements()
+                )
+
+                var output_tmp = output
+                output_tmp.data = output_tmp_data.unsafe_ptr()
+
+                conv_cudnn[input_type, filter_type, output_type,](
+                    rebind[NDBuffer[input_type, 4, MutableAnyOrigin]](input),
+                    rebind[NDBuffer[filter_type, 4, MutableAnyOrigin]](filter),
+                    rebind[NDBuffer[output_type, 4, MutableAnyOrigin]](
+                        output_tmp
+                    ),
+                    rebind[IndexList[2]](stride),
+                    rebind[IndexList[2]](dilation),
+                    rebind[IndexList[2]](padding),
+                    num_groups,
+                    ctx,
+                )
+
+                @parameter
+                @__copy_capture(output_tmp)
+                @always_inline
+                fn epilogue_wrapper[
+                    _width: Int, _rank: Int
+                ](coords: IndexList[_rank]):
+                    alias alignment = alignof[SIMD[output_type, _width]]()
+                    vec = output_tmp.load[width=_width, alignment=alignment](
+                        rebind[IndexList[4]](coords)
+                    )
+                    epilogue(coords, vec)
+
+                elementwise[
+                    epilogue_wrapper, simdwidthof[output_type](), target="gpu"
+                ](output.dynamic_shape, ctx)
+
+                _ = output_tmp_data^
+
+            else:
+                conv_cudnn[input_type, filter_type, output_type,](
+                    rebind[NDBuffer[input_type, 4, MutableAnyOrigin]](input),
+                    rebind[NDBuffer[filter_type, 4, MutableAnyOrigin]](filter),
+                    rebind[NDBuffer[output_type, 4, MutableAnyOrigin]](output),
+                    rebind[IndexList[2]](stride),
+                    rebind[IndexList[2]](dilation),
+                    rebind[IndexList[2]](padding),
+                    num_groups,
+                    ctx,
+                )
+
+        else:
+            var grid_dim_x = ceildiv(
+                output.dim[2](), block_size
+            )  # w / block size for 2d
+            ctx.enqueue_function[conv_gpu_n](
+                input,
+                filter,
+                output,
+                stride,
+                dilation,
+                padding,
+                grid_dim=(grid_dim_x, grid_dim_y, grid_dim_z),
+                block_dim=(block_size, block_size),
+            )
+
     elif input_rank == 5:
         var grid_dim_x = ceildiv(
             output.dim[2]() * output.dim[3](), block_size

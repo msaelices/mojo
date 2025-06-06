@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from uuid import uuid4
 
 import torch
+from max import driver
 from max._core import nixl
 from max.driver import CPU
 from max.driver.tensor import Tensor
@@ -152,6 +153,12 @@ class KVTransferEngine:
             type="ucx", init_params=ucx_params[0]
         )
 
+        if not tensor.device.is_host and driver.accelerator_api() != "cuda":
+            # TODO(E2EOPT-228): Support HIP
+            raise ValueError(
+                "Non-NVIDIA GPUs are not yet supported with NIXL Transfer Engine."
+            )
+
         # TODO(E2EOPT-216) Delete CPU staging buffer after GPU->GPU is supported
         # Maybe allocate a CPU staging buffer for GPU->GPU transfers
         # So GPU->GPU would actually be GPU->CPU->CPU->GPU.
@@ -181,7 +188,7 @@ class KVTransferEngine:
             else nixl.MemoryType.VRAM
         )
         num_bytes = self.tensor.num_elements * self.tensor.dtype.size_in_bytes
-        reg_dlist = nixl.RegistrationDescriptorList(
+        self.reg_dlist = nixl.RegistrationDescriptorList(
             type=self.memory_type,
             descs=[
                 (
@@ -193,7 +200,9 @@ class KVTransferEngine:
             ],
             sorted=True,
         )
-        self.agent.register_memory(reg_dlist, [self.ucx_backend])
+        status = self.agent.register_memory(self.reg_dlist, [self.ucx_backend])
+        if status != nixl.Status.SUCCESS:
+            raise ValueError(f"Failed to register memory: {status}")
 
         # Get metadata after registration
         self.agent_metadata = self.agent.get_local_metadata()
@@ -203,6 +212,9 @@ class KVTransferEngine:
 
         # Map of agents to completed transfers
         self.completed_xfers: dict[str, set[str]] = defaultdict(set)
+
+        # All xfers
+        self.inflight_xfers: dict[str, XferReqData] = {}
 
     @property
     def metadata(self) -> KVTransferEngineMetadata:
@@ -306,10 +318,7 @@ class KVTransferEngine:
             descs_src.append((src_addr, bytes_per_page, self.memory_type.value))
         xfer_dlist_src = nixl.TransferDescriptorList(
             type=self.memory_type,
-            # This type ignore is needed because the argument expects `list[ArrayLike | tuple[int, int, int]]`.
-            # The correct type should be `Sequence[ArrayLike | tuple[int, int, int]]`.
-            # This needs to be fixed in the .pyi file.
-            descs=descs_src,  # type: ignore
+            descs=descs_src,
         )
 
         # Prepare destination descriptor list
@@ -321,7 +330,7 @@ class KVTransferEngine:
             )
         xfer_dlist_dst = nixl.TransferDescriptorList(
             type=remote.memory_type,
-            descs=descs_dst,  # type: ignore
+            descs=descs_dst,
         )
 
         xfer_name = str(uuid4())
@@ -337,7 +346,7 @@ class KVTransferEngine:
         if status not in [nixl.Status.SUCCESS, nixl.Status.IN_PROG]:
             raise ValueError(f"Transfer request failed with status {status}")
 
-        return XferReqData(
+        xfer_req = XferReqData(
             dst_name=remote_metadata.name,
             src_name=self.name,
             xfer_name=xfer_name,
@@ -345,6 +354,8 @@ class KVTransferEngine:
             src_idxs=src_idxs,
             dst_idxs=dst_idxs,
         )
+        self.inflight_xfers[xfer_name] = xfer_req
+        return xfer_req
 
     def send_xfer_sync(self, xfer_req_id: XferReqData) -> None:
         """Wait for a transfer initiated by current engine to complete.
@@ -370,6 +381,7 @@ class KVTransferEngine:
                     xfer_req_id.xfer_name
                 )
                 self.agent.release_transfer_request(xfer_req_id.xfer_id)
+                del self.inflight_xfers[xfer_req_id.xfer_name]
             elif status == nixl.Status.IN_PROG:
                 us = 1 / 1000 / 1000
                 time.sleep(us)
@@ -380,12 +392,11 @@ class KVTransferEngine:
 
     def recv_xfer_sync(self, xfer_req_id: XferReqData) -> None:
         """Wait for a transfer initiated by remote engine to complete."""
-        _: dict[str, list[bytes]] = {}
         while (
             xfer_req_id.xfer_name
             not in self.completed_xfers[xfer_req_id.src_name]
         ):
-            notifs = self.agent.get_notifs(_)
+            notifs = self.agent.get_notifs()
 
             for remote in notifs:
                 completed_xfer_names = [x.decode() for x in notifs[remote]]
@@ -399,6 +410,31 @@ class KVTransferEngine:
                 )
             self.cpu_staging_buffer.device.synchronize()
 
-    def __del__(self) -> None:
-        # TODO(GENAI-170): Deregister memory
-        pass
+    def cleanup(self) -> None:
+        """Release all resources associated with the transfer engine.
+
+        Should be called before the transfer engine is garbage collected.
+        Moving this logic into the __del__ destructor does causes a UCX error for
+        unknown reasons.
+        """
+
+        # Release all xfers
+        for xfer_req in self.inflight_xfers.values():
+            status = self.agent.release_transfer_request(xfer_req.xfer_id)
+            if status != nixl.Status.SUCCESS:
+                raise ValueError(
+                    f"Failed to release transfer request: {status}"
+                )
+
+        # Deregister NIXL memory
+        status = self.agent.deregister_memory(
+            self.reg_dlist, [self.ucx_backend]
+        )
+        if status != nixl.Status.SUCCESS:
+            raise ValueError(f"Failed to deregister memory: {status}")
+
+        # Invalidate metadata of other agents
+        for remote_name in self.remote_connections:
+            status = self.agent.invalidate_remote_metadata(remote_name)
+            if status != nixl.Status.SUCCESS:
+                raise ValueError(f"Failed to invalidate metadata: {status}")

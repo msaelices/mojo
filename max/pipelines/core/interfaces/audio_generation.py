@@ -15,7 +15,6 @@
 
 from __future__ import annotations
 
-import enum
 from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
@@ -31,12 +30,6 @@ if TYPE_CHECKING:
 
 from .response import AudioGenerationResponse
 from .text_generation import SamplingParams
-
-
-class AudioFormat(enum.Enum):
-    """The format of the audio to be generated."""
-
-    WAV = "wav"
 
 
 @dataclass(frozen=True)
@@ -63,22 +56,34 @@ class AudioGenerationRequest:
     capabilities of the response generation.
     """
 
+    max_new_tokens: int | None = None
+    """
+    The maximum number of new tokens to generate in the response. If not set,
+    the model may generate tokens until it reaches its internal limits or based
+    on other stopping criteria.
+    """
+
+    ignore_eos: bool = False
+    """
+    If set to True, the response will ignore the EOS token, and continue to generate until the Max tokens or a
+    stop string is hit.
+    """
+
     voice: str | None = None
     """The voice to use for audio generation.
     """
 
-    instructions: str = ""
-    """Control the voice of your generated audio with additional instructions.
-    Currently unused.
-    """
+    stop: list[str] | None = None
+    """Optional list of stop expressions that will cause generation to stop when encountered."""
 
-    response_format: AudioFormat = AudioFormat.WAV
-    """The format to audio in. Currently only supports wav."""
+    stop_token_ids: list[int] | None = None
+    """Optional list of token IDs that will cause generation to stop when encountered."""
 
-    speed: float = 1.0
-    """The speed of the generated audio. Select a value from 0.25 to 4.0.
-    Defaults to 1.0.
-    """
+    detokenize: bool = True
+    """Whether to detokenize the output tokens into text."""
+
+    seed: int | None = None
+    """The seed to use for the random number generator."""
 
     sampling_params: SamplingParams = SamplingParams()
     """Request sampling configuration options."""

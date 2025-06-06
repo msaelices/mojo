@@ -39,6 +39,10 @@ what we publish.
 
 ### Language changes
 
+- `var` declarations in functions now support more flexible "patterns", allowing
+  multiple values to be declared at once, e.g. `var a, b = 4, 5` and
+  `var a, b : Int, Float64`.
+
 - Mojo now supports 'ref' patterns that bind a stored LValue into a named
   declaration, extending the argument convention into local function scope.
 
@@ -94,6 +98,9 @@ what we publish.
   standard library `List[Elt]` type.  The `ListLiteral` type has been removed
   from the standard library.
 
+- `VariadicList`, `VariadicListMem`, and `VariadicPack` moved to the new
+  [`variadics`](/mojo/stdlib/builtin/variadics/) module.
+
 - Dictionary and set literals now work and default to creating instances of the
   `Dict` and `Set` types in the collections library.
 
@@ -137,6 +144,9 @@ what we publish.
 - Mojo now supports Python-style type patterns within function bodies without
   needing the use of the `var` keyword, e.g.: `x = 4; y: UInt8 = 5` implicitly
   declares `x` as type `Int`, but implicitly declares `y` with type `UInt8`.
+
+- `def` arguments are no longer implicitly mutable. If you would like to have a
+   locally mutable argument, declare it `owned` explicitly.
 
 ### Standard library changes
 
@@ -279,6 +289,14 @@ Changes to Python-Mojo interoperability:
   Daniel Lemire. So with a bit of effort to
   pinpoints the slow parts, we can easily have state of the
   art performance in the future.
+
+- The `math.isclose` function now supports both symmetric (Python-style) and
+  asymmetric (NumPy-style) comparison modes via a new `symmetrical` parameter.
+  The default value has to the newly added symmetric support.
+  The function now only supports floating-point types, removing previous
+  pseudo-support for integer and boolean types. Support added in [PR
+  4608](https://github.com/modular/modular/pull/4608) by
+  [@soraros](https://github.com/soraros).
 
 ### Tooling changes
 
