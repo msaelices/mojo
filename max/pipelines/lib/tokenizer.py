@@ -314,8 +314,8 @@ class TextTokenizer(
         # TODO(zheng): We should probably just make max_new_tokens an optional
         # instead of -1.
         max_new_tokens = None
-        if request.max_new_tokens is not None:
-            max_new_tokens = request.max_new_tokens
+        if request.sampling_params.max_new_tokens is not None:
+            max_new_tokens = request.sampling_params.max_new_tokens
         elif self.max_new_tokens != -1:
             max_new_tokens = self.max_new_tokens
 
@@ -334,7 +334,7 @@ class TextTokenizer(
         eos_token_ids = self._default_eos_token_ids
         eos_sequences = list()
 
-        if request.ignore_eos:
+        if request.sampling_params.ignore_eos:
             eos_token_ids = set()
         elif request.sampling_params.stop_token_ids:
             eos_token_ids.update(request.sampling_params.stop_token_ids)
@@ -347,7 +347,6 @@ class TextTokenizer(
             prompt=prompt,
             eos_token_ids=eos_token_ids,
             eos_sequences=eos_sequences,
-            cache_seq_id=request.index,
             max_length=len(encoded_prompt) + max_gen_tokens
             if max_gen_tokens is not None
             else self.max_length,
@@ -357,6 +356,7 @@ class TextTokenizer(
             json_schema=json_schema,
             sampling_params=request.sampling_params,
         )
+        context.assign_to_cache(request.index)
         return context
 
     @property
@@ -579,8 +579,8 @@ class TextAndVisionTokenizer(
         # TODO(zheng): We should probably just make max_new_tokens an optional
         # instead of -1.
         max_new_tokens = None
-        if request.max_new_tokens is not None:
-            max_new_tokens = request.max_new_tokens
+        if request.sampling_params.max_new_tokens is not None:
+            max_new_tokens = request.sampling_params.max_new_tokens
         elif self.max_new_tokens != -1:
             max_new_tokens = self.max_new_tokens
 
@@ -621,7 +621,7 @@ class TextAndVisionTokenizer(
             else None
         )
 
-        if request.ignore_eos:
+        if request.sampling_params.ignore_eos:
             eos_token_ids = set()
         else:
             eos_token_ids = self._default_eos_token_ids
@@ -631,11 +631,11 @@ class TextAndVisionTokenizer(
             eos_token_ids=eos_token_ids,
             pixel_values=pixel_values,
             extra_model_args=extra_model_args,
-            cache_seq_id=request.index,
             tokens=encoded_prompt,
             max_length=encoded_prompt.shape[0] + max_gen_tokens
             if max_gen_tokens is not None
             else self.max_length,
             json_schema=json_schema,
         )
+        context.assign_to_cache(request.index)
         return context

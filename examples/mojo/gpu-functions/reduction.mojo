@@ -32,7 +32,7 @@ from gpu.host import DeviceContext
 from gpu.memory import AddressSpace, load
 
 # Initialize parameters
-# To archieve high bandwidth increase SIZE to large value
+# To achieve high bandwidth increase SIZE to large value
 alias TPB = 512
 alias LOG_TPB = log2_floor(TPB)
 alias BATCH_SIZE = 8  # needs to be power of 2
@@ -44,8 +44,8 @@ alias dtype = DType.int32
 
 fn sum_kernel[
     size: Int, batch_size: Int
-](out: UnsafePointer[Int32], a: UnsafePointer[Int32],):
-    """Efficent reduction of the vector a."""
+](output: UnsafePointer[Int32], a: UnsafePointer[Int32],):
+    """Efficient reduction of the vector a."""
     sums = stack_allocation[
         TPB,
         Scalar[dtype],
@@ -80,7 +80,7 @@ fn sum_kernel[
         warp_sum = warp.sum(warp_sum)
 
         if tid == 0:
-            _ = Atomic.fetch_add(out, warp_sum)
+            _ = Atomic.fetch_add(output, warp_sum)
 
 
 # Benchmark function for sum_kernel

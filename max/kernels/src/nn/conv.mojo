@@ -1307,7 +1307,7 @@ struct ConvDirectNHWC[
     ):
         alias simd_size = simdwidthof[output_type]()
 
-        # Offset by -pad_w because s loop starts from the leftmost neightbor
+        # Offset by -pad_w because s loop starts from the leftmost neighbor
         # in padding. The kernel skip the padding point and increment the
         # pointer.
         var input_base = input - self.conv_shape.c * self.conv_shape.pad_w[0]
@@ -1384,7 +1384,7 @@ struct ConvDirectNHWC[
             var h = ho * self.conv_shape.stride[0] - self.conv_shape.pad_h[0]
 
             # Points input to the start of the row.
-            # Offset by -pad_w because s loop starts from the leftmost neightbor
+            # Offset by -pad_w because s loop starts from the leftmost neighbor
             # in padding. The kernel skip the padding point and increment the
             # pointer.
             var input_base = input + self.conv_shape.c * (
@@ -1471,7 +1471,7 @@ struct ConvDirectNHWC[
                 # fmt: on
 
                 # Points input to the start of the row.
-                # Offset by -pad_w because s loop starts from the leftmost neightbor
+                # Offset by -pad_w because s loop starts from the leftmost neighbor
                 # in padding. The kernel skip the padding point and increment the
                 # pointer.
                 var input_base = input + self.conv_shape.c * (
@@ -2666,7 +2666,7 @@ fn _get_group_filter_base(
 @always_inline
 fn pack_filter(
     filter: NDBuffer,
-    packed_filter: NDBuffer,
+    packed_filter: NDBuffer[mut=True, *_, **_],
     num_groups: Int,
 ):
     """This packs the filter form RSCF to FRSCf.
@@ -2694,7 +2694,11 @@ fn pack_filter(
 fn pack_filter[
     simd_size: Int,
     micro_kernel_f_size: Int,  # 64
-](filter: NDBuffer, packed_filter: NDBuffer, num_groups: Int):
+](
+    filter: NDBuffer,
+    packed_filter: NDBuffer[mut=True, *_, **_],
+    num_groups: Int,
+):
     """This packs the filter form RSCF to FRSCf.
 
     Parameters:
@@ -2710,7 +2714,7 @@ fn pack_filter[
             f       - the index within a continuous segments.
         num_groups: The number of groups in the convolution.
 
-    F is first broken down to segements of size micro_kernel_f_size, then the
+    F is first broken down to segments of size micro_kernel_f_size, then the
     remainder is further divided by simd_size. The last residual elements if
     any is padded with zero to fill simd_size.
     """
@@ -2986,7 +2990,7 @@ fn conv_nhwc_direct[
             @always_inline
             @parameter
             fn body[width: Int](idx: Int):
-                # Cooridates of the current index.
+                # Coordinates of the current index.
                 var curr_coords = rebind[IndexList[input_rank]](coords)
                 curr_coords[input_rank - 1] += idx
 

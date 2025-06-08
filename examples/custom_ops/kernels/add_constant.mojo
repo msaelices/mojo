@@ -23,15 +23,15 @@ from tensor_internal import (
 from utils.index import IndexList
 
 
-@compiler.register("add_constant_custom")
-struct AddConstantCustom[value: Int]:
+@compiler.register("add_constant")
+struct AddConstant[value: Int]:
     @staticmethod
     fn execute[
         # e.g. "CUDA" or "CPU"
         target: StaticString,
     ](
-        out: OutputTensor,
-        x: InputTensor[dtype = out.dtype, rank = out.rank],
+        output: OutputTensor,
+        x: InputTensor[dtype = output.dtype, rank = output.rank],
         # the context is needed for some GPU calls
         ctx: DeviceContextPtr,
     ) raises:
@@ -42,37 +42,7 @@ struct AddConstantCustom[value: Int]:
         ](idx: IndexList[x.rank]) -> SIMD[x.dtype, width]:
             return x.load[width](idx) + value
 
-        foreach[add_constant, target=target](out, ctx)
-
-    # You only need to implement this if you do not manually annotate
-    # output shapes in the graph.
-    @staticmethod
-    fn shape(
-        x: InputTensor,
-    ) raises -> IndexList[x.rank]:
-        raise "NotImplemented"
-
-
-@compiler.register("add_one_custom")
-struct AddOneCustom:
-    @staticmethod
-    fn execute[
-        # The kind of device this will be run on: "cpu" or "gpu"
-        target: StaticString,
-    ](
-        out: OutputTensor,
-        x: InputTensor[dtype = out.dtype, rank = out.rank],
-        # the context is needed for some GPU calls
-        ctx: DeviceContextPtr,
-    ) raises:
-        @parameter
-        @always_inline
-        fn elementwise_add_one[
-            width: Int
-        ](idx: IndexList[x.rank]) -> SIMD[x.dtype, width]:
-            return x.load[width](idx) + 1
-
-        foreach[elementwise_add_one, target=target](out, ctx)
+        foreach[add_constant, target=target](output, ctx)
 
     # You only need to implement this if you do not manually annotate
     # output shapes in the graph.
