@@ -27,7 +27,6 @@ from max.nn.kv_cache import KVCacheStrategy
 from max.pipelines.core import (
     AudioGenerationRequest,
     AudioGeneratorOutput,
-    PipelineAudioTokenizer,
     PipelineTask,
     PipelineTokenizer,
     TokenGeneratorRequest,
@@ -327,7 +326,6 @@ def get_target_ce_batch_tokens(pipeline_config: PipelineConfig) -> int:
 def batch_config_from_pipeline_config(
     pipeline_config: PipelineConfig,
     pipeline_task: PipelineTask = PipelineTask.TEXT_GENERATION,
-    batch_timeout: float = 0.0,
 ) -> TokenGeneratorSchedulerConfig:
     assert pipeline_config.max_batch_size is not None
     if pipeline_task == PipelineTask.EMBEDDINGS_GENERATION:
@@ -351,7 +349,6 @@ def batch_config_from_pipeline_config(
                 pipeline_config.max_batch_size,
                 pipeline_config.max_ce_batch_size,
             ),
-            ce_batch_timeout=batch_timeout,
             max_forward_steps=pipeline_config.max_num_steps,
             target_ce_batch_tokens=target_ce_batch_tokens,
             enable_chunked_prefill=pipeline_config.enable_chunked_prefill,
@@ -365,12 +362,15 @@ def batch_config_from_pipeline_config(
                 pipeline_config.max_batch_size,
                 pipeline_config.max_ce_batch_size,
             ),
-            ce_batch_timeout=batch_timeout,
             max_forward_steps=pipeline_config.max_num_steps,
             target_ce_batch_tokens=target_ce_batch_tokens,
             enable_chunked_prefill=pipeline_config.enable_chunked_prefill,
             enable_in_flight_batching=pipeline_config.enable_in_flight_batching,
             pipeline_role=pipeline_config.pipeline_role,
+            max_queue_size_tg=pipeline_config.max_queue_size_tg,
+            min_batch_size_tg=pipeline_config.min_batch_size_tg,
+            ce_delay_ms=pipeline_config.ce_delay_ms,
+            enable_prioritize_first_decode=pipeline_config.enable_prioritize_first_decode,
         )
     else:
         raise ValueError(
@@ -404,14 +404,13 @@ def batch_config_from_pipeline_config(
 AudioGeneratorContext = TypeVar("AudioGeneratorContext")
 
 
-# TODO: Implement this
 class AudioGeneratorPipeline(Generic[AudioGeneratorContext]):
     """Base class for LLM audio generation pipelines."""
 
     def __init__(
         self,
         model_name: str,
-        tokenizer: PipelineAudioTokenizer,
+        tokenizer: PipelineTokenizer,
         engine_queue: EngineQueue,
     ) -> None:
         self.logger = logging.getLogger(self.__class__.__name__)

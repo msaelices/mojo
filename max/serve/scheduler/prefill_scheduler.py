@@ -43,9 +43,6 @@ class PrefillSchedulerConfig:
     max_batch_size_ce: int
     """The maximum number of requests that can be in the context encoding batch."""
 
-    batch_timeout: Optional[float]
-    """The maximum amount of time to wait before creating a context encoding batch."""
-
     enable_chunked_prefill: bool = True
     """Enables chunked prefill, where the scheduler splits requests into chunks to ensure
     each batch contains exactly `target_tokens_per_batch_ce` tokens."""
@@ -263,7 +260,10 @@ class PrefillScheduler(Scheduler):
             # If its chunked, add it back to the start of the request queue.
             self.preempted_prefill.put(
                 PrefillRequest(
-                    last_request_id, last_request, remote_name, dst_idx
+                    id=last_request_id,
+                    context=last_request,
+                    transfer_engine_name=remote_name,
+                    block_ids=dst_idx,
                 )
             )
         else:
@@ -340,7 +340,6 @@ def load_prefill_scheduler(
     pc: ProcessControl,
     max_batch_size_ce: int,
     target_tokens_per_batch_ce: Optional[int],
-    batch_timeout: Optional[float],
     enable_chunked_prefill: bool,
     dispatcher_client: DispatcherClient,
 ) -> PrefillScheduler:
@@ -355,7 +354,6 @@ def load_prefill_scheduler(
     # Create Scheduler Config.
     scheduler_config = PrefillSchedulerConfig(
         max_batch_size_ce=max_batch_size_ce,
-        batch_timeout=batch_timeout,
         enable_chunked_prefill=enable_chunked_prefill,
         target_tokens_per_batch_ce=target_tokens_per_batch_ce,
     )

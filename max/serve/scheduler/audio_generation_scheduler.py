@@ -12,11 +12,14 @@
 # ===----------------------------------------------------------------------=== #
 from __future__ import annotations
 
+import json
 import logging
+import os
 import queue
 import time
 from collections import deque
-from typing import cast
+from collections.abc import Generator
+from typing import Any, cast
 
 import torch
 import zmq
@@ -39,32 +42,97 @@ from .text_generation_scheduler import BatchType, TokenGenerationSchedulerConfig
 
 logger = logging.getLogger("max.serve")
 
+MAX_SERVE_TTS_BATCH_INFO_FILENAME: str | None = os.environ.get(
+    "MAX_SERVE_TTS_BATCH_INFO_FILENAME", None
+)
 
-def _log_metrics(
-    batch_to_execute: AudioGenerationSchedulerOutput,
-    num_pending_reqs: int,
-    batch_creation_time_s: float,
-    batch_execution_time_s: float,
-) -> None:
-    batch_type = batch_to_execute.batch_type
-    batch_size = batch_to_execute.batch_size
-    input_tokens = batch_to_execute.input_tokens
-    terminated_reqs = batch_to_execute.num_terminated
-    batch_creation_latency_str = to_human_readable_latency(
-        batch_creation_time_s
-    )
-    batch_execution_latency_str = to_human_readable_latency(
-        batch_execution_time_s
-    )
 
-    logger.debug(
-        f"Executed {batch_type.concise_name()} batch with {batch_size} reqs | "
-        f"Input tokens: {input_tokens} | "
-        f"Terminated: {terminated_reqs} reqs, "
-        f"Pending: {num_pending_reqs} reqs | "
-        f"Batch creation: {batch_creation_latency_str}, "
-        f"Execution: {batch_execution_latency_str}"
-    )
+class SchedulerLogger:
+    def __init__(self, path: str | None):
+        self.path = path
+        # open a file and overwrite it
+        self.f = None
+        if self.path is not None:
+            try:
+                self.f = open(self.path, "w")
+            except Exception as e:
+                logger.error(f"Failed to open file {self.path}: {e}")
+                self.f = None
+        self.logs: list[Any] = []
+        if self.f is not None:
+            logger.info(f"Dumping scheduler logs to {self.path}")
+
+    def log(
+        self,
+        batch: AudioGenerationSchedulerOutput,
+        num_pending_reqs: int,
+        batch_creation_time_s: float,
+        batch_execution_time_s: float,
+    ) -> None:
+        batch_type = batch.batch_type.concise_name()
+        batch_creation_latency_str = to_human_readable_latency(
+            batch_creation_time_s
+        )
+        batch_execution_latency_str = to_human_readable_latency(
+            batch_execution_time_s
+        )
+
+        logger.debug(
+            f"Executed {batch_type} batch with {batch.batch_size} reqs | "
+            f"Num steps: {batch.num_steps} | "
+            f"Input tokens: {batch.input_tokens} | "
+            f"Terminated: {batch.num_terminated} reqs, "
+            f"Pending: {num_pending_reqs} reqs | "
+            f"Batch creation: {batch_creation_latency_str}, "
+            f"Execution: {batch_execution_latency_str}"
+        )
+
+        if self.f is not None:
+            batch_info = {
+                "start_timestamp": batch.start_time - batch_creation_time_s,
+                "end_timestamp": time.time(),
+                "batch_type": batch_type,
+                "batch_size": batch.batch_size,
+                "num_steps": batch.num_steps,
+                "input_tokens": batch.input_tokens,
+                "terminated_reqs": batch.num_terminated,
+                "num_pending_reqs": num_pending_reqs,
+                "batch_creation_latency_s": batch_creation_time_s,
+                "batch_execution_latency_s": batch_execution_time_s,
+                "requests": batch.req_info,
+            }
+
+            self.logs.append(batch_info)
+
+    def __del__(self) -> None:
+        if self.f is not None:
+            self.f.write(json.dumps(self.logs, indent=2) + "\n")
+            self.f.close()
+
+
+class AudioGenerationSchedulerConfig(TokenGenerationSchedulerConfig):
+    def __init__(
+        self,
+        max_queue_size_tg: int | None,
+        min_batch_size_tg: int | None,
+        ce_delay_ms: float,
+        enable_prioritize_first_decode: bool,
+        *args,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.max_queue_size_tg = (
+            max_queue_size_tg
+            if max_queue_size_tg is not None
+            else self.max_batch_size_tg
+        )
+        self.min_batch_size_tg = (
+            min_batch_size_tg
+            if min_batch_size_tg is not None
+            else self.max_queue_size_tg
+        )
+        self.ce_delay_ms = ce_delay_ms
+        self.enable_prioritize_first_decode = enable_prioritize_first_decode
 
 
 class AudioGenerationSchedulerOutput:
@@ -74,6 +142,7 @@ class AudioGenerationSchedulerOutput:
         num_steps: int,
         batch_type: BatchType,
     ):
+        self.start_time = time.time()
         self.reqs = reqs
         self.batch_type = batch_type
         self.batch_size = len(reqs)
@@ -81,6 +150,19 @@ class AudioGenerationSchedulerOutput:
         self.input_tokens = sum(
             context.active_length for context in reqs.values()
         )
+        if MAX_SERVE_TTS_BATCH_INFO_FILENAME is not None:
+            # Store request info prior to executing batch
+            self.req_info = [
+                {
+                    "arrival_time": req_data._arrival_time,
+                    "req_id": req_id,
+                    "start_idx": req_data.start_idx,
+                    "end_idx": req_data.end_idx,
+                    "input_tokens": req_data.active_length,
+                }
+                for req_id, req_data in reqs.items()
+            ]
+
         self.num_terminated = 0
 
     def __repr__(self) -> str:
@@ -91,7 +173,7 @@ class AudioGenerationScheduler(Scheduler):
     def __init__(
         self,
         process_control: ProcessControl,
-        scheduler_config: TokenGenerationSchedulerConfig,
+        scheduler_config: AudioGenerationSchedulerConfig,
         pipeline: AudioGenerator,
         *,
         request_zmq_endpoint: str,
@@ -124,7 +206,7 @@ class AudioGenerationScheduler(Scheduler):
         self.pending_reqs: deque[tuple[str, TTSContext]] = deque()
         self.decode_reqs: dict[str, TTSContext] = {}
         self.available_cache_indices = set(
-            range(self.scheduler_config.max_batch_size_tg)
+            range(self.scheduler_config.max_queue_size_tg)
         )
         self.paged_manager = paged_manager
 
@@ -133,8 +215,9 @@ class AudioGenerationScheduler(Scheduler):
                 "Chunked prefill is not supported with TTS Scheduler"
             )
 
-        if self.scheduler_config.batch_timeout is not None:
-            logger.warning("Batch timeout is not supported with TTS Scheduler")
+        self.batch_info_logger = SchedulerLogger(
+            path=MAX_SERVE_TTS_BATCH_INFO_FILENAME
+        )
 
         # TODO health check
 
@@ -210,18 +293,26 @@ class AudioGenerationScheduler(Scheduler):
 
         self.response_q.put_nowait([audio_responses, stop_responses])
 
-    def _should_schedule_ce(self) -> bool:
-        if len(self.decode_reqs) == 0:
-            return True
-        if len(self.decode_reqs) == self.scheduler_config.max_batch_size_tg:
-            return False
-        if len(self.pending_reqs) == 0:
-            return False
-        return True
+    def _create_tg_batch(
+        self,
+        candidate_reqs: dict[str, TTSContext] | None = None,
+    ) -> AudioGenerationSchedulerOutput:
+        self._retrieve_pending_requests()
 
-    def _create_tg_batch(self) -> AudioGenerationSchedulerOutput:
         num_steps = self.scheduler_config.max_forward_steps_tg
-        for req_data in self.decode_reqs.values():
+
+        if candidate_reqs is None:
+            candidate_reqs = self.decode_reqs
+
+        scheduled_reqs: dict[str, TTSContext] = {}
+        for req_id, req_data in candidate_reqs.items():
+            if req_id not in self.decode_reqs:
+                continue
+            if len(scheduled_reqs) == self.scheduler_config.max_batch_size_tg:
+                break
+            scheduled_reqs[req_id] = req_data
+
+        for req_data in scheduled_reqs.values():
             num_available_steps = req_data.compute_num_available_steps(
                 self.paged_manager.max_seq_len
             )
@@ -231,32 +322,28 @@ class AudioGenerationScheduler(Scheduler):
                 raise RuntimeError("Ran out of KV cache")
 
         return AudioGenerationSchedulerOutput(
-            self.decode_reqs.copy(),
+            scheduled_reqs,
             num_steps=num_steps,
             batch_type=BatchType.TokenGeneration,
         )
 
     def _create_ce_batch(self) -> AudioGenerationSchedulerOutput:
+        self._retrieve_pending_requests()
+
         ce_batch: dict[str, TTSContext] = {}
-        max_ce_batch_size = self.scheduler_config.max_batch_size_ce
-        max_tg_batch_size = self.scheduler_config.max_batch_size_tg
+        max_batch_size_ce = self.scheduler_config.max_batch_size_ce
+        max_batch_size_tg = self.scheduler_config.max_batch_size_tg
+        max_queue_size_tg = self.scheduler_config.max_queue_size_tg
         max_input_len = (
             self.scheduler_config.target_tokens_per_batch_ce or float("inf")
         )
 
         input_len = 0
 
-        if self.scheduler_config.enable_in_flight_batching:
-            ce_batch.update(self.decode_reqs)
-            input_len += len(self.decode_reqs)
-            for req_data in self.decode_reqs.values():
-                if not self.paged_manager.prefetch(req_data, num_steps=1):
-                    raise RuntimeError("Ran out of KV cache")
-
         while (
             self.pending_reqs
-            and (len(ce_batch) < max_ce_batch_size)
-            and (len(ce_batch) + len(self.decode_reqs) < max_tg_batch_size)
+            and (len(ce_batch) < max_batch_size_ce)
+            and (len(ce_batch) + len(self.decode_reqs) < max_queue_size_tg)
             and (input_len < max_input_len)
         ):
             req_id, req_data = self.pending_reqs.popleft()
@@ -266,17 +353,24 @@ class AudioGenerationScheduler(Scheduler):
             ce_batch[req_id] = req_data
             input_len += req_data.active_length
 
+        if ce_batch and self.scheduler_config.enable_in_flight_batching:
+            num_decode_reqs = 0
+            for req_id, req_data in self.decode_reqs.items():
+                if (
+                    len(ce_batch) == max_batch_size_ce
+                    or num_decode_reqs > max_batch_size_tg
+                ):
+                    break
+                num_decode_reqs += 1
+                ce_batch[req_id] = req_data
+                if not self.paged_manager.prefetch(req_data, num_steps=1):
+                    raise RuntimeError("Ran out of KV cache")
+
         return AudioGenerationSchedulerOutput(
             ce_batch,
             num_steps=1,
             batch_type=BatchType.ContextEncoding,
         )
-
-    def _create_batch(self) -> AudioGenerationSchedulerOutput:
-        self._retrieve_pending_requests()
-        if self._should_schedule_ce():
-            return self._create_ce_batch()
-        return self._create_tg_batch()
 
     def _schedule(self, batch: AudioGenerationSchedulerOutput) -> None:
         assert batch.batch_size > 0
@@ -297,8 +391,50 @@ class AudioGenerationScheduler(Scheduler):
         # send the responses to the API process
         self._stream_responses_to_frontend(responses)
 
+    def _create_batch_generator(
+        self,
+    ) -> Generator[AudioGenerationSchedulerOutput, None, None]:
+        min_batch_size_tg = self.scheduler_config.min_batch_size_tg
+        enable_prioritize_first_decode = (
+            self.scheduler_config.enable_prioritize_first_decode
+        )
+        ce_delay_ms = self.scheduler_config.ce_delay_ms
+
+        while True:
+            # Sleep for a bit to allow more requests to arrive
+            if ce_delay_ms > 0.0:
+                time.sleep(ce_delay_ms / 1000.0)
+
+            # Run at least one CE batch
+            ce_batch = self._create_ce_batch()
+            yield ce_batch
+            if enable_prioritize_first_decode:
+                yield self._create_tg_batch(ce_batch.reqs)
+
+            # Keep scheduling CE batches until hitting min_batch_size_tg
+            while (
+                len(self.pending_reqs) > 0
+                and len(self.decode_reqs) < min_batch_size_tg
+            ):
+                ce_batch = self._create_ce_batch()
+                yield ce_batch
+                if enable_prioritize_first_decode:
+                    yield self._create_tg_batch(ce_batch.reqs)
+
+            # Run at least one TG batch
+            yield self._create_tg_batch()
+
+            # Keep scheduling TG batches until hitting min_batch_size_tg
+            while (
+                len(self.decode_reqs) > 0
+                and len(self.decode_reqs) >= min_batch_size_tg
+            ):
+                yield self._create_tg_batch()
+
     def run(self) -> None:
         """The Scheduler loop that creates batches and schedules them on GPU"""
+        batch_generator = self._create_batch_generator()
+
         i = 0
         while i % 10 or not self.pc.is_canceled():
             self.pc.beat()
@@ -307,7 +443,8 @@ class AudioGenerationScheduler(Scheduler):
             try:
                 # Construct the batch to execute
                 t0 = time.monotonic()
-                batch = self._create_batch()
+                self._retrieve_pending_requests()
+                batch = next(batch_generator)
                 t1 = time.monotonic()
                 batch_creation_time_s = t1 - t0
 
@@ -322,7 +459,7 @@ class AudioGenerationScheduler(Scheduler):
                 batch_execution_time_s = t1 - t0
 
                 # Log batch metrics
-                _log_metrics(
+                self.batch_info_logger.log(
                     batch,
                     len(self.pending_reqs),
                     batch_creation_time_s,
@@ -334,6 +471,6 @@ class AudioGenerationScheduler(Scheduler):
                     self._handle_cancelled_requests()
 
             except Exception as e:
-                logger.exception("An error occurred during scheduling ")
+                logger.exception("An error occurred during scheduling")
                 # TODO try to recover
                 raise e

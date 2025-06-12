@@ -13,19 +13,17 @@
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Optional
 
 from max.pipelines.lib import PipelineRole
 
 
+# TODO(E2EOPT-309) Delete this entire file!
 @dataclass(frozen=True)
 class BatchQueueConfig:
     size: int
-
-    timeout: float = 0.0
-    """How long to wait (in seconds) if a queue is empty."""
+    """Maximum number of requests in a batch."""
 
     max_forward_steps: int = 1
     """Maximum number of forwards steps to schedule at a time."""
@@ -64,6 +62,11 @@ class TokenGeneratorSchedulerConfig:
     token_generation: BatchQueueConfig
     context_encoding: Optional[BatchQueueConfig] = None
     pipeline_role: PipelineRole = PipelineRole.PrefillAndDecode
+
+    max_queue_size_tg: int | None = None
+    min_batch_size_tg: int | None = None
+    ce_delay_ms: float | None = None
+    enable_prioritize_first_decode: bool | None = None
 
     @property
     def max_batch_size_tg(self) -> int:
@@ -106,18 +109,6 @@ class TokenGeneratorSchedulerConfig:
     def enable_in_flight_batching(self) -> bool:
         return self.token_generation.enable_in_flight_batching
 
-    @property
-    def batch_timeout(self) -> Optional[float]:
-        if self.context_encoding:
-            timeout = self.context_encoding.timeout
-        else:
-            timeout = self.token_generation.timeout
-
-        if math.isclose(timeout, 0.0):
-            return None
-
-        return timeout
-
     @classmethod
     def no_cache(
         cls,
@@ -143,12 +134,15 @@ class TokenGeneratorSchedulerConfig:
         cls,
         tg_batch_size: int,
         ce_batch_size: int,
-        ce_batch_timeout=0.1,
         max_forward_steps=1,
         target_ce_batch_tokens=4096,
         enable_chunked_prefill: bool = True,
         enable_in_flight_batching: bool = False,
         pipeline_role: PipelineRole = PipelineRole.PrefillAndDecode,
+        max_queue_size_tg: int | None = None,
+        min_batch_size_tg: int | None = None,
+        ce_delay_ms: float | None = None,
+        enable_prioritize_first_decode: bool | None = None,
     ) -> TokenGeneratorSchedulerConfig:
         """The continuous-heterogenous config creates 2 queues.
         Context-encoding is done via dynamic batching.
@@ -156,20 +150,22 @@ class TokenGeneratorSchedulerConfig:
         """
         token_generation_config = BatchQueueConfig(
             size=tg_batch_size,
-            timeout=0.0,
             max_forward_steps=max_forward_steps,
             enable_chunked_prefill=enable_chunked_prefill,
             enable_in_flight_batching=enable_in_flight_batching,
         )
         context_encoding_config = BatchQueueConfig(
             size=ce_batch_size,
-            timeout=ce_batch_timeout,
             target_sum_seq_len=target_ce_batch_tokens,
         )
         config = cls(
             context_encoding=context_encoding_config,
             token_generation=token_generation_config,
             pipeline_role=pipeline_role,
+            min_batch_size_tg=min_batch_size_tg,
+            ce_delay_ms=ce_delay_ms,
+            enable_prioritize_first_decode=enable_prioritize_first_decode,
+            max_queue_size_tg=max_queue_size_tg,
         )
         return config
 
@@ -178,12 +174,15 @@ class TokenGeneratorSchedulerConfig:
         cls,
         tg_batch_size: int,
         ce_batch_size: int,
-        ce_batch_timeout: float = 0.1,
         max_forward_steps: int = 1,
         target_ce_batch_tokens: int = 4096,
         enable_chunked_prefill: bool = True,
         enable_in_flight_batching: bool = False,
         pipeline_role: PipelineRole = PipelineRole.PrefillAndDecode,
+        max_queue_size_tg: int | None = None,
+        min_batch_size_tg: int | None = None,
+        ce_delay_ms: float | None = None,
+        enable_prioritize_first_decode: bool | None = None,
     ) -> TokenGeneratorSchedulerConfig:
         """The paged config creates 2 queues.
         Context-encoding is done via dynamic batching.
@@ -194,10 +193,13 @@ class TokenGeneratorSchedulerConfig:
         return cls.continuous_heterogenous(
             tg_batch_size=tg_batch_size,
             ce_batch_size=ce_batch_size,
-            ce_batch_timeout=ce_batch_timeout,
             max_forward_steps=max_forward_steps,
             target_ce_batch_tokens=target_ce_batch_tokens,
             enable_chunked_prefill=enable_chunked_prefill,
             enable_in_flight_batching=enable_in_flight_batching,
             pipeline_role=pipeline_role,
+            max_queue_size_tg=max_queue_size_tg,
+            min_batch_size_tg=min_batch_size_tg,
+            ce_delay_ms=ce_delay_ms,
+            enable_prioritize_first_decode=enable_prioritize_first_decode,
         )

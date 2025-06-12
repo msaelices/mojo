@@ -171,27 +171,47 @@ def fused_qkv_ragged_matmul_scaled_float8(
         ValueError: on input shapes/dtypes that are invalid for the kernel.
     """
     if input.dtype != wqkv.dtype:
-        msg = (
+        raise ValueError(
             "expected input and wqkv to have the same dtype, but got"
             f" {input.dtype} and {wqkv.dtype}, respectively."
         )
-        raise ValueError(msg)
 
     input_rank_expected = 2
     if input.rank != input_rank_expected:
-        msg = f"expected input to have rank {input_rank_expected}, was {input.rank}"
-        raise ValueError(msg)
+        raise ValueError(
+            f"expected input to have rank {input_rank_expected}, was {input.rank}"
+        )
 
     if input_row_offsets.dtype != DType.uint32:
-        msg = (
+        raise ValueError(
             "expected input_row_offsets to have dtype uint32, was"
             f" {input_row_offsets.dtype}"
         )
-        raise ValueError(msg)
 
     if layer_idx.dtype != DType.uint32:
-        msg = f"expected layer_idx to have dtype uint32, was {layer_idx.dtype}"
-        raise ValueError(msg)
+        raise ValueError(
+            f"expected layer_idx to have dtype uint32, was {layer_idx.dtype}"
+        )
+
+    # Device check - all tensors must be on the same device
+    if not all(
+        t.device == input.device
+        for t in [wqkv, input_row_offsets, input_scale, weight_scale]
+    ):
+        raise ValueError(
+            f"expected all tensors to be on the same device as input ({input.device}), "
+            f"but got:\n"
+            f"  wqkv={wqkv.device}\n"
+            f"  input_row_offsets={input_row_offsets.device}\n"
+            f"  input_scale={input_scale.device}\n"
+            f"  weight_scale={weight_scale.device}"
+        )
+
+    # layer_idx must be a scalar on CPU as it's used for indexing
+    if layer_idx.device != DeviceRef.CPU():
+        raise ValueError(
+            f"expected layer_idx to be on CPU device, but got {layer_idx.device}"
+        )
 
     # for per-tensor quantization, the scale is a scalar. We view it as a 1x1
     # rank-2 tensor so that we can use the same kernel for per-tensor and
@@ -2100,9 +2120,9 @@ def apply_penalties_to_logits(
     frequency_data: TensorValue,
     frequency_offsets: TensorValue,
     *,
-    frequency_penalty: float = 0.0,
-    presence_penalty: float = 0.0,
-    repetition_penalty: float = 1.0,
+    frequency_penalty: TensorValueLike = 0.0,
+    presence_penalty: TensorValueLike = 0.0,
+    repetition_penalty: TensorValueLike = 1.0,
 ) -> None:
     """
     Applies penalties to the logits.
@@ -2137,6 +2157,54 @@ def apply_penalties_to_logits(
     if frequency_offsets.rank != 1:
         raise ValueError("frequency_offsets must be a 1d tensor")
 
+    if isinstance(frequency_penalty, float):
+        frequency_penalty_tensor = ops.broadcast_to(
+            ops.constant(
+                frequency_penalty,
+                dtype=DType.float32,
+                device=logits_buffer.device,
+            ),
+            [logits_buffer.shape[0]],
+        )
+    else:
+        frequency_penalty_tensor = TensorValue(frequency_penalty)
+        if frequency_penalty_tensor.shape[0] != logits_buffer.shape[0]:
+            raise ValueError(
+                f"frequency_penalty tensor shape {frequency_penalty_tensor.shape} does not match logits_buffer shape {logits_buffer.shape}"
+            )
+
+    if isinstance(presence_penalty, float):
+        presence_penalty_tensor = ops.broadcast_to(
+            ops.constant(
+                presence_penalty,
+                dtype=DType.float32,
+                device=logits_buffer.device,
+            ),
+            [logits_buffer.shape[0]],
+        )
+    else:
+        presence_penalty_tensor = TensorValue(presence_penalty)
+        if presence_penalty_tensor.shape[0] != logits_buffer.shape[0]:
+            raise ValueError(
+                f"presence_penalty tensor shape {presence_penalty_tensor.shape} does not match logits_buffer shape {logits_buffer.shape}"
+            )
+
+    if isinstance(repetition_penalty, float):
+        repetition_penalty_tensor = ops.broadcast_to(
+            ops.constant(
+                repetition_penalty,
+                dtype=DType.float32,
+                device=logits_buffer.device,
+            ),
+            [logits_buffer.shape[0]],
+        )
+    else:
+        repetition_penalty_tensor = TensorValue(repetition_penalty)
+        if repetition_penalty_tensor.shape[0] != logits_buffer.shape[0]:
+            raise ValueError(
+                f"repetition_penalty tensor shape {repetition_penalty_tensor.shape} does not match logits_buffer shape {logits_buffer.shape}"
+            )
+
     ops.inplace_custom(
         "sampler.apply_penalties",
         device=logits_buffer.device,
@@ -2144,21 +2212,9 @@ def apply_penalties_to_logits(
             logits_buffer,
             frequency_data,
             frequency_offsets,
-            ops.constant(
-                frequency_penalty,
-                DType.float32,
-                device=DeviceRef.CPU(),
-            ),
-            ops.constant(
-                presence_penalty,
-                DType.float32,
-                device=DeviceRef.CPU(),
-            ),
-            ops.constant(
-                repetition_penalty,
-                DType.float32,
-                device=DeviceRef.CPU(),
-            ),
+            frequency_penalty_tensor,
+            presence_penalty_tensor,
+            repetition_penalty_tensor,
         ],
     )
 

@@ -23,7 +23,12 @@ from max.driver import Device, Tensor
 from max.dtype import DType
 from max.engine import InferenceSession, Model
 from max.graph import DeviceRef, Graph, TensorType, TensorValue, Type
-from max.graph.weights import SafetensorWeights, Weights, WeightsAdapter
+from max.graph.weights import (
+    SafetensorWeights,
+    WeightData,
+    Weights,
+    WeightsAdapter,
+)
 from max.nn import ReturnLogits, Signals
 from max.nn.kv_cache import (
     KVCacheInputs,
@@ -46,6 +51,7 @@ from transformers import AutoConfig
 
 from .internvl import InternVLLanguageModel, InternVLVisionModel
 from .model_config import InternVLConfig
+from .weight_adapters import convert_internvl_language_model_state_dict
 
 logger = logging.getLogger("max.pipelines")
 
@@ -66,17 +72,22 @@ class InternVLInputs(ModelInputs):
     pixel_values: Tensor | None = None
     """Pixel values for vision inputs."""
 
+    return_n_logits: Tensor
+    """Number of logits to return, used by speculative decoding for example."""
+
     def __init__(
         self,
         input_ids: Tensor,
         input_row_offsets: Tensor,
         signal_buffers: list[Tensor],
+        return_n_logits: Tensor,
         pixel_values: Tensor | None = None,
         kv_cache_inputs: KVCacheInputs | None = None,
     ) -> None:
         self.input_ids = input_ids
         self.input_row_offsets = input_row_offsets
         self.signal_buffers = signal_buffers
+        self.return_n_logits = return_n_logits
         self.pixel_values = pixel_values
         self.kv_cache_inputs = kv_cache_inputs
 
@@ -198,6 +209,26 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
             devices=devices,
         )
 
+    def _get_state_dict(
+        self,
+        weights: Weights,
+        adapter: WeightsAdapter,
+    ) -> dict[str, WeightData]:
+        """Get processed state dict for language model loading.
+
+        Args:
+            weights: Raw InternVL checkpoint weights
+            adapter: Weight adapter for name mapping (required)
+
+        Returns:
+            Processed state dict ready for DistributedLlama3.load_state_dict()
+        """
+        return adapter(
+            dict(weights.items()),
+            huggingface_config=self.huggingface_config,
+            pipeline_config=self.pipeline_config,
+        )
+
     def load_model(self, session: InferenceSession) -> tuple[Model, Model]:
         """Loads the compiled InternVL models into the MAX Engine session.
 
@@ -218,14 +249,22 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
                 "InternVL currently only supports safetensors weights"
             )
 
+        # Get processed state dict for language model.
+        state_dict = self._get_state_dict(
+            self.weights, convert_internvl_language_model_state_dict
+        )
+
         # Generate InternVL config from HuggingFace config
-        state_dict = {key: value.data() for key, value in self.weights.items()}
         internvl_config = InternVLConfig.generate(
             pipeline_config=self.pipeline_config,
             huggingface_config=self.huggingface_config,
             state_dict=state_dict,
             dtype=self.dtype,
             n_devices=len(self.devices),
+            logits_postprocessor=None,
+            cache_dtype=self.encoding.cache_dtype,
+            kv_cache_config=self.kv_cache_config,
+            return_logits=self.return_logits,
         )
 
         # Build and compile vision model
@@ -243,9 +282,9 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
         # Build and compile language model
         logger.info("Building and compiling language model...")
         before = time.perf_counter()
-        language_graph = self._build_language_graph(internvl_config)
+        language_graph = self._build_language_graph(internvl_config, state_dict)
         language_model = session.load(
-            language_graph, weights_registry=self.weights.allocated_weights
+            language_graph, weights_registry=self.state_dict
         )
         after = time.perf_counter()
         logger.info(
@@ -284,6 +323,10 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
         # Generate DeviceRef.
         device_ref = DeviceRef.from_device(self.devices[0])
 
+        return_n_logits_type = TensorType(
+            DType.int64, shape=["return_n_logits"], device=DeviceRef.CPU()
+        )
+
         kv_inputs = self.kv_manager.input_symbols()
 
         # Construct Graph Inputs
@@ -306,6 +349,7 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
         return (
             tokens_type,
             input_row_offsets_type,
+            return_n_logits_type,
             *signals.input_types(),
             *flattened_kv_types,
         )
@@ -333,17 +377,27 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
         ]
         return kv_caches_per_dev
 
-    def _build_language_graph(self, config: InternVLConfig) -> Graph:
+    def _build_language_graph(
+        self, config: InternVLConfig, state_dict: dict[str, WeightData]
+    ) -> Graph:
         """Build the language model graph for text generation with image embeddings."""
         # Initialize graph with input types.
         with Graph(
             "internvl_language", input_types=self._language_graph_input_types()
         ) as graph:
             # Build language model architecture.
-            language_model = InternVLLanguageModel(config)
+            language_model = InternVLLanguageModel(config.llm_config)
+            language_model.load_state_dict(
+                state_dict=state_dict,
+                override_quantization_encoding=True,
+                weight_alignment=1,
+            )
+            self.state_dict = language_model.state_dict()
 
             # Unpack inputs
-            tokens, input_row_offsets, *variadic_args = graph.inputs
+            tokens, input_row_offsets, return_n_logits, *variadic_args = (
+                graph.inputs
+            )
 
             # Multi-GPU passes a signal buffer per device: unmarshal these.
             signal_buffers = [
@@ -355,10 +409,11 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
 
             # Execute language model: text + image embeddings -> logits
             outputs = language_model(
-                input_ids=tokens.tensor,
-                input_row_offsets=input_row_offsets.tensor,
-                kv_cache_inputs_per_dev=self._unflatten_kv_inputs(kv_cache),
+                tokens=tokens.tensor,
                 signal_buffers=[buf.buffer for buf in signal_buffers],
+                kv_cache_inputs_per_dev=self._unflatten_kv_inputs(kv_cache),
+                return_n_logits=return_n_logits.tensor,
+                input_row_offsets=input_row_offsets.tensor,
             )
 
             graph.output(*outputs)
@@ -426,6 +481,7 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
         language_outputs = self.language_model.execute(
             model_inputs.input_ids,
             model_inputs.input_row_offsets,
+            model_inputs.return_n_logits,
             *model_inputs.signal_buffers,
             *kv_cache_inputs_list,
         )
@@ -470,12 +526,15 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
         # Unset the context's pixel values so that subsequent next_token
         # calls reusing the same context won't run the vision encoder.
         for ctx in context_batch:
-            ctx.pixel_values = []
+            ctx.pixel_values = tuple()
 
         return InternVLInputs(
             input_ids=input_ids,
             input_row_offsets=input_row_offsets,
             signal_buffers=self.signal_buffers,
+            return_n_logits=Tensor.from_numpy(
+                np.array([return_n_logits], dtype=np.int64)
+            ),
             pixel_values=pixel_values,
             kv_cache_inputs=kv_cache_inputs,
         )
@@ -484,8 +543,8 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
         self, next_tokens: Tensor, prev_model_inputs: ModelInputs
     ) -> ModelInputs:
         """Prepares the inputs for subsequent execution steps in a multi-step generation."""
+        assert isinstance(prev_model_inputs, InternVLInputs)
         prev_inputs = prev_model_inputs
-        assert isinstance(prev_inputs, InternVLInputs)
 
         # Use pre-allocated row offsets for next token
         next_row_offsets = self._input_row_offsets_prealloc[
@@ -496,6 +555,7 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
             input_ids=next_tokens,
             input_row_offsets=next_row_offsets,
             signal_buffers=self.signal_buffers,
+            return_n_logits=prev_model_inputs.return_n_logits,
             # Set vision model inputs to None after the first step
             pixel_values=None,
             kv_cache_inputs=prev_inputs.kv_cache_inputs,

@@ -133,10 +133,8 @@ fn ceildiv[T: CeilDivableRaising, //](numerator: T, denominator: T) raises -> T:
 # before overload resolution.
 @always_inline("builtin")
 fn ceildiv(
-    numerator: IntLiteral,
-    denominator: IntLiteral,
-    out result: __type_of(numerator.__ceildiv__(denominator)),
-):
+    numerator: IntLiteral, denominator: IntLiteral
+) -> __type_of(numerator.__ceildiv__(denominator)):
     """Return the rounded-up result of dividing numerator by denominator.
 
     Args:
@@ -146,7 +144,7 @@ fn ceildiv(
     Returns:
         The ceiling of dividing numerator by denominator.
     """
-    result = __type_of(result)()
+    return {}
 
 
 # ===----------------------------------------------------------------------=== #
@@ -894,16 +892,17 @@ fn copysign[
     Returns:
         Copies the sign from sign to magnitude.
     """
+    constrained[dtype.is_numeric(), "operands must be a numeric type"]()
 
     @parameter
-    if dtype.is_integral():
+    if dtype.is_unsigned():
+        return magnitude
+    elif dtype.is_integral():
         var mag_abs = abs(magnitude)
-        return (sign > 0).select(mag_abs, -mag_abs)
-    else:
-        constrained[dtype.is_numeric(), "operands must be a numeric type"]()
-        return llvm_intrinsic[
-            "llvm.copysign", SIMD[dtype, width], has_side_effect=False
-        ](magnitude, sign)
+        return (sign < 0).select(-mag_abs, mag_abs)
+    return llvm_intrinsic[
+        "llvm.copysign", SIMD[dtype, width], has_side_effect=False
+    ](magnitude, sign)
 
 
 # ===----------------------------------------------------------------------=== #
@@ -1647,9 +1646,9 @@ fn _atanh_float32(x: SIMD) -> __type_of(x):
     """This computes the `atanh` of the inputs for float32. It uses the same
     approximation used by Eigen library."""
 
-    alias nan_val = __type_of(x)(nan[x.dtype]())
-    alias inf_val = __type_of(x)(inf[x.dtype]())
-    alias neg_inf_val = __type_of(x)(-inf[x.dtype]())
+    alias nan_val = nan[x.dtype]()
+    alias inf_val = inf[x.dtype]()
+    alias neg_inf_val = -inf[x.dtype]()
 
     var is_neg = x < 0
     var x_abs = abs(x)
@@ -2781,8 +2780,8 @@ trait Ceilable:
     ```mojo
     from math import Ceilable, ceil
 
-    @value
-    struct Complex(Ceilable):
+    @fieldwise_init
+    struct Complex(Ceilable, Copyable):
         var re: Float64
         var im: Float64
 
@@ -2818,8 +2817,8 @@ trait Floorable:
     ```mojo
     from math import Floorable, floor
 
-    @value
-    struct Complex(Floorable):
+    @fieldwise_init
+    struct Complex(Floorable, Copyable):
         var re: Float64
         var im: Float64
 
@@ -2856,8 +2855,8 @@ trait CeilDivable:
     ```mojo
     from math import CeilDivable
 
-    @value
-    struct Foo(CeilDivable):
+    @fieldwise_init
+    struct Foo(CeilDivable, Copyable):
         var x: Float64
 
         fn __ceildiv__(self, denominator: Self) -> Self:
@@ -2889,8 +2888,8 @@ trait CeilDivableRaising:
     ```mojo
     from math import CeilDivableRaising
 
-    @value
-    struct Foo(CeilDivableRaising):
+    @fieldwise_init
+    struct Foo(CeilDivableRaising, Copyable):
         var x: Float64
 
         fn __ceildiv__(self, denominator: Self) raises -> Self:
@@ -2927,8 +2926,8 @@ trait Truncable:
     ```mojo
     from math import Truncable, trunc
 
-    @value
-    struct Complex(Truncable):
+    @fieldwise_init
+    struct Complex(Truncable, Copyable):
         var re: Float64
         var im: Float64
 

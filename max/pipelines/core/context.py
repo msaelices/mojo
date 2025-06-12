@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import math
+import time
 from collections.abc import Sequence
 from typing import Any, Optional, Protocol, runtime_checkable
 
@@ -394,7 +395,7 @@ class TextContext(msgspec.Struct, tag=True, kw_only=True, omit_defaults=True):
                 if not np.array_equal(self_val, other_val):
                     return False
             # Handle lists
-            elif isinstance(self_val, list):
+            elif isinstance(self_val, list) or isinstance(self_val, tuple):
                 if len(self_val) != len(other_val):
                     return False
                 for s, o in zip(self_val, other_val):
@@ -826,22 +827,21 @@ class TextContext(msgspec.Struct, tag=True, kw_only=True, omit_defaults=True):
         """Returns true if the context has not been updated with tokens."""
         return self._is_initial_prompt
 
-    def __repr__(self) -> str:
-        return (
-            f"TextContext("
-            f"cache_seq_id={self._cache_seq_id}, "
-            f"committed_idx={self.committed_idx}, "
-            f"start_idx={self.start_idx}, "
-            f"active_idx={self.active_idx}, "
-            f"end_idx={self.end_idx})"
-        )
 
-
-class TextAndVisionContext(TextContext):
+class TextAndVisionContext(
+    TextContext, tag=True, kw_only=True, omit_defaults=True
+):
     """A base class for model context, specifically for Vision model variants."""
 
-    pixel_values: Sequence[np.ndarray] = msgspec.field()
-    extra_model_args: dict[str, Any] = msgspec.field()
+    pixel_values: tuple[np.ndarray, ...] = msgspec.field(default_factory=tuple)
+    extra_model_args: dict[str, np.ndarray] = msgspec.field(
+        default_factory=dict
+    )
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if len(self.pixel_values) > 1:
+            raise ValueError("only one image supported in Llama Vision")
 
     def update(
         self,
@@ -856,7 +856,7 @@ class TextAndVisionContext(TextContext):
 
         # Update context not to re-encode the same image in next steps. There are no image tokens
         # expected after context encoding.
-        self.pixel_values = ()
+        self.pixel_values = tuple()
 
 
 SPEECH_TOKEN_audio_chunk_size = 128
@@ -892,6 +892,7 @@ class TTSContext(TextContext):
     )
     _decoded_index: int = msgspec.field(default=0)
     _block_counter: int = msgspec.field(default=0)
+    _arrival_time: float = msgspec.field(default_factory=lambda: time.time())
 
     @property
     def speech_tokens(self) -> np.ndarray:
