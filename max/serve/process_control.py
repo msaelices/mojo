@@ -23,9 +23,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Callable, Optional, Protocol, Union
 
-logger = logging.getLogger(__name__)
-# This logger is too verbose to expose to end users. Disable propagation to the root logger by default.
-logger.propagate = False
+logger = logging.getLogger("max.serve.process_control")
 
 
 class EventCreator(Protocol):
@@ -192,18 +190,12 @@ class ProcessMonitor:
 
     async def until_healthy(self) -> bool:
         return await _until_true(
-            self.pc.is_healthy,
-            self.poll_s,
-            self.max_time_s,
+            self.pc.is_healthy, self.poll_s, self.max_time_s
         )
 
     async def until_dead_no_timeout(self) -> bool:
         is_dead = lambda: not self.proc.is_alive()
-        return await _until_true(
-            is_dead,
-            self.unhealthy_poll_s,
-            None,
-        )
+        return await _until_true(is_dead, self.unhealthy_poll_s, None)
 
     async def until_unhealthy(self) -> bool:
         return await _until_true(
@@ -226,8 +218,7 @@ class ProcessMonitor:
         dead_task = loop.create_task(self.until_dead())
 
         completed_tasks, pending_tasks = await asyncio.wait(
-            [completed_task, dead_task],
-            return_when=asyncio.FIRST_COMPLETED,
+            [completed_task, dead_task], return_when=asyncio.FIRST_COMPLETED
         )
 
         if completed_task.done():

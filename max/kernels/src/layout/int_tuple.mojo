@@ -57,13 +57,12 @@ var total_size = size(shape)  # Results in 120
 """
 
 import sys
-from collections import InlineArray, List
 from os import abort
 
 from buffer import DimList
 from builtin.range import _StridedRange
-from memory import UnsafePointer, memcpy
-from memory.pointer import AddressSpace, _GPUAddressSpace
+from memory import memcpy
+from memory.pointer import _GPUAddressSpace
 
 from utils.numerics import max_finite
 
@@ -325,12 +324,13 @@ struct _IntTupleIter[origin: ImmutableOrigin, tuple_origin: ImmutableOrigin]:
 
 struct IntTuple[origin: ImmutableOrigin = __origin_of()](
     Copyable,
+    Defaultable,
+    EqualityComparable,
+    Intable,
     Movable,
     Sized,
     Stringable,
     Writable,
-    EqualityComparable,
-    Intable,
 ):
     """A hierarchical, nested tuple of integers with efficient memory management.
 
@@ -1449,8 +1449,7 @@ fn is_tuple(t: IntTuple) -> Bool:
     return t.is_tuple()
 
 
-@value
-struct _ZipIter[origin: ImmutableOrigin, n: Int]:
+struct _ZipIter[origin: ImmutableOrigin, n: Int](Copyable, Movable):
     """Iterator for zipped `IntTuple` collections."""
 
     var index: Int
@@ -1509,8 +1508,8 @@ struct _ZipIter[origin: ImmutableOrigin, n: Int]:
         return self.len - self.index
 
 
-@value
-struct _zip[origin: ImmutableOrigin, n: Int]:
+@fieldwise_init
+struct _zip[origin: ImmutableOrigin, n: Int](Copyable, Movable):
     """Container for zipped `IntTuple` collections."""
 
     var ts: InlineArray[Pointer[IntTuple, origin], n]

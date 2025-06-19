@@ -42,9 +42,7 @@ def _sampling_input_types(
         inputs["logits"] = logits_in_type
     else:
         logits_in_type = BufferType(
-            sampling_config.in_dtype,
-            ["batch", "vocab_size"],
-            device=device,
+            sampling_config.in_dtype, ["batch", "vocab_size"], device=device
         )
         inputs["logits"] = logits_in_type
 
@@ -57,7 +55,7 @@ def _sampling_input_types(
     top_k_type = TensorType(DType.int64, ["batch"], device=device)
     inputs["top_k"] = top_k_type
 
-    max_k_type = TensorType(DType.int64, [1], device=DeviceRef.CPU())
+    max_k_type = TensorType(DType.int64, [], device=DeviceRef.CPU())
     inputs["max_k"] = max_k_type
 
     temperature_type = TensorType(DType.float32, ["batch"], device=device)
@@ -187,9 +185,7 @@ def token_sampler(
             ].tensor
 
             scatter_set_constant(
-                logits_buffer,
-                min_tokens_mask,
-                fill_val=-10000,
+                logits_buffer, min_tokens_mask, fill_val=-10000
             )
 
         # freeze the logits buffer (no more writes)
@@ -312,9 +308,7 @@ def rejection_sampler(
         TensorType(DType.float32, ["batch_size", "num_steps"], device=device),
         # Target Logits
         TensorType(
-            DType.float32,
-            ["total_output_len", "vocab_size"],
-            device=device,
+            DType.float32, ["total_output_len", "vocab_size"], device=device
         ),
         # Target Logit Offsets
         TensorType(DType.int64, ["logit_offsets_len"], device=device),

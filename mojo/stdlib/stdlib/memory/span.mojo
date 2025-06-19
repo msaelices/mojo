@@ -20,10 +20,9 @@ from memory import Span
 ```
 """
 
-from collections import InlineArray
 from sys.info import simdwidthof
 
-from memory import Pointer, UnsafePointer
+from memory import Pointer
 from memory.unsafe_pointer import _default_alignment
 
 
@@ -56,7 +55,7 @@ struct _SpanIter[
         return self
 
     @always_inline
-    fn __next__(mut self) -> ref [origin, address_space] T:
+    fn __next_ref__(mut self) -> ref [origin, address_space] T:
         @parameter
         if forward:
             self.index += 1
@@ -87,7 +86,7 @@ struct Span[
     *,
     address_space: AddressSpace = AddressSpace.GENERIC,
     alignment: Int = _default_alignment[T](),
-](ExplicitlyCopyable, Copyable, Movable, Sized, Boolable):
+](ExplicitlyCopyable, Copyable, Movable, Sized, Boolable, Defaultable):
     """A non-owning view of contiguous data.
 
     Parameters:
@@ -141,7 +140,13 @@ struct Span[
     fn __init__(
         out self,
         *,
-        ptr: UnsafePointer[T, address_space=address_space, alignment=alignment],
+        ptr: UnsafePointer[
+            T,
+            address_space=address_space,
+            alignment=alignment,
+            mut=mut,
+            origin=origin, **_,
+        ],
         length: UInt,
     ):
         """Unsafe construction from a pointer and length.
@@ -170,7 +175,11 @@ struct Span[
         Args:
             list: The list to which the span refers.
         """
-        self._data = list.data.address_space_cast[address_space]()
+        self._data = (
+            list.data.address_space_cast[address_space]()
+            .static_alignment_cast[alignment]()
+            .origin_cast[mut, origin]()
+        )
         self._len = list._len
 
     @always_inline
@@ -191,6 +200,8 @@ struct Span[
             UnsafePointer(to=array)
             .bitcast[T]()
             .address_space_cast[address_space]()
+            .static_alignment_cast[alignment]()
+            .origin_cast[mut, origin]()
         )
         self._len = size
 
@@ -288,7 +299,7 @@ struct Span[
     # Trait implementations
     # ===------------------------------------------------------------------===#
 
-    @always_inline
+    @always_inline("builtin")
     fn __len__(self) -> Int:
         """Returns the length of the span. This is a known constant value.
 
@@ -354,7 +365,7 @@ struct Span[
         """
         return rebind[Self.Immutable](self)
 
-    @always_inline
+    @always_inline("builtin")
     fn unsafe_ptr(
         self,
     ) -> UnsafePointer[
@@ -535,4 +546,7 @@ struct Span[
         Returns:
             A pointer merged with the specified `other_type`.
         """
-        return __type_of(result)(self._data, self._len)
+        return __type_of(result)(
+            ptr=self._data.origin_cast[result.mut, result.origin](),
+            length=self._len,
+        )

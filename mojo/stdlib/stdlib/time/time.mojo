@@ -31,7 +31,6 @@ from sys import (
     os_is_windows,
 )
 
-from memory import UnsafePointer
 
 # ===-----------------------------------------------------------------------===#
 # Utilities
@@ -60,7 +59,7 @@ alias _WINDOWS_LARGE_INTEGER = Int64
 
 @fieldwise_init
 @register_passable("trivial")
-struct _CTimeSpec(Stringable, Writable, Copyable, Movable):
+struct _CTimeSpec(Copyable, Defaultable, Movable, Stringable, Writable):
     var tv_sec: Int  # Seconds
     var tv_subsec: Int  # subsecond (nanoseconds on linux and usec on mac)
 
@@ -86,7 +85,7 @@ struct _CTimeSpec(Stringable, Writable, Copyable, Movable):
 
 @fieldwise_init
 @register_passable("trivial")
-struct _FILETIME(Copyable, Movable):
+struct _FILETIME(Copyable, Defaultable, Movable):
     var dw_low_date_time: UInt32
     var dw_high_date_time: UInt32
 

@@ -25,12 +25,11 @@ from sys.info import alignof, is_gpu, is_nvidia_gpu, simdwidthof, sizeof
 from sys.intrinsics import PrefetchOptions, masked_load, masked_store, prefetch
 
 from buffer.dimlist import Dim, DimList, _make_tuple
-from memory import UnsafePointer, memset_zero, stack_allocation
+from memory import memset_zero, stack_allocation
 from memory.pointer import AddressSpace, _GPUAddressSpace
 
 from utils._serialize import _serialize
 from utils.index import IndexList
-from utils.index import product as tuple_product
 from utils.static_tuple import StaticTuple
 
 alias _MAX_RANK = 8
@@ -232,7 +231,7 @@ struct NDBuffer[
     alignment: Int = 1,
     address_space: AddressSpace = AddressSpace.GENERIC,
     exclusive: Bool = True,
-](Sized, Stringable, Writable, Copyable, Movable):
+](Sized, Stringable, Writable, Copyable, Movable, Defaultable):
     """An N-dimensional buffer.
 
     NDBuffer can be parametrized on rank, static dimensions and Dtype. It does

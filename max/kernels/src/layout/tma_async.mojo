@@ -32,7 +32,6 @@ Key Components:
   various configurations for different tensor shapes and memory access patterns.
 """
 
-from collections import Optional
 from sys import alignof, llvm_intrinsic, simdwidthof, sizeof
 from sys._assembly import inlined_assembly
 
@@ -43,7 +42,6 @@ from gpu.host._nvidia_cuda import (
     create_tma_descriptor,
     prefetch_tma_descriptor,
 )
-from gpu.id import block_idx, thread_idx
 from gpu.memory import (
     AddressSpace,
     ReduceOp,
@@ -63,11 +61,9 @@ from gpu.sync import (
     mbarrier_try_wait_parity_shared,
 )
 from layout import IntTuple, Layout, LayoutTensor
-from memory import UnsafePointer, stack_allocation
 from memory.pointer import _GPUAddressSpace
 from gpu.intrinsics import Scope
 from utils.index import Index, IndexList
-from utils.static_tuple import StaticTuple
 
 
 # Returns an IntTuple of variadic Int values.
@@ -140,7 +136,6 @@ fn _tma_desc_tile_layout[
         )
 
 
-@value
 @register_passable("trivial")
 struct SharedMemBarrier(Copyable, Movable):
     """A hardware-accelerated synchronization primitive for GPU shared memory operations.
@@ -395,9 +390,8 @@ struct SharedMemBarrier(Copyable, Movable):
         return mbarrier_arrive(self.unsafe_ptr())
 
 
-@value
 @register_passable("trivial")
-struct PipelineState[num_stages: Int]:
+struct PipelineState[num_stages: Int](Copyable, Defaultable, Movable):
     """Manages state for a multi-stage pipeline with circular buffer semantics.
 
     PipelineState provides a mechanism for tracking the current stage in a
@@ -505,12 +499,11 @@ struct PipelineState[num_stages: Int]:
 # TMATensorTile is created on the host with specific memory and tile sizes.
 # Each TMATensorTile provides an asynchronous load of a specific tile at specified tile coordinates.
 #
-@value
 struct TMATensorTile[
     dtype: DType,
     layout: Layout,
     desc_layout: Layout = layout,
-]:
+](Copyable, Movable):
     """
     A hardware-accelerated tensor memory access (TMA) tile for efficient asynchronous data movement.
 
@@ -579,7 +572,9 @@ struct TMATensorTile[
         prefetch_tma_descriptor(desc_ptr)
 
     @always_inline
-    fn async_copy(
+    fn async_copy[
+        cta_group: Int = 1
+    ](
         self,
         dst: LayoutTensor[
             dtype, _, address_space = AddressSpace.SHARED, *_, **_
@@ -593,6 +588,11 @@ struct TMATensorTile[
         This method initiates a hardware-accelerated asynchronous transfer of data from global memory
         to the specified destination in shared memory. The transfer is tracked by the provided memory
         barrier.
+
+        Parameters:
+            cta_group: Int
+                If the TMA is issued with cta_group == 2, only the leader CTA needs
+                to be notified upon completion.
 
         Args:
             dst: The destination tensor in shared memory where data will be copied.
@@ -633,7 +633,7 @@ struct TMATensorTile[
             for j in range(num_copies_dim1):
                 alias copy_offset = (i * num_copies_dim1 + j) * copy_size
 
-                cp_async_bulk_tensor_shared_cluster_global(
+                cp_async_bulk_tensor_shared_cluster_global[cta_group=cta_group](
                     dst.ptr + copy_offset,
                     UnsafePointer(to=self.descriptor).bitcast[NoneType](),
                     mem_barrier.unsafe_ptr(),
@@ -714,7 +714,9 @@ struct TMATensorTile[
                     )
 
     @always_inline
-    fn async_multicast_load(
+    fn async_multicast_load[
+        cta_group: Int = 1
+    ](
         self,
         dst: LayoutTensor[
             dtype, _, address_space = AddressSpace.SHARED, *_, **_
@@ -729,6 +731,11 @@ struct TMATensorTile[
         This method initiates a hardware-accelerated asynchronous transfer of data from global memory
         to multiple destination locations in shared memory across different CTAs (Cooperative Thread Arrays)
         as specified by the multicast mask.
+
+        Parameters:
+            cta_group: Int
+                If the TMA is issued with cta_group == 2, only the leader CTA needs
+                to be notified upon completion.
 
         Args:
             dst: LayoutTensor
@@ -763,7 +770,9 @@ struct TMATensorTile[
             for j in range(num_copies_dim1):
                 alias copy_offset = (i * num_copies_dim1 + j) * copy_size
 
-                cp_async_bulk_tensor_shared_cluster_global_multicast(
+                cp_async_bulk_tensor_shared_cluster_global_multicast[
+                    cta_group=cta_group
+                ](
                     dst.ptr + copy_offset,
                     UnsafePointer(to=self.descriptor).bitcast[NoneType](),
                     mem_barrier.unsafe_ptr(),
@@ -1475,14 +1484,13 @@ def create_tma_tile[
         )
 
 
-@value
 @register_passable("trivial")
 struct TMATensorTileArray[
     num_of_tensormaps: Int,
     dtype: DType,
     cta_tile_layout: Layout,
     desc_layout: Layout,
-]:
+](Copyable, Movable):
     """An array of TMA descripotr.
 
     Parameters:

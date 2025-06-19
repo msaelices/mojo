@@ -22,15 +22,12 @@ from layout.runtime_layout import RuntimeLayout, make_layout
 ```
 """
 
-from sys import bitwidthof
 
 from utils import IndexList
 
 from . import IntTuple, Layout
 from .int_tuple import UNKNOWN_VALUE, flatten
 from .layout import coalesce as coalesce_layout
-from .layout import composition as composition_layout
-from .layout import is_tuple
 from .layout import make_layout as make_layout_static
 from .runtime_tuple import (
     RuntimeTuple,
@@ -51,7 +48,7 @@ struct RuntimeLayout[
     *,
     element_type: DType = DType.int64,
     linear_idx_type: DType = DType.int64,
-](Stringable, Writable):
+](Defaultable, Stringable, Writable):
     """A runtime-configurable layout that uses `RuntimeTuple` for storage.
 
     This struct provides a layout implementation that can be modified at runtime,

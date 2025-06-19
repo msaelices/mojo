@@ -20,10 +20,9 @@ from collections.string.string_slice import CodepointSliceIter, StaticString
 from os import PathLike
 from sys.ffi import c_char
 
-from memory import Span, UnsafePointer, memcpy
+from memory import memcpy
 from python import PythonConvertible, PythonObject
 
-from utils import Writable, Writer
 from utils._visualizers import lldb_formatter_wrapping_type
 
 # ===-----------------------------------------------------------------------===#
@@ -34,18 +33,20 @@ from utils._visualizers import lldb_formatter_wrapping_type
 @register_passable("trivial")
 struct StringLiteral[value: __mlir_type.`!kgen.string`](
     Boolable,
-    ExplicitlyCopyable,
-    Writable,
-    IntableRaising,
     Copyable,
+    Defaultable,
+    ExplicitlyCopyable,
+    FloatableRaising,
+    IntableRaising,
     Movable,
+    PathLike,
+    PythonConvertible,
+    PythonConvertible,
     Representable,
     Sized,
     Stringable,
-    FloatableRaising,
-    PathLike,
+    Writable,
     _CurlyEntryFormattable,
-    PythonConvertible,
 ):
     """This type represents a string literal.
 
@@ -188,7 +189,7 @@ struct StringLiteral[value: __mlir_type.`!kgen.string`](
     # Trait implementations
     # ===-------------------------------------------------------------------===#
 
-    fn to_python_object(owned self) -> PythonObject:
+    fn to_python_object(owned self) raises -> PythonObject:
         """Convert this value to a PythonObject.
 
         Returns:

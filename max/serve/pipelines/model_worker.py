@@ -37,9 +37,7 @@ from max.serve.telemetry.common import configure_logging, configure_metrics
 from max.serve.telemetry.metrics import METRICS
 from max.serve.telemetry.stopwatch import record_ms
 
-logger = logging.getLogger(__name__)
-# This logger is too verbose to expose to end users. Disable propagation to the root logger by default.
-logger.propagate = False
+logger = logging.getLogger("max.serve")
 
 
 def _set_pdeathsig(pdeathsig: int) -> None:
@@ -113,7 +111,7 @@ class ModelWorker:
         # Configure Logging
         configure_logging(settings)
         pid = os.getpid()
-        logger.info("Starting model worker on process %d!", pid)
+        logger.debug("Starting model worker on process %d!", pid)
 
         # Configure Metrics
         async with metric_client_factory() as metric_client:
@@ -202,9 +200,7 @@ class ModelWorker:
             pass
         except Exception as e:
             logger.exception(
-                "Encountered an error in ModelWorker.run %s",
-                e,
-                stack_info=True,
+                "Encountered an error in ModelWorker.run %s", e, stack_info=True
             )
 
 
@@ -233,9 +229,7 @@ async def start_model_worker(
 
     mp_context = multiprocessing.get_context("spawn")
     pc = ProcessControl(
-        mp_context,
-        "model-worker",
-        health_fail_s=settings.mw_health_fail_s,
+        mp_context, "model-worker", health_fail_s=settings.mw_health_fail_s
     )
     zmq_ctx = zmq.Context(io_threads=zmq_io_threads)
     engine_queue: EngineQueue = EngineQueue(
@@ -247,7 +241,7 @@ async def start_model_worker(
         zmq_ctx=zmq_ctx,
     )
 
-    logger.info("Starting worker: %s", worker_name)
+    logger.debug("Starting worker: %s", worker_name)
     worker = mp_context.Process(
         name=worker_name,
         target=ModelWorker(),

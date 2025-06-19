@@ -11,23 +11,18 @@
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
 
-from sys.info import has_accelerator
-from sys import exit
 from gpu.host import DeviceContext
-from math import iota, isclose
+from math import isclose
 from internal_utils import ndbuffer_to_str
-from buffer import NDBuffer
 from buffer.dimlist import DimList
 from internal_utils import (
     DeviceNDBuffer,
     HostNDBuffer,
-    arange,
     fill,
-    random,
     zero,
     ndbuffer_to_str,
 )
-from nn.bicubic import cpu_bicubic_kernel, gpu_bicubic_kernel
+from nn.bicubic import resize_bicubic, cpu_bicubic_kernel, gpu_bicubic_kernel
 from testing import assert_almost_equal
 
 alias num_elements = 20
@@ -142,7 +137,7 @@ fn test_bicubic_kernel[
         " upsampling kernel--------------------------------"
     )
     # Call the bicubic upsampling kernel.
-    cpu_bicubic_kernel(output_host.tensor, input_host.tensor)
+    resize_bicubic[target="cpu"](output_host.tensor, input_host.tensor, ctx)
     print(
         "--------------------------------after calling the bicubic upsampling"
         " kernel--------------------------------"
@@ -600,14 +595,10 @@ fn test_bicubic_kernel[
     alias H = output_dim.get[2]()
     alias W = output_dim.get[3]()
 
-    ctx.enqueue_function[gpu_bicubic_kernel[type, rank=4]](
-        output_dev.tensor,
-        input_dev.tensor,
-        grid_dim=(N, C),
-        block_dim=(H, W),
-    )
+    resize_bicubic[target="gpu"](output_dev.tensor, input_dev.tensor, ctx)
 
     ctx.enqueue_copy(output_ref_host.tensor.data, output_dev.buffer)
+    ctx.synchronize()
 
     print(
         "--------------------------------device"
@@ -636,6 +627,65 @@ fn test_bicubic_kernel[
     )
 
 
+fn test_large_image_gpu_launch[type: DType](ctx: DeviceContext) raises:
+    """Test that GPU kernel can handle large images without exceeding thread limits.
+    """
+    # Test with 64x64 output which would exceed 1024 threads/block limit.
+    alias input_dim = DimList(1, 3, 32, 32)
+    alias output_dim = DimList(1, 3, 64, 64)
+
+    var input_host = HostNDBuffer[type, 4, input_dim](input_dim)
+    var output_host = HostNDBuffer[type, 4, output_dim](output_dim)
+    var output_gpu_host = HostNDBuffer[type, 4, output_dim](output_dim)
+
+    # Fill input with simple pattern
+    for n in range(1):
+        for c in range(3):
+            for h in range(32):
+                for w in range(32):
+                    input_host.tensor[n, c, h, w] = SIMD[type, 1](
+                        Float32(h * 32 + w) / 1024.0
+                    )
+
+    # Run CPU version.
+    cpu_bicubic_kernel(output_host.tensor, input_host.tensor)
+
+    # Run GPU version.
+    var input_dev = DeviceNDBuffer[type, 4, input_dim](input_dim, ctx=ctx)
+    var output_dev = DeviceNDBuffer[type, 4, output_dim](output_dim, ctx=ctx)
+
+    ctx.enqueue_copy(input_dev.buffer, input_host.tensor.data)
+
+    # This would fail with block_dim=(64, 64) = 4096 threads.
+    ctx.enqueue_function[gpu_bicubic_kernel[type, rank=4]](
+        output_dev.tensor,
+        input_dev.tensor,
+        grid_dim=(1, 3),
+        block_dim=(256,),
+    )
+
+    ctx.enqueue_copy(output_gpu_host.tensor.data, output_dev.buffer)
+
+    ctx.synchronize()
+
+    print("Verifying large image GPU vs CPU results...")
+    var max_diff: Float32 = 0.0
+    for n in range(1):
+        for c in range(3):
+            for h in range(64):
+                for w in range(64):
+                    var diff = abs(
+                        Float32(output_host.tensor[n, c, h, w])
+                        - Float32(output_gpu_host.tensor[n, c, h, w])
+                    )
+                    if diff > max_diff:
+                        max_diff = diff
+
+    print("Max difference between CPU and GPU:", max_diff)
+    assert_almost_equal(max_diff, 0.0, atol=0.0001)
+    print("Large image test passed!")
+
+
 def main():
     with DeviceContext() as ctx:
         test_bicubic_kernel[
@@ -643,3 +693,5 @@ def main():
             DimList(1, 3, 10, 10),  # output (NCHW)
             DType.float32,  # data_type
         ](ctx)
+
+        test_large_image_gpu_launch[DType.float32](ctx)

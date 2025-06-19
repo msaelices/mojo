@@ -18,13 +18,7 @@ import math
 from typing import Callable, Union
 
 from max.dtype import DType
-from max.graph import (
-    DeviceRef,
-    TensorType,
-    TensorValue,
-    Weight,
-    ops,
-)
+from max.graph import DeviceRef, TensorType, TensorValue, Weight, ops
 
 from ..kernels import (
     flare_mla_decode_ragged,
@@ -44,7 +38,7 @@ from ..kv_cache import (
 from ..layer import Module
 from ..linear import Linear
 from ..norm import RMSNorm
-from ..rotary_embedding import OptimizedRotaryEmbedding
+from ..rotary_embedding import RotaryEmbedding
 from .mask_config import MHAMaskVariant
 
 
@@ -52,12 +46,12 @@ class LatentAttentionWithRope(Module):
     """Implementation of Latent Attention with Rope."""
 
     # TODO: This will be replaced with a generic Yarn Rope implementation for Deepseek-V2-lite.
-    rope: OptimizedRotaryEmbedding
+    rope: RotaryEmbedding
 
     def __init__(
         self,
         *,
-        rope: OptimizedRotaryEmbedding,
+        rope: RotaryEmbedding,
         num_attention_heads: int,
         num_key_value_heads: int,
         hidden_size: int,
@@ -297,9 +291,7 @@ class LatentAttentionWithRope(Module):
                 return [iter_i, new_result, new_softmax_info]
 
             loop_result = ops.while_loop(
-                (iter_i, result, softmax_info),
-                cond_fn,
-                body_fn,
+                (iter_i, result, softmax_info), cond_fn, body_fn
             )
 
             return loop_result[1]
@@ -334,7 +326,7 @@ class LatentAttentionWithRope(Module):
 
         # TODO: use max_lengths[0, 0] cause a CUDA_INVALID_MEMORY_ACCESS error,
         # as the graph compiler assumes it is a GPU tensor, and inserts a DtoH copy.
-        max_seq_len = kv_cache_get_max_seq_len(kv_collection)
+        max_seq_len = kv_cache_get_max_seq_len(self.kv_params, kv_collection)
 
         result = ops.cond(
             max_seq_len > 1,
@@ -420,11 +412,7 @@ class LatentAttentionWithRope(Module):
         )
 
         attn_out = self._mla_impl(
-            xq_nope,
-            xq_rope,
-            kv_collection,
-            layer_idx,
-            input_row_offsets,
+            xq_nope, xq_rope, kv_collection, layer_idx, input_row_offsets
         )
 
         return self.o_proj(attn_out)

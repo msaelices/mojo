@@ -10,28 +10,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
-from math import isclose
-from collections import InlineArray
 from gpu.host import DeviceContext
 from gpu.host.info import Vendor
-from random import random_float64
 
 from buffer import NDBuffer
 from buffer.dimlist import DimList
-from memory import UnsafePointer
 from nn.conv_transpose import conv_transpose_naive
 from nn.conv_transpose import conv_transposed_cudnn
 from internal_utils import (
     DeviceNDBuffer,
     HostNDBuffer,
-    ndbuffer_to_str,
     random,
-    zero,
 )
 from testing import assert_almost_equal
 
 from utils.index import Index
-from internal_utils import ndbuffer_to_str
 
 alias type = DType.float32
 

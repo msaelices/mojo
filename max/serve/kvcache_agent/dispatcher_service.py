@@ -29,7 +29,7 @@ from max.serve.kvcache_agent.dispatcher_transport import (
 )
 from max.serve.queue.zmq_queue import ZmqPullSocket, ZmqPushSocket
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("max.serve")
 
 DispatcherMessagePayload = TypeVar("DispatcherMessagePayload")
 
@@ -67,7 +67,7 @@ class DispatcherService(Generic[DispatcherMessagePayload]):
         zmq_ctx: zmq.Context,
         send_endpoint: str,
         recv_endpoint: str,
-        transport: DispatcherTransport,
+        transport: DispatcherTransport[DispatcherMessagePayload],
         serialize: Callable[[Any], bytes] = pickle.dumps,
         deserialize: Callable[[Any], Any] = pickle.loads,
     ):
@@ -76,18 +76,10 @@ class DispatcherService(Generic[DispatcherMessagePayload]):
 
         self.local_pull_socket = ZmqPullSocket[
             DispatcherMessage[DispatcherMessagePayload]
-        ](
-            zmq_ctx,
-            recv_endpoint,
-            deserialize=deserialize,
-        )
+        ](zmq_ctx, recv_endpoint, deserialize=deserialize)
         self.local_push_socket = ZmqPushSocket[
             DispatcherMessage[DispatcherMessagePayload]
-        ](
-            zmq_ctx,
-            send_endpoint,
-            serialize=serialize,
-        )
+        ](zmq_ctx, send_endpoint, serialize=serialize)
 
         self._running = False
         self._tasks: list[asyncio.Task] = []

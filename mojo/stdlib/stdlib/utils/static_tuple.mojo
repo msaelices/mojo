@@ -19,7 +19,6 @@ from utils import StaticTuple
 ```
 """
 
-from memory import UnsafePointer
 
 # ===-----------------------------------------------------------------------===#
 # Utilities
@@ -106,7 +105,7 @@ fn _static_tuple_construction_checks[size: Int]():
 
 @register_passable("trivial")
 struct StaticTuple[element_type: AnyTrivialRegType, size: Int](
-    Sized, Copyable, Movable
+    Copyable, Defaultable, Movable, Sized
 ):
     """A statically sized tuple type which contains elements of homogeneous types.
 

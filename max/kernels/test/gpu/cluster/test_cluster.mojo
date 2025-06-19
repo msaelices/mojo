@@ -23,12 +23,9 @@ from gpu.cluster import (
     clusterlaunchcontrol_query_cancel_get_first_ctaid,
     elect_one_sync_with_mask,
 )
-from gpu.sync import (
-    mbarrier_try_wait_parity_shared,
-)
 from layout.tma_async import SharedMemBarrier
 from gpu.intrinsics import Scope
-from memory import UnsafePointer, stack_allocation
+from memory import stack_allocation
 from gpu.memory import _GPUAddressSpace as AddressSpace
 from buffer import DimList, NDBuffer
 from testing import assert_almost_equal

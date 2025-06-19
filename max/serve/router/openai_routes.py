@@ -22,9 +22,12 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, Sequence
 from datetime import datetime
 from json.decoder import JSONDecodeError
+from pathlib import Path
 from time import perf_counter_ns
 from typing import Any, Literal, Optional, Union, cast
+from urllib.parse import unquote, urlparse
 
+import aiofiles
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from httpx import AsyncClient
@@ -39,6 +42,7 @@ from max.pipelines.core import (
 )
 from max.pipelines.core.interfaces.text_generation import SamplingParams
 from max.profiler import Tracer, traced
+from max.serve.config import Settings
 from max.serve.pipelines.llm import (
     AudioGeneratorPipeline,
     TokenGeneratorOutput,
@@ -116,9 +120,9 @@ class OpenAIResponseGenerator(ABC):
         self,
         pipeline: TokenGeneratorPipeline,
     ):
-        self.logger = logging.getLogger(self.__class__.__name__)
-        # This logger is too verbose to expose to end users. Disable propagation to the root logger by default.
-        self.logger.propagate = False
+        self.logger = logging.getLogger(
+            "max.serve.router.OpenAIResponseGenerator"
+        )
         self.pipeline = pipeline
 
     @abstractmethod
@@ -152,10 +156,7 @@ def get_pipeline(
 
 class OpenAIChatResponseGenerator(OpenAIResponseGenerator):
     async def stream(self, request: TokenGeneratorRequest):
-        self.logger.debug(
-            "Streaming: Start: %s",
-            request,
-        )
+        self.logger.debug("Streaming: Start: %s", request)
         record_request_start()
         request_timer = StopWatch(start_ns=request.timestamp_ns)
         n_tokens = 0
@@ -208,11 +209,7 @@ class OpenAIChatResponseGenerator(OpenAIResponseGenerator):
                 payload = response.model_dump_json()
                 yield payload
 
-            logger.debug(
-                "Streaming: Done: %s, %d tokens",
-                request,
-                n_tokens,
-            )
+            logger.debug("Streaming: Done: %s, %d tokens", request, n_tokens)
             yield "[DONE]"
         except Exception as e:
             # Note that for SSE, the server will have already responded with a
@@ -439,21 +436,19 @@ class OpenAISpeechResponseGenerator:
         self,
         pipeline: AudioGeneratorPipeline,
     ):
-        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger = logging.getLogger(
+            "max.serve.router.OpenAISpeechResponseGenerator"
+        )
         self.pipeline = pipeline
 
     async def synthesize_speech(
         self, request: AudioGenerationRequest
     ) -> CreateAudioGenerationResponse:
-        self.logger.debug(
-            "Streaming: Start: %s",
-            request,
-        )
+        self.logger.debug("Streaming: Start: %s", request)
         response = await self.pipeline.generate_full_audio(request)
         audio_data = response.audio_data.numpy().tobytes()
         response = CreateAudioGenerationResponse(
-            audio_data=base64.b64encode(audio_data),
-            metadata=response.metadata,
+            audio_data=base64.b64encode(audio_data), metadata=response.metadata
         )
         return response
 
@@ -500,7 +495,9 @@ def openai_parse_chat_completion_request(
     return messages, image_refs
 
 
-async def resolve_image_from_url(image_ref: AnyUrl) -> bytes:
+async def resolve_image_from_url(
+    image_ref: AnyUrl, settings: Settings
+) -> bytes:
     if image_ref.scheme == "http" or image_ref.scheme == "https":
         # TODO: Evaluate creating a single AsyncClient for the app.
         async with AsyncClient() as client:
@@ -517,6 +514,67 @@ async def resolve_image_from_url(image_ref: AnyUrl) -> bytes:
             "ResolvedImageB64: %s -> %d bytes",
             str(image_ref)[:16],
             len(images_bytes),
+        )
+        return images_bytes
+    elif image_ref.scheme == "file":
+        if settings is None:
+            raise ValueError("Settings required for file URI resolution")
+
+        # Parse the file URI.
+        parsed = urlparse(str(image_ref))
+
+        # Check host - only allow empty or localhost.
+        if parsed.netloc and parsed.netloc not in ("", "localhost"):
+            raise ValueError(
+                f"File URI with remote host '{parsed.netloc}' is not supported"
+            )
+
+        # Extract and decode the path.
+        file_path = Path(unquote(parsed.path))
+
+        # Validate against allowed roots.
+        allowed_roots = [Path(root) for root in settings.allowed_image_roots]
+        if not allowed_roots:
+            raise ValueError(
+                "File URI access denied: no allowed roots configured"
+            )
+
+        # Resolve the path, following symlinks.
+        try:
+            resolved_path = file_path.resolve(strict=True)
+        except (OSError, RuntimeError) as e:
+            raise ValueError(f"File not found: {file_path}") from e
+
+        # Check if it's a directory.
+        if resolved_path.is_dir():
+            raise ValueError(f"Path is a directory: {resolved_path}")
+
+        # Check if path is within allowed roots.
+        path_allowed = False
+        for root in allowed_roots:
+            try:
+                resolved_path.relative_to(root)
+                path_allowed = True
+                break
+            except ValueError:
+                continue
+
+        if not path_allowed:
+            raise ValueError(
+                f"Path forbidden: {resolved_path} is outside allowed roots"
+            )
+
+        # Read the file with size limit.
+        max_bytes = settings.max_local_image_bytes
+
+        async with aiofiles.open(resolved_path, "rb") as f:
+            images_bytes = await f.read(max_bytes + 1)
+            if len(images_bytes) > max_bytes:
+                raise ValueError(
+                    f"File exceeds size limit of {max_bytes} bytes"
+                )
+        logger.debug(
+            "ResolvedFileUri: %s -> %d bytes", resolved_path, len(images_bytes)
         )
         return images_bytes
     raise ValueError(f"Invalid image ref '{image_ref}'")
@@ -552,8 +610,9 @@ async def openai_create_chat_completion(
 
         request_images = None
         if request_images_urls:
+            settings: Settings = request.app.state.settings
             resolve_image_tasks = [
-                resolve_image_from_url(image_url)
+                resolve_image_from_url(image_url, settings)
                 for image_url in request_images_urls
             ]
             request_images = await asyncio.gather(*resolve_image_tasks)
@@ -776,10 +835,7 @@ def _process_log_probabilities(
 
 class OpenAICompletionResponseGenerator(OpenAIResponseGenerator):
     async def stream(self, request: TokenGeneratorRequest):
-        logger.debug(
-            "Streaming: Start: %s",
-            request,
-        )
+        logger.debug("Streaming: Start: %s", request)
         record_request_start()
         request_timer = StopWatch(start_ns=request.timestamp_ns)
         n_tokens = 0
@@ -803,9 +859,7 @@ class OpenAICompletionResponseGenerator(OpenAIResponseGenerator):
                 # https://platform.openai.com/docs/api-reference/chat/object
                 choices = [
                     CompletionResponseStreamChoice(
-                        index=0,
-                        text=token.decoded_token,
-                        logprobs=log_probs,
+                        index=0, text=token.decoded_token, logprobs=log_probs
                     )
                 ]
                 # Each chunk is expected to have the same id
@@ -826,11 +880,7 @@ class OpenAICompletionResponseGenerator(OpenAIResponseGenerator):
 
                 yield payload
 
-            logger.debug(
-                "Streaming: Done: %s, %d tokens",
-                request,
-                n_tokens,
-            )
+            logger.debug("Streaming: Done: %s, %d tokens", request, n_tokens)
             yield "[DONE]"
         except queue.Full as qe:
             status_code = 529
@@ -1044,12 +1094,7 @@ async def health() -> Response:
 async def openai_get_models(request: Request) -> ListModelsResponse:
     pipeline: TokenGeneratorPipeline = request.app.state.pipeline
     model_list = [
-        Model(
-            id=pipeline.model_name,
-            object="model",
-            created=None,
-            owned_by="",
-        )
+        Model(id=pipeline.model_name, object="model", created=None, owned_by="")
     ]
 
     return ListModelsResponse(object="list", data=model_list)
@@ -1059,10 +1104,7 @@ async def openai_get_models(request: Request) -> ListModelsResponse:
 async def openai_get_model(model_id: str, request: Request) -> Model:
     pipeline: TokenGeneratorPipeline = request.app.state.pipeline
     pipeline_model = Model(
-        id=pipeline.model_name,
-        object="model",
-        created=None,
-        owned_by="",
+        id=pipeline.model_name, object="model", created=None, owned_by=""
     )
 
     if model_id == pipeline.model_name:
@@ -1093,7 +1135,7 @@ async def create_streaming_audio_speech(
         pipeline = get_pipeline(request, audio_generation_request.model)
         assert isinstance(pipeline, AudioGeneratorPipeline)
         sampling_params = SamplingParams(
-            min_new_tokens=audio_generation_request.min_tokens,
+            min_new_tokens=audio_generation_request.min_tokens
         )
         audio_request = AudioGenerationRequest(
             id=request_id,

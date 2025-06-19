@@ -73,7 +73,7 @@ var ascii_str = ascii("Hello")  # ASCII-only string
 ```
 """
 
-from collections import KeyElement, List, Optional
+from collections import KeyElement
 from collections._index_normalization import normalize_index
 from collections.string import CodepointsIter
 from collections.string._parsing_numbers.parsing_floats import _atof
@@ -94,13 +94,12 @@ from os import PathLike, abort
 from os.atomic import Atomic
 from sys import bitwidthof, is_compile_time, sizeof
 from sys.ffi import c_char
-from sys.intrinsics import _type_is_eq
 
 from bit import count_leading_zeros
-from memory import Span, UnsafePointer, memcpy, memset
+from memory import memcpy, memset
 from python import PythonConvertible, PythonObject, ConvertibleFromPython
 
-from utils import IndexList, Variant, Writable, Writer
+from utils import IndexList, Variant
 from utils._select import _select_register_value as select
 from utils.write import _WriteBufferStack
 
@@ -206,7 +205,7 @@ struct _StringCapacityField:
 
 # This is a private struct used to store the reference count of a out-of-line
 # mutable string buffer.
-struct _StringOutOfLineHeader:
+struct _StringOutOfLineHeader(Defaultable):
     var refcount: Atomic[DType.index]
     alias _SIZE = sizeof[Self]()
 
@@ -257,23 +256,23 @@ struct _StringOutOfLineHeader:
 
 
 struct String(
-    Sized,
-    Defaultable,
-    Stringable,
-    Representable,
-    IntableRaising,
-    KeyElement,
-    Comparable,
     Boolable,
-    Writable,
-    Writer,
+    Comparable,
+    ConvertibleFromPython,
+    Defaultable,
     ExplicitlyCopyable,
     FloatableRaising,
-    _HashableWithHasher,
+    IntableRaising,
+    KeyElement,
     PathLike,
-    _CurlyEntryFormattable,
     PythonConvertible,
-    ConvertibleFromPython,
+    Representable,
+    Sized,
+    Stringable,
+    Writable,
+    Writer,
+    _CurlyEntryFormattable,
+    _HashableWithHasher,
 ):
     """Represents a mutable string.
 
@@ -548,11 +547,7 @@ struct String(
             - `unsafe_from_utf8_ptr` MUST be null terminated.
         """
         # Copy the data.
-        self = String(
-            StringSlice[MutableAnyOrigin](
-                unsafe_from_utf8_ptr=unsafe_from_utf8_ptr
-            )
-        )
+        self = String(StringSlice(unsafe_from_utf8_ptr=unsafe_from_utf8_ptr))
 
     @always_inline
     fn __init__(
@@ -568,11 +563,7 @@ struct String(
             - `unsafe_from_utf8_ptr` MUST be null terminated.
         """
         # Copy the data.
-        self = String(
-            StringSlice[MutableAnyOrigin](
-                unsafe_from_utf8_ptr=unsafe_from_utf8_ptr
-            )
-        )
+        self = String(StringSlice(unsafe_from_utf8_ptr=unsafe_from_utf8_ptr))
 
     @always_inline("nodebug")
     fn __moveinit__(out self, owned other: Self):
@@ -1010,7 +1001,7 @@ struct String(
         """
         return self
 
-    fn to_python_object(owned self) -> PythonObject:
+    fn to_python_object(owned self) raises -> PythonObject:
         """Convert this value to a PythonObject.
 
         Returns:
@@ -1061,7 +1052,9 @@ struct String(
         Returns:
             The joined string.
         """
-        var sep = StaticString(ptr=self.unsafe_ptr(), length=self.byte_length())
+        var sep = rebind[StaticString](  # FIXME(#4414): this should not be so
+            StringSlice(ptr=self.unsafe_ptr(), length=self.byte_length())
+        )
         return String(elems, sep=sep)
 
     fn join[

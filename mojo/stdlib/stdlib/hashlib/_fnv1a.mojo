@@ -14,10 +14,9 @@
 """Implements the [Fnv1a 64 bit variant](https://en.wikipedia.org/wiki/Fowler–Noll–Vo_hash_function) algorithm as a _Hasher type."""
 
 from ._hasher import _Hasher, _HashableWithHasher
-from memory import UnsafePointer
 
 
-struct Fnv1a(_Hasher):
+struct Fnv1a(Defaultable, _Hasher):
     """Fnv1a is a very simple algorithm with good quality, but sub optimal runtime for long inputs.
     It can be used for comp time hash value generation.
 
@@ -33,7 +32,11 @@ struct Fnv1a(_Hasher):
         self._value = 0xCBF29CE484222325
 
     fn _update_with_bytes(
-        mut self, data: UnsafePointer[UInt8, mut=False, **_], length: Int
+        mut self,
+        data: UnsafePointer[
+            UInt8, address_space = AddressSpace.GENERIC, mut=False, **_
+        ],
+        length: Int,
     ):
         """Consume provided data to update the internal buffer.
 

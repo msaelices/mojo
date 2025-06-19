@@ -19,6 +19,7 @@ from math import Ceilable, Floorable, Truncable
 @register_passable("trivial")
 struct IntLiteral[value: __mlir_type.`!pop.int_literal`](
     Ceilable,
+    Defaultable,
     Floorable,
     ImplicitlyBoolable,
     ImplicitlyIntable,

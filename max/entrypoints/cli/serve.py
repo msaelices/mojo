@@ -16,6 +16,8 @@
 
 import functools
 import logging
+import os
+import signal
 from typing import Optional, Union
 
 import uvloop
@@ -41,7 +43,13 @@ from max.serve.pipelines.performance_fake import (
 from transformers import AutoTokenizer
 from uvicorn import Server
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("max.entrypoints")
+
+
+def sigterm_handler(sig, frame):
+    # We handle SIGINT gracefully, so piggyback on that
+    logger.info("Got SIGTERM, terminating...")
+    os.kill(os.getpid(), signal.SIGINT)
 
 
 def serve_pipeline(
@@ -111,8 +119,7 @@ def serve_pipeline(
 
     # Load batch config.
     batch_config = batch_config_from_pipeline_config(
-        pipeline_config=pipeline_config,
-        pipeline_task=pipeline_task,
+        pipeline_config=pipeline_config, pipeline_task=pipeline_task
     )
 
     # If explicit model name is not provided, set to model_path.
@@ -128,11 +135,10 @@ def serve_pipeline(
     )
 
     # Initialize and serve webserver.
-    app = fastapi_app(
-        settings,
-        pipeline_settings,
-    )
+    app = fastapi_app(settings, pipeline_settings)
     config = fastapi_config(app=app, server_settings=settings)
+
+    signal.signal(signal.SIGTERM, sigterm_handler)
 
     server = Server(config)
     with Tracer("openai_compatible_frontend_server"):

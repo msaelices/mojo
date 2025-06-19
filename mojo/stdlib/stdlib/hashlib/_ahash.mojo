@@ -12,7 +12,7 @@
 # ===----------------------------------------------------------------------=== #
 
 from bit import byte_swap, rotate_bits_left
-from memory import UnsafePointer, bitcast
+from memory import bitcast
 
 from ._hasher import _HashableWithHasher, _Hasher
 
@@ -80,7 +80,7 @@ fn _read_small(data: UnsafePointer[UInt8, mut=False, **_], length: Int) -> U128:
             return U128(0, 0)
 
 
-struct AHasher[key: U256](_Hasher):
+struct AHasher[key: U256](Defaultable, _Hasher):
     """Adopted AHash algorithm which produces fast and high quality hash value by
     implementing `_Hasher` trait.
 
@@ -126,7 +126,11 @@ struct AHasher[key: U256](_Hasher):
         self.buffer = rotate_bits_left[ROT]((self.buffer + self.pad) ^ combined)
 
     fn _update_with_bytes(
-        mut self, data: UnsafePointer[UInt8, mut=False, **_], length: Int
+        mut self,
+        data: UnsafePointer[
+            UInt8, address_space = AddressSpace.GENERIC, mut=False, **_
+        ],
+        length: Int,
     ):
         """Consume provided data to update the internal buffer.
 

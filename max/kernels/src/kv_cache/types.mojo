@@ -23,8 +23,7 @@ This module defines two traits that define the roles of the different structs
 """
 
 from buffer import Dim, DimList, NDBuffer
-from layout import Layout, LayoutTensor
-from memory import UnsafePointer
+from layout import LayoutTensor
 
 from utils import Index, IndexList
 
@@ -90,9 +89,9 @@ fn _compute_kv_cache_dynamic_shape_strides[
     return (kv_cache_shape, kv_cache_strides)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
-struct KVCacheStaticParams(EqualityComparable):
+struct KVCacheStaticParams(Copyable, EqualityComparable, Movable):
     var num_heads: UInt
     var head_size: UInt
 
@@ -183,7 +182,6 @@ trait KVCacheT(Copyable, Movable):
         ...
 
 
-@value
 @register_passable("trivial")
 struct ContinuousBatchingKVCache[
     type_: DType,
@@ -354,7 +352,6 @@ struct ContinuousBatchingKVCache[
         return offset_ptr
 
 
-@value
 @register_passable("trivial")
 struct PagedKVCache[
     type_: DType,

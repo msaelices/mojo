@@ -15,10 +15,9 @@ from math import isclose
 from random import rand
 
 from buffer import DimList, NDBuffer
-from memory import UnsafePointer
 from nn.conv import Naive2dConvolution
 
-from utils.index import Index, IndexList
+from utils.index import Index
 
 
 @always_inline

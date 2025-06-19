@@ -11,18 +11,16 @@
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
 
-from collections import List
 from math import iota
 
-from layout import Layout, LayoutTensor, RuntimeTuple
-from memory import Span, UnsafePointer
+from memory import UnsafePointer
+from layout import LayoutTensor, RuntimeTuple
 
 from utils import IndexList
-from utils.index import Index
 
 
-@value
-struct BoundingBox[type: DType]:
+@fieldwise_init
+struct BoundingBox[type: DType](Copyable, Movable):
     var nw: SIMD[type, 2]
     var se: SIMD[type, 2]
 

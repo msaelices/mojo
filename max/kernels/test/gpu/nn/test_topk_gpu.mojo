@@ -13,7 +13,6 @@
 
 from collections import OptionalReg
 from math import ceildiv, iota
-from os import abort
 from random import random_float64
 
 from benchmark import Bench, Bencher, BenchId, BenchMetric, ThroughputMeasure
@@ -21,7 +20,6 @@ from buffer import NDBuffer
 from buffer.dimlist import DimList
 from gpu.host import DeviceContext
 from internal_utils import DeviceNDBuffer, HostNDBuffer
-from memory import UnsafePointer
 from nn.topk import _top_k_cpu, _topk_gpu, topk_gpu
 from testing import assert_almost_equal, assert_equal
 from algorithm.reduction import max as reduce_max
@@ -543,6 +541,19 @@ fn main() raises:
         # var block_size_values = [256, 512, 1024]
         # var batch_size_values = [1, 16, 64, 256]
         # var _samplingvalues = [False, True]
+
+        alias test_case0 = TestCase[_sampling=False](
+            N=1024,
+            K=256,
+            block_size=256,
+            batch_size=1,
+        )
+        print_test_case(test_case0)
+        test_case_batched[
+            type,
+            fill_iota,
+            out_idx_type = DType.uint64,
+        ](ctx, test_case0)
 
         alias test_case1 = TestCase[_sampling=False](
             N=1024,

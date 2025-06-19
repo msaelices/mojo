@@ -11,7 +11,6 @@
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
 
-from pathlib import Path
 from sys import env_get_int
 
 from benchmark import Bench, Bencher, BenchId, BenchMetric, ThroughputMeasure
@@ -19,7 +18,6 @@ from builtin._closure import __ownership_keepalive
 from gpu import *
 from gpu.host import DeviceContext
 from internal_utils import update_bench_config
-from memory import UnsafePointer
 from testing import assert_equal
 
 

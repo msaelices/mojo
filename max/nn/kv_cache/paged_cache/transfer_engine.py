@@ -18,9 +18,9 @@ from __future__ import annotations
 import logging
 import time
 from collections import defaultdict
-from dataclasses import dataclass
 from uuid import uuid4
 
+import msgspec
 import torch
 from max import driver
 from max._core import nixl
@@ -35,8 +35,9 @@ def _get_tensor_base_addr(tensor: Tensor) -> int:
     return torch.from_dlpack(tensor).data_ptr()
 
 
-@dataclass
-class KVTransferEngineMetadata:
+class KVTransferEngineMetadata(
+    msgspec.Struct, tag=True, kw_only=True, omit_defaults=True
+):
     """Metadata associated with a transfer engine.
 
     This is safe to send between threads/processes."""
@@ -49,8 +50,7 @@ class KVTransferEngineMetadata:
     memory_type: nixl.MemoryType
 
 
-@dataclass
-class XferReqData:
+class XferReqData(msgspec.Struct, tag=True, kw_only=True, omit_defaults=True):
     """Metadata associated with a transfer request.
 
     This is safe to send between threads/processes."""
@@ -317,8 +317,7 @@ class KVTransferEngine:
             src_addr = self.base_addr + src_idx * bytes_per_page
             descs_src.append((src_addr, bytes_per_page, self.memory_type.value))
         xfer_dlist_src = nixl.TransferDescriptorList(
-            type=self.memory_type,
-            descs=descs_src,
+            type=self.memory_type, descs=descs_src
         )
 
         # Prepare destination descriptor list
@@ -329,8 +328,7 @@ class KVTransferEngine:
                 (dst_addr, bytes_per_page, remote.memory_type.value)
             )
         xfer_dlist_dst = nixl.TransferDescriptorList(
-            type=remote.memory_type,
-            descs=descs_dst,
+            type=remote.memory_type, descs=descs_dst
         )
 
         xfer_name = str(uuid4())
@@ -389,6 +387,9 @@ class KVTransferEngine:
                 raise ValueError(
                     f"Transfer request failed with status {status}"
                 )
+
+    def get_transfer_status(self, xfer_req_data: XferReqData) -> nixl.Status:
+        return self.agent.get_transfer_status(xfer_req_data.xfer_id)
 
     def recv_xfer_sync(self, xfer_req_id: XferReqData) -> None:
         """Wait for a transfer initiated by remote engine to complete."""

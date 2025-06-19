@@ -39,8 +39,6 @@ from python import Python, PythonObject
 from os import abort
 from sys import argv
 
-from memory import UnsafePointer
-
 
 @register("causal_conv1d_cpu")
 struct CausalConv1Dcpu:
@@ -206,7 +204,7 @@ fn causal_conv1d_kernel[
     var input_chunk: SIMD[dtype, elements]
 
     W_v = weight.vectorize[1, width]()
-    W = rebind[__type_of(W)](W_v[channel_id])
+    W = rebind[__type_of(W)](W_v[0, channel_id])
     B = rebind[__type_of(B)](bias[channel_id])
 
     var input_v = input.reshape[layout_2d]().vectorize[1, elements]()

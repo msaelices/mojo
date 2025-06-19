@@ -15,8 +15,7 @@
 # General imports
 # ===-----------------------------------------------------------------------===#
 
-from collections import InlineArray, List, Optional, OptionalReg
-from collections.string import StaticString
+from collections import OptionalReg
 from math import (
     atanh,
     ceil,
@@ -54,7 +53,7 @@ from builtin.simd import _pow
 from compiler_internal import StaticTensorSpec
 from gpu.comm.allgather import allgather
 from gpu.comm.allreduce import MAX_GPUS, Signal, allreduce
-from gpu.host import DeviceBuffer, DeviceContext
+from gpu.host import DeviceContext
 from gpu.host.info import is_cpu, is_gpu, is_valid_target
 from kv_cache.types import (
     ContinuousBatchingKVCacheCollection,
@@ -62,7 +61,7 @@ from kv_cache.types import (
     KVCollectionT,
     PagedKVCacheCollection,
 )
-from layout.layout_tensor import Layout, LayoutTensor
+from layout.layout_tensor import Layout, LayoutTensor, RuntimeLayout
 from linalg.bmm import batched_matmul, batched_matmul_shape
 from linalg.bmm import (
     elementwise_epilogue_type as batched_matmul_elementwise_epilogue_type,
@@ -83,11 +82,10 @@ from linalg.utils import (
 from linalg.utils import (
     elementwise_epilogue_type as matmul_elementwise_epilogue_type,
 )
-from memory import AddressSpace, UnsafePointer
 from nn import arg_nonzero
 from nn._ragged_utils import merge_ragged_tensors
 from nn.activations import gelu, relu
-from nn.arange import arange, arange_shape
+from nn.arange import arange_shape
 from nn.argmaxmin import argmax, argmin
 from nn.argmaxmin_gpu import argmax_gpu, argmin_gpu
 from nn.argsort import argsort
@@ -109,7 +107,6 @@ from nn.cumsum import cumsum
 from nn.flash_attention import flash_attention as nn_flash_attention
 from nn.flash_attention import flash_attention_split_kv
 from nn.fold import fold, fold_shape
-from nn.fused_qk_rope import fused_qk_rope_ragged
 from nn.gather_scatter import (
     Axis,
     _unsafe_normalize_neg_index,
@@ -170,7 +167,7 @@ from nn.mha_score_mod import IdentityScoreMod, ScoreModTrait
 from nn.mha_utils import dispatch_mask_and_score_mod
 from nn.moe import moe_create_indices
 from nn.nms import non_max_suppression, non_max_suppression_shape_func
-from nn.normalization import layer_norm, rms_norm
+from nn.normalization import group_norm, layer_norm, rms_norm
 from nn.pad import pad_constant, pad_reflect, pad_repeat, pad_shape
 from nn.pad_gpu import pad_constant as pad_constant_gpu
 from nn.pool import avg_pool, max_pool, pool_shape, pool_shape_ceil
@@ -219,7 +216,7 @@ from quantization.qmatmul_k import (
 )
 from register import register_internal
 from runtime.asyncrt import DeviceContextPtr, DeviceContextPtrList
-from runtime.tracing import Trace, TraceLevel, trace_arg
+from runtime.tracing import Trace, TraceLevel
 from tensor_internal import (
     DynamicTensor,
     InputTensor,
@@ -3729,6 +3726,7 @@ struct AvgPool:
         count_boundary: Bool,
         dtype: DType,
         int_type: DType,
+        target: StaticString,
     ](
         output: OutputTensor[dtype=dtype, rank=4],
         input: InputTensor[dtype=dtype, rank=4],
@@ -3736,8 +3734,9 @@ struct AvgPool:
         strides: InputTensor[dtype=int_type, rank=1],
         dilations: InputTensor[dtype=int_type, rank=1],
         paddings: InputTensor[dtype=int_type, rank=1],
-    ):
-        avg_pool[count_boundary=count_boundary](
+        ctx: DeviceContextPtr,
+    ) raises:
+        avg_pool[count_boundary=count_boundary, target=target](
             input.to_layout_tensor(),
             filter.to_layout_tensor(),
             strides.to_layout_tensor(),
@@ -3745,6 +3744,7 @@ struct AvgPool:
             paddings.to_layout_tensor(),
             output.to_layout_tensor(),
             False,
+            ctx,
         )
 
     @staticmethod
@@ -3776,6 +3776,7 @@ struct AvgPoolCeilModeTrue:
         count_boundary: Bool,
         dtype: DType,
         int_type: DType,
+        target: StaticString,
     ](
         output: OutputTensor[dtype=dtype, rank=4],
         input: InputTensor[dtype=dtype, rank=4],
@@ -3783,8 +3784,9 @@ struct AvgPoolCeilModeTrue:
         strides: InputTensor[dtype=int_type, rank=1],
         dilations: InputTensor[dtype=int_type, rank=1],
         paddings: InputTensor[dtype=int_type, rank=1],
-    ):
-        avg_pool[count_boundary=count_boundary](
+        ctx: DeviceContextPtr,
+    ) raises:
+        avg_pool[count_boundary=count_boundary, target=target](
             input.to_layout_tensor(),
             filter.to_layout_tensor(),
             strides.to_layout_tensor(),
@@ -3792,6 +3794,7 @@ struct AvgPoolCeilModeTrue:
             paddings.to_layout_tensor(),
             output.to_layout_tensor(),
             True,
+            ctx,
         )
 
     @staticmethod
@@ -3804,7 +3807,6 @@ struct AvgPoolCeilModeTrue:
         strides: InputTensor[dtype=int_type, rank=1],
         dilations: InputTensor[dtype=int_type, rank=1],
         paddings: InputTensor[dtype=int_type, rank=1],
-        ctx: DeviceContextPtr,
     ) raises -> IndexList[input.rank]:
         return rebind[IndexList[input.rank]](
             pool_shape_ceil[single_thread_blocking_override=True](
@@ -3823,6 +3825,7 @@ struct MaxPool:
     fn execute[
         dtype: DType,
         int_type: DType,
+        target: StaticString,
     ](
         output: OutputTensor[dtype=dtype, rank=4],
         input: InputTensor[dtype=dtype, rank=4],
@@ -3830,8 +3833,9 @@ struct MaxPool:
         strides: InputTensor[dtype=int_type, rank=1],
         dilations: InputTensor[dtype=int_type, rank=1],
         paddings: InputTensor[dtype=int_type, rank=1],
-    ):
-        max_pool(
+        ctx: DeviceContextPtr,
+    ) raises:
+        max_pool[target=target](
             input.to_layout_tensor(),
             filter.to_layout_tensor(),
             strides.to_layout_tensor(),
@@ -3839,6 +3843,7 @@ struct MaxPool:
             paddings.to_layout_tensor(),
             output.to_layout_tensor(),
             False,
+            ctx,
         )
 
     @staticmethod
@@ -3869,6 +3874,7 @@ struct MaxPoolCeilModeTrue:
     fn execute[
         dtype: DType,
         int_type: DType,
+        target: StaticString,
     ](
         output: OutputTensor[dtype=dtype, rank=4],
         input: InputTensor[dtype=dtype, rank=4],
@@ -3876,8 +3882,9 @@ struct MaxPoolCeilModeTrue:
         strides: InputTensor[dtype=int_type, rank=1],
         dilations: InputTensor[dtype=int_type, rank=1],
         paddings: InputTensor[dtype=int_type, rank=1],
-    ):
-        max_pool(
+        ctx: DeviceContextPtr,
+    ) raises:
+        max_pool[target=target](
             input.to_layout_tensor(),
             filter.to_layout_tensor(),
             strides.to_layout_tensor(),
@@ -3885,6 +3892,7 @@ struct MaxPoolCeilModeTrue:
             paddings.to_layout_tensor(),
             output.to_layout_tensor(),
             True,
+            ctx,
         )
 
     @staticmethod
@@ -4303,6 +4311,65 @@ struct RMSNorm:
         return input.shape()
 
 
+@compiler.register("group_norm")
+struct GroupNorm:
+    @staticmethod
+    fn execute[
+        dtype: DType,
+        rank: Int,
+        target: StaticString,
+    ](
+        output: OutputTensor[dtype=dtype, rank=rank],
+        input: FusedInputTensor[dtype=dtype, rank=rank],
+        gamma: FusedInputTensor[dtype=dtype, rank=1],
+        beta: FusedInputTensor[dtype=dtype, rank=1],
+        epsilon: Scalar[dtype=dtype],
+        num_groups: Int32,
+        ctx: DeviceContextPtr,
+    ) capturing raises:
+        @parameter
+        @always_inline
+        fn input_fn[
+            width: Int, _rank: Int
+        ](coords: IndexList[_rank]) -> SIMD[dtype, width]:
+            return input._lambda_load[width=width](
+                rebind[IndexList[input.rank]](coords)
+            )
+
+        @parameter
+        @always_inline
+        fn gamma_fn[width: Int](coords: IndexList[1]) -> SIMD[dtype, width]:
+            return gamma._lambda_load[width=width](coords)
+
+        @parameter
+        @always_inline
+        fn beta_fn[width: Int](coords: IndexList[1]) -> SIMD[dtype, width]:
+            return beta._lambda_load[width=width](coords)
+
+        var output_buf = managed_tensor_slice_to_ndbuffer(output)
+
+        group_norm[dtype, rank, input_fn, gamma_fn, beta_fn, target](
+            shape=input.shape(),
+            epsilon=epsilon,
+            groups=num_groups,
+            output=output_buf,
+            ctx=ctx,
+        )
+
+    @staticmethod
+    fn shape[
+        dtype: DType,
+        rank: Int,
+    ](
+        input: InputTensor[dtype=dtype, rank=rank],
+        gamma: InputTensor[dtype=dtype, rank=1],
+        beta: InputTensor[dtype=dtype, rank=1],
+        epsilon: Scalar[dtype=dtype],
+        num_groups: Int32,
+    ) -> IndexList[rank]:
+        return input.shape()
+
+
 # ===-----------------------------------------------------------------------===#
 # TopK kernels
 # ===-----------------------------------------------------------------------===#
@@ -4716,7 +4783,6 @@ struct ResizeLinear:
 struct ResizeBicubic:
     @staticmethod
     fn execute[
-        coordinate_transform_mode: Int,
         rank: Int,
         dtype: DType,
         target: StaticString, //,
@@ -5203,7 +5269,7 @@ struct Concat:
 fn to_managed_tensor_slice_list[
     dtype: DType, rank: Int, mut: Bool, input: IO
 ](
-    raw_list_ptr: UnsafePointer[NoneType],
+    raw_list_ptr: OpaquePointer,
 ) -> List[
     ManagedTensorSlice[
         io_spec = IOSpec[mut, input](),
@@ -5214,7 +5280,7 @@ fn to_managed_tensor_slice_list[
         raw_list_ptr
     ).__int__()
 
-    var data_ptrs = List[UnsafePointer[NoneType]](capacity=num_elements)
+    var data_ptrs = List[OpaquePointer](capacity=num_elements)
     var dim_values = List[Int64](capacity=num_elements * rank)
 
     # Collect the data pointers and dimensions of each element from the list.
@@ -5367,17 +5433,23 @@ struct Split:
         axis: Scalar,
         ctx: DeviceContextPtr,
     ) raises:
-        var input_buf = managed_tensor_slice_to_ndbuffer(input)
         var output_bufs = StaticTuple[
-            NDBuffer[dtype, rank, MutableAnyOrigin], output.size
+            LayoutTensor[dtype, Layout.row_major[rank](), MutableAnyOrigin],
+            output.size,
         ]()
 
         @parameter
         for i in range(output.size):
-            output_bufs[i] = managed_tensor_slice_to_ndbuffer(output[i])
+            var output_tensor = LayoutTensor[dtype, Layout.row_major[rank]()](
+                output[i].unsafe_ptr(),
+                RuntimeLayout[Layout.row_major[rank]()].row_major(
+                    output[i].to_layout_tensor().runtime_layout.shape.value,
+                ),
+            )
+            output_bufs[i] = output_tensor
 
-        split[dtype, rank, target=target, trace_description=_trace_name](
-            input_buf,
+        split[dtype, target=target, trace_description=_trace_name](
+            input.to_layout_tensor(),
             normalize_neg_index(Int(axis), rank),
             output_bufs,
             ctx.get_device_context(),
@@ -5452,6 +5524,7 @@ struct Conv:
         static_dilations: DimList,
         static_padding: DimList,
         target: StaticString,
+        _trace_name: StaticString,
     ](
         output: FusedOutputTensor,
         input: InputTensor[rank = output.rank],
@@ -5533,79 +5606,82 @@ struct Conv:
         var filter_buf = managed_tensor_slice_to_ndbuffer(filter)
         var output_buf = managed_tensor_slice_to_ndbuffer(output)
 
-        @parameter
-        if is_cpu[target]():
-            constrained[
-                not filter_is_fcrs, "Filter layout FCRS is not supported on CPU"
-            ]()
-            conv_nhwc_direct[
-                input.rank,
-                filter.rank,
-                input._static_shape,  # input shape
-                filter._static_shape,  # filter shape
-                output._static_shape,  # output shape
-                input.dtype,
-                filter.dtype,
-                output.dtype,
-                filter_packed,
-                conv_attr,
-                lambdas_have_fusion,
-                output_fn,
-            ](
-                input_buf,
-                filter_buf,
-                output_buf,
-                stride_tuple,
-                dilation_tuple,
-                pad_d_tuple,
-                pad_h_tuple,
-                pad_w_tuple,
-                Int(num_groups),
-            )
-        else:
-            constrained[
-                (input.rank == 4 and filter.rank == 4)
-                or (input.rank == 5 and filter.rank == 5),
-                "only rank 4 or 5 tensor is supported on cuda gpu",
-            ]()
-            constrained[
-                filter_packed == False,
-                "only unpacked filter is supported on cuda gpu",
-            ]()
-
-            var cuda_ctx = ctx.get_device_context()
-            var pad_tuple = IndexList[input.rank - 2](0)
+        with Trace[TraceLevel.OP, target=target](_trace_name):
 
             @parameter
-            if input.rank == 4:
-                pad_tuple[0] = pad_h_tuple[0]
-                pad_tuple[1] = pad_w_tuple[0]
-            elif input.rank == 5:
-                pad_tuple[0] = pad_d_tuple[0]
-                pad_tuple[1] = pad_h_tuple[0]
-                pad_tuple[2] = pad_w_tuple[0]
+            if is_cpu[target]():
+                constrained[
+                    not filter_is_fcrs,
+                    "Filter layout FCRS is not supported on CPU",
+                ]()
+                conv_nhwc_direct[
+                    input.rank,
+                    filter.rank,
+                    input._static_shape,  # input shape
+                    filter._static_shape,  # filter shape
+                    output._static_shape,  # output shape
+                    input.dtype,
+                    filter.dtype,
+                    output.dtype,
+                    filter_packed,
+                    conv_attr,
+                    lambdas_have_fusion,
+                    output_fn,
+                ](
+                    input_buf,
+                    filter_buf,
+                    output_buf,
+                    stride_tuple,
+                    dilation_tuple,
+                    pad_d_tuple,
+                    pad_h_tuple,
+                    pad_w_tuple,
+                    Int(num_groups),
+                )
+            else:
+                constrained[
+                    (input.rank == 4 and filter.rank == 4)
+                    or (input.rank == 5 and filter.rank == 5),
+                    "only rank 4 or 5 tensor is supported on cuda gpu",
+                ]()
+                constrained[
+                    filter_packed == False,
+                    "only unpacked filter is supported on cuda gpu",
+                ]()
 
-            conv_gpu[
-                input.rank,
-                filter.rank,
-                input._static_shape,  # input shape
-                filter._static_shape,  # filter shape
-                output._static_shape,  # output shape
-                input.dtype,
-                filter.dtype,
-                output.dtype,
-                output_fn,
-                filter_is_fcrs,
-            ](
-                input_buf,
-                filter_buf,
-                output_buf,
-                stride_tuple,
-                dilation_tuple,
-                pad_tuple,
-                Int(num_groups),
-                cuda_ctx,
-            )
+                var cuda_ctx = ctx.get_device_context()
+                var pad_tuple = IndexList[input.rank - 2](0)
+
+                @parameter
+                if input.rank == 4:
+                    pad_tuple[0] = pad_h_tuple[0]
+                    pad_tuple[1] = pad_w_tuple[0]
+                elif input.rank == 5:
+                    pad_tuple[0] = pad_d_tuple[0]
+                    pad_tuple[1] = pad_h_tuple[0]
+                    pad_tuple[2] = pad_w_tuple[0]
+
+                conv_gpu[
+                    input.rank,
+                    filter.rank,
+                    input._static_shape,  # input shape
+                    filter._static_shape,  # filter shape
+                    output._static_shape,  # output shape
+                    input.dtype,
+                    filter.dtype,
+                    output.dtype,
+                    output_fn,
+                    filter_is_fcrs,
+                ](
+                    input_buf,
+                    filter_buf,
+                    output_buf,
+                    stride_tuple,
+                    dilation_tuple,
+                    pad_tuple,
+                    Int(num_groups),
+                    cuda_ctx,
+                )
 
     @staticmethod
     fn shape[
@@ -5804,82 +5880,67 @@ struct Fold:
     @staticmethod
     fn execute[
         dtype: DType,
+        stride_h: Int,
+        stride_w: Int,
+        dilation_h: Int,
+        dilation_w: Int,
+        padding_h: Int,
+        padding_w: Int,
         target: StaticString,
     ](
         output: OutputTensor[dtype=dtype, rank=4],
         input: InputTensor[dtype=dtype, rank=3],
         output_size: InputTensor,
         kernel_size: InputTensor,
-        stride: InputTensor,
-        dilation: InputTensor,
-        padding: InputTensor,
         ctx: DeviceContextPtr,
     ) raises:
         constrained[
-            stride.dtype.is_integral()
-            and dilation.dtype.is_integral()
-            and padding.dtype.is_integral()
-            and kernel_size.dtype.is_integral()
-            and output_size.dtype.is_integral(),
-            (
-                "stride, dilation, padding, kernel_size and output_size must"
-                " have integral type"
-            ),
+            kernel_size.dtype.is_integral() and output_size.dtype.is_integral(),
+            "kernel_size and output_size must have integral type",
         ]()
         var output_size_tuple = Index(output_size._ptr[0], output_size._ptr[1])
         var kernel_size_tuple = Index(kernel_size._ptr[0], kernel_size._ptr[1])
-        var stride_tuple = Index(stride._ptr[0], stride._ptr[1])
-        var dilation_tuple = Index(dilation._ptr[0], dilation._ptr[1])
-        var padding_tuple = Index(padding._ptr[0], padding._ptr[1])
 
         var input_buf = managed_tensor_slice_to_ndbuffer(input)
         var output_buf = managed_tensor_slice_to_ndbuffer(output)
 
-        fold[dtype, target=target](
+        fold[
+            stride= (stride_h, stride_w),
+            dilation= (dilation_h, dilation_w),
+            padding= (padding_h, padding_w),
+            target=target,
+        ](
             input_buf,
             output_buf,
             output_size_tuple,
             kernel_size_tuple,
-            stride_tuple,
-            dilation_tuple,
-            padding_tuple,
             ctx,
         )
 
     @staticmethod
     fn shape[
         dtype: DType,
+        stride_h: Int,
+        stride_w: Int,
+        dilation_h: Int,
+        dilation_w: Int,
+        padding_h: Int,
+        padding_w: Int,
     ](
         input: InputTensor[dtype=dtype, rank=3],
         output_size: InputTensor,
         kernel_size: InputTensor,
-        stride: InputTensor,
-        dilation: InputTensor,
-        padding: InputTensor,
     ) raises -> IndexList[4]:
         constrained[
-            stride.dtype.is_integral()
-            and dilation.dtype.is_integral()
-            and padding.dtype.is_integral()
-            and kernel_size.dtype.is_integral()
-            and output_size.dtype.is_integral(),
-            (
-                "stride, dilation, padding, kernel_size and output_size must"
-                " have integral dtype"
-            ),
+            kernel_size.dtype.is_integral() and output_size.dtype.is_integral(),
+            "kernel_size and output_size must have integral type",
         ]()
         var output_size_tuple = Index(output_size._ptr[0], output_size._ptr[1])
         var kernel_size_tuple = Index(kernel_size._ptr[0], kernel_size._ptr[1])
-        var stride_tuple = Index(stride._ptr[0], stride._ptr[1])
-        var dilation_tuple = Index(dilation._ptr[0], dilation._ptr[1])
-        var padding_tuple = Index(padding._ptr[0], padding._ptr[1])
         return fold_shape(
             managed_tensor_slice_to_ndbuffer(input),
             output_size_tuple,
             kernel_size_tuple,
-            stride_tuple,
-            dilation_tuple,
-            padding_tuple,
         )
 
 
@@ -7813,10 +7874,18 @@ struct Struct_kv_cache_get_max_seq_len_paged:
     @always_inline
     @staticmethod
     fn execute[
+        dtype: DType,
+        num_heads: Int,
+        head_dim: Int,
+        page_size: Int, //,
         target: StaticString,
     ](
         max_seq_len: OutputTensor[dtype = DType.uint32, rank=1],
-        kv_collection: PagedKVCacheCollection,
+        kv_collection: PagedKVCacheCollection[
+            dtype,
+            KVCacheStaticParams(num_heads=num_heads, head_size=head_dim),
+            page_size,
+        ],
         context: DeviceContextPtr,
     ) raises:
         # TODO: use max_lengths[0, 0] in the graphcause a CUDA_INVALID_MEMORY_ACCESS error,
@@ -8291,7 +8360,12 @@ struct Struct_rms_norm_kv_cache_ragged_continuous_batching:
     @always_inline
     @staticmethod
     fn execute[
-        dtype: DType, num_heads: Int, head_dim: Int, //, target: StaticString
+        dtype: DType,
+        num_heads: Int,
+        head_dim: Int,
+        multiply_before_cast: Bool,
+        per_head_norm: Bool, //,
+        target: StaticString,
     ](
         kv_collection: ContinuousBatchingKVCacheCollection[
             dtype,
@@ -8306,7 +8380,9 @@ struct Struct_rms_norm_kv_cache_ragged_continuous_batching:
         context: DeviceContextPtr,
     ) raises:
         rms_norm_kv_cache_ragged_continuous_batching[
-            target=target, multiply_before_cast=True
+            target=target,
+            multiply_before_cast=multiply_before_cast,
+            per_head_norm=per_head_norm,
         ](
             kv_collection,
             managed_tensor_slice_to_ndbuffer(gamma),
@@ -8327,7 +8403,9 @@ struct Struct_rms_norm_kv_cache_ragged_paged:
         dtype: DType,
         num_heads: Int,
         head_dim: Int,
-        page_size: Int, //,
+        page_size: Int,
+        multiply_before_cast: Bool,
+        per_head_norm: Bool, //,
         target: StaticString,
     ](
         kv_collection: PagedKVCacheCollection[
@@ -8344,7 +8422,9 @@ struct Struct_rms_norm_kv_cache_ragged_paged:
         context: DeviceContextPtr,
     ) raises:
         rms_norm_kv_cache_ragged_paged[
-            target=target, multiply_before_cast=True
+            target=target,
+            multiply_before_cast=multiply_before_cast,
+            per_head_norm=per_head_norm,
         ](
             kv_collection,
             managed_tensor_slice_to_ndbuffer(gamma),
@@ -8729,7 +8809,7 @@ struct Struct_min_p_sampling:
         _trace_name: StaticString,
     ](
         out_token_ids: OutputTensor[dtype=out_idx_type, rank=rank],
-        min_p: Scalar[dtype],
+        min_ps: InputTensor[dtype=dtype, rank=1],
         input: InputTensor[dtype=dtype, rank=rank],
         temperature: Scalar[dtype],
         ctx: DeviceContextPtr,
@@ -8738,16 +8818,13 @@ struct Struct_min_p_sampling:
 
         var input_buf = managed_tensor_slice_to_ndbuffer(input)
         var out_token_ids_buf = managed_tensor_slice_to_ndbuffer(out_token_ids)
-        var min_ps_buf = NDBuffer[dtype, 1, _, 1, 1](UnsafePointer(to=min_p))
-        var min_ps_tensor = LayoutTensor[dtype, Layout.row_major(1)](
-            UnsafePointer(to=min_p)
-        )
+        var min_ps_buf = managed_tensor_slice_to_ndbuffer(min_ps)
         with Trace[TraceLevel.OP, target=target](_trace_name):
 
             @parameter
             if is_cpu[target]():
                 min_p_sampling_cpu(
-                    min_ps_tensor,
+                    min_ps.to_layout_tensor(),
                     input.to_layout_tensor(),
                     out_token_ids.to_layout_tensor(),
                     temperature,
@@ -9290,7 +9367,7 @@ struct ArgSort[*, ascending: Bool]:
 
 
 @compiler.register("mo.quantize_static_scaled_float8")
-struct QuantizeStaticScaledFloat8[*, is_scale_inverted: Bool]:
+struct QuantizeStaticScaledFloat8[*, scale_is_inverted: Bool]:
     @always_inline
     @staticmethod
     fn execute[
@@ -9305,7 +9382,7 @@ struct QuantizeStaticScaledFloat8[*, is_scale_inverted: Bool]:
     ) raises:
         constrained[is_gpu[target](), "only valid on GPUs"]()
         var scale_loaded = scale.cast[DType.float32]()
-        quantize_static_scaled_fp8[is_scale_inverted=is_scale_inverted](
+        quantize_static_scaled_fp8[scale_is_inverted=scale_is_inverted](
             managed_tensor_slice_to_ndbuffer(output),
             managed_tensor_slice_to_ndbuffer(input),
             scale_loaded,

@@ -12,12 +12,10 @@
 # ===----------------------------------------------------------------------=== #
 from collections import OptionalReg
 from math import ceildiv
-from pathlib import Path
 from sys import alignof, simdwidthof, sizeof
 
-import linalg.vendor_blas
 from buffer.buffer import NDBuffer
-from buffer.dimlist import Dim, DimList, _make_tuple
+from buffer.dimlist import DimList, _make_tuple
 from gpu import MAX_THREADS_PER_BLOCK_METADATA, WARP_SIZE, barrier
 from gpu.cluster import (
     block_rank_in_cluster,
@@ -32,8 +30,8 @@ from gpu.grid_controls import (
     wait_on_dependent_grids,
 )
 from gpu.host import DeviceContext, FuncAttribute
-from gpu.host.device_context import DeviceBuffer
-from gpu.host._compile import _compile_code_asm, _get_gpu_target
+from gpu.host.compile import _compile_code_asm
+from gpu.host import get_gpu_target
 from gpu.host._nvidia_cuda import TensorMapSwizzle
 from gpu.host.info import H100
 from gpu.id import (
@@ -60,18 +58,16 @@ from gpu.mma import (
     wgmma_fence_aligned,
     wgmma_wait_group_sync,
 )
-from gpu.sync import cp_async_bulk_wait_group, named_barrier
-from gpu.warp import broadcast
+from gpu.sync import named_barrier
 from layout import IntTuple, Layout, LayoutTensor
 from layout._ndbuffer_stub import from_ndbuffer_row_major
-from layout._utils import ManagedLayoutTensor
 from layout.layout_tensor import (
     LayoutTensorIter,
     copy_local_to_dram,
     copy_sram_to_dram,
 )
 from layout.runtime_layout import UNKNOWN_VALUE, RuntimeLayout, RuntimeTuple
-from layout.swizzle import make_ldmatrix_swizzle, make_swizzle
+from layout.swizzle import make_ldmatrix_swizzle
 from layout.tensor_core_async import (
     TensorCoreAsync,
     st_matrix_n_layout,
@@ -85,7 +81,7 @@ from layout.tma_async import (
     create_tma_tile,
 )
 from linalg.matmul_tile_scheduler import MatmulSchedule, TileScheduler
-from memory import UnsafePointer, bitcast, stack_allocation
+from memory import bitcast, stack_allocation
 from memory.pointer import _GPUAddressSpace
 from stdlib.bit import log2_floor
 
@@ -253,12 +249,13 @@ fn producer_main_loop[
                 @parameter
                 if partitioned_multicast:
                     var a_gmem_slice_coord = m_coord + Int(rank_n) * a_tma_rows
-                    var a_smem_slice = __type_of(a_smem_tile)(
-                        a_smem_tile.ptr + rank_n * a_tma_load_size
-                    )
+
+                    var a_smem_reshape = a_smem_tile.reshape[
+                        Layout.row_major(BM, BK)
+                    ]()
 
                     a_tma_op.async_multicast_load(
-                        a_smem_slice,
+                        a_smem_reshape.split[CLUSTER_N, 0]()[rank_n],
                         full_mbar[write_idx],
                         (
                             UInt(k_iter * pipeline_stages + j) * BK,
@@ -289,12 +286,13 @@ fn producer_main_loop[
                 @parameter
                 if partitioned_multicast:
                     var b_gmem_slice_coord = n_coord + Int(rank_m) * b_tma_rows
-                    var b_smem_slice = __type_of(b_smem_tile)(
-                        b_smem_tile.ptr + rank_m * b_tma_load_size
-                    )
+
+                    var b_smem_reshape = b_smem_tile.reshape[
+                        Layout.row_major(BN, BK)
+                    ]()
 
                     b_tma_op.async_multicast_load(
-                        b_smem_slice,
+                        b_smem_reshape.split[CLUSTER_M, 0]()[rank_m],
                         full_mbar[write_idx],
                         (
                             UInt(k_iter * pipeline_stages + j) * BK,

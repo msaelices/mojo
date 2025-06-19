@@ -13,14 +13,17 @@
 
 import logging
 import queue
-import tempfile
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Union, cast
 
 import zmq
-from max.nn.kv_cache import KVTransferEngine, PagedKVCacheManager
+from max.nn.kv_cache import (
+    KVTransferEngine,
+    KVTransferEngineMetadata,
+    PagedKVCacheManager,
+)
 from max.pipelines.core import (
     TextAndVisionContext,
     TextContext,
@@ -67,7 +70,6 @@ class DecodeScheduler(Scheduler):
         cancel_zmq_endpoint: str,
         zmq_ctx: zmq.Context,
         dispatcher_client: DispatcherClient,
-        transfer_engine_zmq_endpoint: str = f"ipc://{tempfile.gettempdir()}/transfer_engine",
     ):
         # Initialize Pipeline and Config
         self.scheduler_config = scheduler_config
@@ -90,8 +92,7 @@ class DecodeScheduler(Scheduler):
             ),
         )
         self.response_push_socket = ZmqPushSocket[tuple[str, TextResponse]](
-            zmq_ctx=zmq_ctx,
-            zmq_endpoint=response_zmq_endpoint,
+            zmq_ctx=zmq_ctx, zmq_endpoint=response_zmq_endpoint
         )
         self.cancel_pull_socket = ZmqPullSocket[
             tuple[str, Union[TextContext, TextAndVisionContext]]
@@ -106,6 +107,10 @@ class DecodeScheduler(Scheduler):
         self.dispatcher_client = dispatcher_client
         self.dispatcher_client.register_reply_handler(
             MessageType.PREFILL_RESPONSE, self.handle_prefill_response
+        )
+        self.dispatcher_client.register_reply_handler(
+            MessageType.TRANSFER_ENGINE_RESPONSE,
+            self.handle_transfer_engine_response,
         )
 
         self.preempted_request: queue.Queue[
@@ -130,38 +135,6 @@ class DecodeScheduler(Scheduler):
             total_num_pages=self.paged_manager.total_num_pages,
         )
 
-        self.register_remote_transfer_engine(
-            transfer_engine_zmq_endpoint, zmq_ctx
-        )
-
-    def register_remote_transfer_engine(
-        self, transfer_engine_zmq_endpoint: str, zmq_ctx: zmq.Context
-    ) -> None:
-        """Registers and connects the transfer engine with a remote prefill agent.
-
-        This function establishes a ZMQ socket connection with a remote prefill agent,
-        exchanges transfer engine metadata between the two agents, and sets up the
-        connection between them. The metadata exchange allows the agents to communicate
-        and transfer data between each other.
-
-        Args:
-            zmq_ctx: The ZMQ context used to create the socket connection.
-        """
-        # Initialize Socket to send Transfer Engine Agent Metadata to peer.
-        logger.debug("connecting to transfer engine socket.")
-        socket = zmq_ctx.socket(zmq.REP)
-        socket.bind(transfer_engine_zmq_endpoint)
-
-        # Wait to Receive Transfer Engine Metadata.
-        logger.debug("waiting for prefill engine metadata.")
-        remote_engine_metadata = socket.recv_pyobj()
-        self.transfer_engine.connect(remote_engine_metadata)
-
-        # Send Transfer Engine Metadata.
-        logger.debug("sending decode engine metadata.")
-        socket.send_pyobj(self.transfer_engine.metadata)
-        logger.debug("agent and remote engine registered!")
-
     def pull_from_request_socket(
         self,
     ) -> tuple[str, Union[TextContext, TextAndVisionContext]]:
@@ -179,6 +152,12 @@ class DecodeScheduler(Scheduler):
             return self.preempted_request.get()
 
         return self.request_pull_socket.get_nowait()
+
+    def handle_transfer_engine_response(
+        self, message: KVTransferEngineMetadata
+    ) -> None:
+        logger.info(f"connecting to remote transfer engine: {message.name}")
+        self.transfer_engine.connect(message)
 
     def handle_prefill_response(self, message: PrefillResponse) -> None:
         """Handles a prefill response from the dispatcher."""
@@ -220,6 +199,13 @@ class DecodeScheduler(Scheduler):
         Raises:
             zmq.ZMQError: If there is an error sending on the socket
         """
+        # TODO: Handle this dynamically.
+        if len(self.transfer_engine.remote_connections) == 0:
+            self.dispatcher_client.send(
+                MessageType.TRANSFER_ENGINE_REQUEST,
+                self.transfer_engine.metadata,
+            )
+
         self.dispatcher_client.send(
             MessageType.PREFILL_REQUEST,
             PrefillRequest(
@@ -239,12 +225,17 @@ class DecodeScheduler(Scheduler):
             try:
                 # Pop off request queue
                 request_id, request_context = self.pull_from_request_socket()
+                logger.info("request received from api worker.")
 
                 # If we pop off a request successfully.
                 # Grab new cache index, claim the slot with the paged manager
                 # and add it to the reserved_cache_indices.
                 cache_seq_id = self.available_cache_indices.pop()
                 self.paged_manager.external_claim([cache_seq_id])
+
+                # Ensure request_context uses the appropriate cache seq id
+                request_context.unassign_from_cache()
+                request_context.assign_to_cache(cache_seq_id)
 
                 # TODO: E2EOPT-269
 
@@ -271,8 +262,9 @@ class DecodeScheduler(Scheduler):
                 # If successful, mark as reserved and send to prefill socket.
                 self.reserved_cache_indices[request_id] = cache_seq_id
 
-                # TODO E2EOPT-219 - Eagerly reserve memory prior to sending to prefill.
-                dst_idx = [0]
+                dst_idx = self.paged_manager.block_manager.get_req_blocks(
+                    cache_seq_id
+                )
 
                 # Send to the Prefill Node
                 self.send_prefill_request(request_id, request_context, dst_idx)
@@ -297,12 +289,18 @@ class DecodeScheduler(Scheduler):
                 # We can assume that everything in the decode queue, already has cache space.
                 prefill_response = self.get_decode_request()
 
+                # Check that the transfer is complete, this will wait.
+                logger.info("waiting for transfer to complete.")
+                self.transfer_engine.recv_xfer_sync(
+                    prefill_response.transfer_metadata
+                )
+
                 # Assume that we've already claimed this memory in our cache.
                 # However, this seq id, may have been updated by the prefill worker.
                 # So assign it to the correct seq_id in the Decode Paged Cache.
                 prefill_response.context.unassign_from_cache()
                 prefill_response.context.assign_to_cache(
-                    self.reserved_cache_indices[prefill_response.id],
+                    self.reserved_cache_indices[prefill_response.id]
                 )
 
                 # Add to active batch.

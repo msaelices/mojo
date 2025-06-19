@@ -26,7 +26,6 @@ from sys import external_call
 from sys.arg import argv
 from sys.ffi import (
     DLHandle,
-    OpaquePointer,
     c_char,
     c_int,
     c_long,
@@ -35,7 +34,6 @@ from sys.ffi import (
     c_uint,
 )
 
-from memory import UnsafePointer
 from python.bindings import (
     Typed_initproc,
     Typed_newfunc,
@@ -127,14 +125,7 @@ struct PyKeysValuePair:
 
 @fieldwise_init
 @register_passable("trivial")
-struct PyObjectPtr(
-    Copyable,
-    Movable,
-    Defaultable,
-    Boolable,
-    Intable,
-    Writable,
-):
+struct PyObjectPtr(Boolable, Copyable, Defaultable, Intable, Movable, Writable):
     """Equivalent to `PyObject*` in C.
 
     It is crucial that this type has the same size and alignment as `PyObject*`
@@ -284,7 +275,7 @@ fn _py_finalize(lib: DLHandle):
 
 
 @fieldwise_init
-struct PyMethodDef(Copyable, Movable):
+struct PyMethodDef(Copyable, Defaultable, Movable):
     """Represents a Python method definition. This struct is used to define
     methods for Python modules or types.
 
@@ -443,7 +434,9 @@ struct PyType_Slot(Copyable, Movable):
 
 
 @fieldwise_init
-struct PyObject(Stringable, Representable, Writable, Copyable, Movable):
+struct PyObject(
+    Copyable, Defaultable, Movable, Representable, Stringable, Writable
+):
     """All object types are extensions of this type. This is a type which
     contains the information Python needs to treat a pointer to an object as an
     object. In a normal “release” build, it contains only the object's reference
@@ -504,7 +497,7 @@ struct PyObject(Stringable, Representable, Writable, Copyable, Movable):
 
 # Mojo doesn't have macros, so we define it here for ease.
 struct PyModuleDef_Base(
-    Movable, Defaultable, Stringable, Representable, Writable
+    Defaultable, Movable, Representable, Stringable, Writable
 ):
     """PyModuleDef_Base.
 
@@ -592,7 +585,7 @@ struct PyModuleDef_Slot:
     var value: OpaquePointer
 
 
-struct PyModuleDef(Movable, Stringable, Representable, Writable):
+struct PyModuleDef(Movable, Representable, Stringable, Writable):
     """The Python module definition structs that holds all of the information
     needed to create a module.
 
@@ -738,7 +731,7 @@ alias PyLong_FromSsize_t = ExternalFunction[
 
 
 @fieldwise_init
-struct CPython(Copyable, Movable):
+struct CPython(Copyable, Defaultable, Movable):
     """Handle to the CPython interpreter present in the current process."""
 
     # ===-------------------------------------------------------------------===#
@@ -892,11 +885,15 @@ struct CPython(Copyable, Movable):
             "invalid unchecked conversion of Python error to Mojo error",
         )
 
-        # TODO(MSTDL-1479): PyErr_Fetch is deprecated since Python 3.12.
-        var err_ptr = self.PyErr_Fetch()
+        var err_ptr: PyObjectPtr
+        # NOTE: PyErr_Fetch is deprecated since Python 3.12.
+        var is_old = self.version.major == 3 and self.version.minor < 12
+        if is_old:
+            err_ptr = self.PyErr_Fetch()
+        else:
+            err_ptr = self.PyErr_GetRaisedException()
         debug_assert(
-            Bool(err_ptr),
-            "Python exception occurred but PyErr_Fetch returned null",
+            Bool(err_ptr), "Python exception occurred but null was returned"
         )
 
         var error: Error
@@ -908,7 +905,8 @@ struct CPython(Copyable, Movable):
                 " converted to String"
             )
 
-        self.PyErr_Clear()
+        if is_old:
+            self.PyErr_Clear()
         return error
 
     fn get_error(self) -> Error:
@@ -1989,16 +1987,20 @@ struct CPython(Copyable, Movable):
         )
         var r = value
 
-        self.log(
-            r,
-            " NEWREF PyErr_Fetch, refcnt:",
-            self._Py_REFCNT(r),
-        )
-
+        self.log(r, " NEWREF PyErr_Fetch, refcnt:", self._Py_REFCNT(r))
         self._inc_total_rc()
-        _ = type
-        _ = value
-        _ = traceback
+        return r
+
+    fn PyErr_GetRaisedException(self) -> PyObjectPtr:
+        """[Reference](
+        https://docs.python.org/3/c-api/exceptions.html#c.PyErr_GetRaisedException).
+        """
+        var r = self.lib.call["PyErr_GetRaisedException", PyObjectPtr]()
+
+        self.log(
+            r, " NEWREF PyErr_GetRaisedException, refcnt:", self._Py_REFCNT(r)
+        )
+        self._inc_total_rc()
         return r
 
     fn PyErr_SetNone(self, type: PyObjectPtr):

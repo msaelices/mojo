@@ -27,7 +27,6 @@ from sys import bitwidthof
 
 from builtin.device_passable import DevicePassable
 from builtin.math import Absable, Powable
-from memory import UnsafePointer
 from python import (
     Python,
     PythonConvertible,
@@ -35,7 +34,6 @@ from python import (
     ConvertibleFromPython,
 )
 
-from utils import Writable, Writer
 from utils._select import _select_register_value as select
 from utils._visualizers import lldb_formatter_wrapping_type
 
@@ -211,36 +209,36 @@ trait ImplicitlyIntable(Intable):
 @register_passable("trivial")
 struct Int(
     Absable,
-    Defaultable,
     CeilDivable,
-    Copyable,
-    Movable,
-    Comparable,
     Ceilable,
-    Floorable,
-    Truncable,
-    Writable,
-    IntervalElement,
+    Comparable,
+    ConvertibleFromPython,
+    Copyable,
+    Defaultable,
     DevicePassable,
     ExplicitlyCopyable,
+    Floorable,
     Hashable,
-    _HashableWithHasher,
     ImplicitlyBoolable,
     Indexer,
+    IntervalElement,
     KeyElement,
+    Movable,
     Powable,
     PythonConvertible,
     Representable,
     Roundable,
     Stringable,
-    ConvertibleFromPython,
+    Truncable,
+    Writable,
+    _HashableWithHasher,
 ):
     """This type represents an integer value."""
 
     alias device_type: AnyTrivialRegType = Self
     """Int is remapped to the same type when passed to accelerator devices."""
 
-    fn _to_device_type(self, target: UnsafePointer[NoneType]):
+    fn _to_device_type(self, target: OpaquePointer):
         """Device type mapping is the identity function."""
         target.bitcast[Self.device_type]()[] = self
 
@@ -1173,7 +1171,7 @@ struct Int(
     # Methods
     # ===-------------------------------------------------------------------===#
 
-    fn to_python_object(owned self) -> PythonObject:
+    fn to_python_object(owned self) raises -> PythonObject:
         """Convert this value to a PythonObject.
 
         Returns:

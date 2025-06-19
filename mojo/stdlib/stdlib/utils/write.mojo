@@ -14,16 +14,12 @@
 
 from bit import byte_swap
 from builtin.io import _printf
-from collections import InlineArray
 from sys.info import is_amd_gpu, is_gpu, is_nvidia_gpu
-from memory import Span, UnsafePointer, memcpy, bitcast
+from memory import memcpy, bitcast
 from os import abort
-from collections import InlineArray
-from sys.info import is_amd_gpu, is_gpu, is_nvidia_gpu
 from sys import alignof
-from memory import Span, UnsafePointer, memcpy
+from memory import Span, memcpy
 from sys.param_env import env_get_int
-from collections.string.string_slice import _get_kgen_string
 
 
 # ===-----------------------------------------------------------------------===#
@@ -170,7 +166,7 @@ trait Writable:
 # ===-----------------------------------------------------------------------===#
 
 
-struct _WriteBufferHeap(Writer, Writable):
+struct _WriteBufferHeap(Writable, Writer):
     var data: UnsafePointer[Byte]
     var pos: Int
 
@@ -241,9 +237,7 @@ struct _WriteBufferStack[origin: MutableOrigin, W: Writer, //](Writer):
 
     fn flush(mut self):
         self.writer[].write_bytes(
-            Span[Byte, ImmutableAnyOrigin](
-                ptr=self.data.unsafe_ptr(), length=self.pos
-            )
+            Span(ptr=self.data.unsafe_ptr(), length=self.pos)
         )
         self.pos = 0
 

@@ -70,13 +70,16 @@ class AudioGenerationRequest:
     """(ONLY FOR BENCHMARKING PURPOSES) An assistant message that replaces the
     speech token pattern."""
 
-    token_ids: Optional[list[int]] = field(default=None)
-    """Optionally provide a preprocessed list of token ids to pass as input directly into the model.
+    prompt: Optional[list[int] | str] = field(default=None)
+    """Optionally provide a preprocessed list of token ids or a prompt string to pass as input directly into the model.
     This replaces automatically generating TokenGeneratorRequestMessages given the input, audio prompt tokens,
     audio prompt transcription fields."""
 
+    streaming: bool = True
+    """Whether to stream the audio generation."""
+
     def __post_init__(self) -> None:
-        if self.token_ids is None and input is None:
+        if self.prompt is None and self.input is None:
             raise RuntimeError("either token_ids or input must be provided.")
 
 
@@ -99,7 +102,7 @@ class AudioGenerator(Generic[AudioGeneratorContext], Protocol):
     """Interface for audio generation models."""
 
     def next_chunk(
-        self, batch: dict[str, AudioGeneratorContext], num_tokens: int
+        self, batch: dict[str, AudioGeneratorContext]
     ) -> dict[str, AudioGenerationResponse]:
         """Computes the next audio chunk for a single batch.
 
@@ -108,7 +111,6 @@ class AudioGenerator(Generic[AudioGeneratorContext], Protocol):
 
         Args:
             batch (dict[str, AudioGeneratorContext]): Batch of contexts.
-            num_tokens (int): Number of speech tokens to generate.
 
         Returns:
             dict[str, AudioGenerationResponse]: Dictionary mapping request IDs to
@@ -127,4 +129,11 @@ class AudioGenerator(Generic[AudioGeneratorContext], Protocol):
     @property
     def decoder_sample_rate(self) -> int:
         """The sample rate of the decoder."""
+        ...
+
+    @property
+    def prev_num_steps(self) -> int:
+        """The number of speech tokens that were generated during the processing
+        of the previous batch.
+        """
         ...

@@ -19,7 +19,6 @@ from python import PythonObject
 ```
 """
 
-from hashlib._hasher import _HashableWithHasher, _Hasher
 from os import abort
 from sys.ffi import c_ssize_t
 from sys.intrinsics import _unsafe_aliasing_address_to_pointer
@@ -28,7 +27,6 @@ from compile.reflection import get_type_name
 # NOTE: This apparently redundant import is needed so PythonBindingsGen.cpp can
 # find the StringLiteral declaration.
 from builtin.string_literal import StringLiteral
-from memory import UnsafePointer
 
 from ._cpython import CPython, PyObjectPtr, PyObject, PyTypeObject
 from .python import Python
@@ -39,11 +37,14 @@ trait PythonConvertible:
     """A trait that indicates a type can be converted to a PythonObject, and
     that specifies the behavior with a `to_python_object` method."""
 
-    fn to_python_object(owned self) -> PythonObject:
+    fn to_python_object(owned self) raises -> PythonObject:
         """Convert a value to a PythonObject.
 
         Returns:
             A PythonObject representing the value.
+
+        Raises:
+            If the conversion to a PythonObject failed.
         """
         ...
 
@@ -66,7 +67,7 @@ trait ConvertibleFromPython(Copyable, Movable):
         ...
 
 
-struct _PyIter(Sized):
+struct _PyIter(Defaultable, Sized):
     """A Python iterator."""
 
     # ===-------------------------------------------------------------------===#
@@ -169,10 +170,11 @@ alias PyFunctionRaising = fn (
 struct PythonObject(
     Boolable,
     Copyable,
+    Defaultable,
     Movable,
+    PythonConvertible,
     SizedRaising,
     Writable,
-    PythonConvertible,
 ):
     """A Python object."""
 
@@ -355,7 +357,7 @@ struct PythonObject(
             self.py_object = cpython.PyFloat_FromDouble(fp_val)
 
     @implicit
-    fn __init__(out self, value: StringLiteral):
+    fn __init__(out self, value: StringLiteral) raises:
         """Initialize the object from a string literal.
 
         Args:
@@ -364,7 +366,7 @@ struct PythonObject(
         self = PythonObject(value.as_string_slice())
 
     @implicit
-    fn __init__(out self, value: String):
+    fn __init__(out self, value: String) raises:
         """Initialize the object from a string.
 
         Args:
@@ -373,14 +375,19 @@ struct PythonObject(
         self = PythonObject(value.as_string_slice())
 
     @implicit
-    fn __init__(out self, string: StringSlice):
+    fn __init__(out self, string: StringSlice) raises:
         """Initialize the object from a string.
 
         Args:
             string: The string value.
+
+        Raises:
+            If the string is not valid UTF-8.
         """
         cpython = Python().cpython()
         self.py_object = cpython.PyUnicode_DecodeUTF8(string)
+        if not self.py_object:
+            raise cpython.get_error()
 
     @implicit
     fn __init__(out self, slice: Slice):
@@ -394,7 +401,7 @@ struct PythonObject(
     @always_inline
     fn __init__[
         *Ts: PythonConvertible & Copyable
-    ](out self, owned *values: *Ts, __list_literal__: ()):
+    ](out self, owned *values: *Ts, __list_literal__: ()) raises:
         """Construct an Python list of objects.
 
         Parameters:
@@ -1407,7 +1414,7 @@ struct PythonObject(
     # Methods
     # ===-------------------------------------------------------------------===#
 
-    fn to_python_object(owned self) -> PythonObject:
+    fn to_python_object(owned self) raises -> PythonObject:
         """Convert this value to a PythonObject.
 
         Returns:

@@ -11,7 +11,6 @@
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
 
-from collections.string import StaticString, StringSlice
 from hashlib._hasher import _Hasher
 from math import ceildiv
 from sys import (
@@ -22,20 +21,17 @@ from sys import (
     has_nvidia_gpu_accelerator,
     sizeof,
 )
-from sys.ffi import OpaquePointer, _get_global_or_null, external_call
+from sys.ffi import _get_global_or_null, external_call
 
 from gpu import WARP_SIZE
 from gpu.grid_controls import PDLLevel
 from gpu.host import DeviceContext
 from gpu.host.info import A100, DEFAULT_GPU_ARCH, _get_info_from_target
-from layout.tensor_core import TensorCore, get_fragment_size, get_mma_shape
+from layout.tensor_core import get_mma_shape
 
 from utils.index import Index, IndexList
 from utils.numerics import get_accum_type
-from gpu.memory import AddressSpace
-from memory import UnsafePointer
 from gpu.host.device_context import DeviceBuffer
-from collections.dict import Dict
 
 # ===------------------------------------------------------------------===#
 # GPU Matmul Block Swizzling
@@ -98,7 +94,6 @@ fn _block_swizzle_by_scale[
 # ===------------------------------------------------------------------===#
 
 
-@value
 @register_passable("trivial")
 struct MatmulConfig[
     a_type: DType,
@@ -106,7 +101,7 @@ struct MatmulConfig[
     c_type: DType,
     transpose_b: Bool = False,
     mma_shape: IndexList[3] = get_mma_shape[a_type, get_accum_type[a_type]()](),
-](Stringable, Writable):
+](Stringable, Writable, Copyable, Movable):
     """Static configuration of GPU matmul."""
 
     var block_tile_shape: IndexList[3]
@@ -303,11 +298,11 @@ fn _shared_memory_usage[
     return max(max(a_usage + b_usage, c_usage), slice_k_reduction)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct MatmulKernels[
     a_type: DType, b_type: DType, c_type: DType, transpose_b: Bool = False
-]:
+](Copyable, Movable):
     """Supported matmul kernels.
 
     The configurations are named as: <arch>_<BNxBM>_<stages>.
@@ -522,261 +517,6 @@ fn select_config[
         num_pipeline_stages=best_num_stages,
         num_k_partitions=best_num_k_partitions,
     )
-
-
-fn get_config_from_shape[
-    a_type: DType,
-    b_type: DType,
-    c_type: DType,
-    static_N: Int,
-    static_K: Int,
-    transpose_b: Bool = False,
-    target: StaticString = DEFAULT_GPU_ARCH,
-](dyn_M: Int, ctx: DeviceContext) -> MatmulConfig[
-    a_type, b_type, c_type, transpose_b
-]:
-    # This part code may be useful when replacing alias with runtime variables.
-    # Construct the config before hand and use index map to retrieve the config.
-    # var block_shape_list = List[IndexList[3]]()
-    # var mn_list = [64, 128, 256]
-    # var k_list = [32, 64]
-
-    # @parameter
-    # for i in range(3):
-
-    #     @parameter
-    #     for j in range(3):
-
-    #         @parameter
-    #         for k in range(2):
-    #             block_shape_list.append(Index(mn_list.get[i, Int](), mn_list.get[j, Int](), k_list.get[k, Int]()))
-
-    alias warp_shape = Index(64, 64, 2 * _bk_base[a_type]())
-
-    var default_config = select_config[a_type, b_type, c_type, transpose_b](
-        dyn_M, static_N, static_K, ctx
-    )
-    # MatmulConfig for N=K=4096
-    alias M128_N4096_K4096_config = MatmulConfig[
-        a_type, b_type, c_type, transpose_b
-    ](
-        block_tile_shape=Index(64, 128, 32),
-        warp_tile_shape=warp_shape,
-        num_pipeline_stages=4,
-        num_k_partitions=1,
-    )
-    alias M256_N4096_K4096_config = MatmulConfig[
-        a_type, b_type, c_type, transpose_b
-    ](
-        block_tile_shape=Index(64, 256, 32),
-        warp_tile_shape=warp_shape,
-        num_pipeline_stages=4,
-        num_k_partitions=1,
-    )
-    alias M512_N4096_K4096_config = MatmulConfig[
-        a_type, b_type, c_type, transpose_b
-    ](
-        block_tile_shape=Index(128, 128, 32),
-        warp_tile_shape=warp_shape,
-        num_pipeline_stages=4,
-        num_k_partitions=2,
-    )
-    alias M1024_N4096_K4096_config = MatmulConfig[
-        a_type, b_type, c_type, transpose_b
-    ](
-        block_tile_shape=Index(128, 128, 32),
-        warp_tile_shape=warp_shape,
-        num_pipeline_stages=4,
-        num_k_partitions=1,
-    )
-    alias M2048_N4096_K4096_config = MatmulConfig[
-        a_type, b_type, c_type, transpose_b
-    ](
-        block_tile_shape=Index(128, 128, 32),
-        warp_tile_shape=warp_shape,
-        num_pipeline_stages=4,
-        num_k_partitions=1,
-    )
-
-    # MatmulConfig for N=4096 K = 14336
-    alias M128_N4096_K14336_config = MatmulConfig[
-        a_type, b_type, c_type, transpose_b
-    ](
-        block_tile_shape=Index(64, 256, 64),
-        warp_tile_shape=warp_shape,
-        num_pipeline_stages=4,
-        num_k_partitions=3,
-    )
-    alias M512_N4096_K14336_config = MatmulConfig[
-        a_type, b_type, c_type, transpose_b
-    ](
-        block_tile_shape=Index(256, 128, 64),
-        warp_tile_shape=warp_shape,
-        num_pipeline_stages=3,
-        num_k_partitions=3,
-    )
-    alias M1024_N4096_K14336_config = MatmulConfig[
-        a_type, b_type, c_type, transpose_b
-    ](
-        block_tile_shape=Index(128, 128, 32),
-        warp_tile_shape=warp_shape,
-        num_pipeline_stages=4,
-        num_k_partitions=2,
-    )
-    alias M2048_N4096_K14336_config = MatmulConfig[
-        a_type, b_type, c_type, transpose_b
-    ](
-        block_tile_shape=Index(128, 128, 64),
-        warp_tile_shape=warp_shape,
-        num_pipeline_stages=3,
-        num_k_partitions=1,
-    )
-
-    # MatmulConfig for N=128256 K = 4096
-    alias M128_N128256_K4096_config = MatmulConfig[
-        a_type, b_type, c_type, transpose_b
-    ](
-        block_tile_shape=Index(128, 256, 64),
-        warp_tile_shape=warp_shape,
-        num_pipeline_stages=3,
-        num_k_partitions=1,
-    )
-    alias MXXXX_N128256_K4096_config = MatmulConfig[
-        a_type, b_type, c_type, transpose_b
-    ](
-        block_tile_shape=Index(256, 128, 64),
-        warp_tile_shape=warp_shape,
-        num_pipeline_stages=3,
-        num_k_partitions=1,
-    )
-
-    # MatmulConfig for N = 28672 K=4096
-    alias M128_N28672_K4096_config = MatmulConfig[
-        a_type, b_type, c_type, transpose_b
-    ](
-        block_tile_shape=Index(128, 128, 32),
-        warp_tile_shape=warp_shape,
-        num_pipeline_stages=4,
-        num_k_partitions=1,
-    )
-    alias M256_N28672_K4096_config = MatmulConfig[
-        a_type, b_type, c_type, transpose_b
-    ](
-        block_tile_shape=Index(64, 256, 64),
-        warp_tile_shape=warp_shape,
-        num_pipeline_stages=4,
-        num_k_partitions=1,
-    )
-    alias M512_N28672_K4096_config = MatmulConfig[
-        a_type, b_type, c_type, transpose_b
-    ](
-        block_tile_shape=Index(128, 128, 32),
-        warp_tile_shape=warp_shape,
-        num_pipeline_stages=4,
-        num_k_partitions=1,
-    )
-    alias MXXXX_N28672_K4096_config = MatmulConfig[
-        a_type, b_type, c_type, transpose_b
-    ](
-        block_tile_shape=Index(256, 128, 64),
-        warp_tile_shape=warp_shape,
-        num_pipeline_stages=3,
-        num_k_partitions=1,
-    )
-
-    # MatmulConfig for N = 6144 K=4096
-    alias M128_N6144_K4096_config = MatmulConfig[
-        a_type, b_type, c_type, transpose_b
-    ](
-        block_tile_shape=Index(128, 128, 32),
-        warp_tile_shape=warp_shape,
-        num_pipeline_stages=4,
-        num_k_partitions=1,
-    )
-    alias M256_N6144_K4096_config = MatmulConfig[
-        a_type, b_type, c_type, transpose_b
-    ](
-        block_tile_shape=Index(128, 128, 64),
-        warp_tile_shape=warp_shape,
-        num_pipeline_stages=4,
-        num_k_partitions=1,
-    )
-    alias MXXXX_N6144_K4096_config = MatmulConfig[
-        a_type, b_type, c_type, transpose_b
-    ](
-        block_tile_shape=Index(256, 128, 64),
-        warp_tile_shape=warp_shape,
-        num_pipeline_stages=3,
-        num_k_partitions=1,
-    )
-
-    # dispatch config for N = 4096 K = 4096
-    @parameter
-    if static_N == 4096 and static_K == 4096:
-        if dyn_M <= 128:
-            return M128_N4096_K4096_config
-        elif dyn_M <= 256:
-            return M256_N4096_K4096_config
-        elif dyn_M <= 512:
-            return M512_N4096_K4096_config
-        elif dyn_M <= 1024:
-            return M1024_N4096_K4096_config
-        elif dyn_M <= 2048:
-            return M2048_N4096_K4096_config
-
-    # dispatch config for N = 4096 K = 14336
-    @parameter
-    if static_N == 4096 and static_K == 14336:
-        if dyn_M <= 128:
-            return M128_N4096_K14336_config
-        elif dyn_M <= 512:
-            return M512_N4096_K14336_config
-        elif dyn_M <= 1024:
-            return M1024_N4096_K14336_config
-        elif dyn_M <= 2048:
-            return M2048_N4096_K14336_config
-
-    # dispatch config for N = 128256 K = 4096
-    @parameter
-    if static_N == 128256 and static_K == 4096:
-        if dyn_M <= 128:
-            return M128_N128256_K4096_config
-        elif dyn_M <= 2048:
-            return MXXXX_N128256_K4096_config
-
-    # dispatch config for N = 28672 K = 4096
-    @parameter
-    if static_N == 4096 and static_K == 4096:
-        if dyn_M <= 128:
-            return M128_N28672_K4096_config
-        elif dyn_M <= 256:
-            return M256_N28672_K4096_config
-        elif dyn_M <= 512:
-            return M512_N28672_K4096_config
-        elif dyn_M <= 2048:
-            return MXXXX_N28672_K4096_config
-
-    # dispatch config for N = 6144 K = 4096
-    @parameter
-    if static_N == 6144 and static_K == 4096:
-        if dyn_M <= 128:
-            return M128_N6144_K4096_config
-        elif dyn_M <= 256:
-            return M256_N6144_K4096_config
-        elif dyn_M <= 2048:
-            return MXXXX_N6144_K4096_config
-
-    return default_config
-
-
-@parameter
-fn _get_block_warp_tile_shape[
-    BM: Int, BN: Int, BK: Int
-]() -> List[IndexList[3]]:
-    alias WM = 64
-    alias WN = 64
-    alias WK = BK
-    return List[IndexList[3]](Index(BM, BN, BK), Index(WM, WN, WK))
 
 
 fn create_hilbert_lut(

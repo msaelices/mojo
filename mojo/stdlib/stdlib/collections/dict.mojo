@@ -36,18 +36,15 @@ value types must always be Movable so we can resize the dictionary as it grows.
 
 See the `Dict` docs for more details.
 """
-from sys.ffi import OpaquePointer
 
-from memory import UnsafePointer, bitcast, memcpy
+from memory import bitcast, memcpy
 
 
-trait KeyElement(Copyable, Movable, Hashable, EqualityComparable):
-    """A trait composition for types which implement all requirements of
-    dictionary keys. Dict keys must minimally be Copyable, Movable, Hashable,
-    and EqualityComparable for a hash map. Until we have references
-    they must also be copyable."""
-
-    pass
+alias KeyElement = Copyable & Movable & Hashable & EqualityComparable
+"""A trait composition for types which implement all requirements of
+dictionary keys. Dict keys must minimally be Copyable, Movable, Hashable,
+and EqualityComparable for a hash map. Until we have references
+they must also be copyable."""
 
 
 @fieldwise_init
@@ -114,7 +111,7 @@ struct _DictKeyIter[
     V: Copyable & Movable,
     dict_origin: Origin[dict_mutability],
     forward: Bool = True,
-](Copyable, Movable):
+](Copyable, IteratorTrait, Movable):
     """Iterator over immutable Dict key references.
 
     Parameters:
@@ -126,19 +123,26 @@ struct _DictKeyIter[
     """
 
     alias dict_entry_iter = _DictEntryIter[K, V, dict_origin, forward]
+    alias Element = K
 
     var iter: Self.dict_entry_iter
 
+    @always_inline
     fn __iter__(self) -> Self:
         return self
 
-    fn __next__(mut self) -> ref [self.iter.__next__().key] K:
+    fn __next_ref__(mut self) -> ref [self.iter.__next__().key] K:
         return self.iter.__next__().key
+
+    @always_inline
+    fn __next__(mut self) -> Self.Element:
+        return self.__next_ref__()
 
     @always_inline
     fn __has_next__(self) -> Bool:
         return self.__len__() > 0
 
+    @always_inline
     fn __len__(self) -> Int:
         return self.iter.__len__()
 
@@ -150,7 +154,7 @@ struct _DictValueIter[
     V: Copyable & Movable,
     dict_origin: Origin[dict_mutability],
     forward: Bool = True,
-](Copyable, Movable):
+](Copyable, IteratorTrait, Movable):
     """Iterator over Dict value references. These are mutable if the dict
     is mutable.
 
@@ -163,6 +167,7 @@ struct _DictValueIter[
     """
 
     var iter: _DictEntryIter[K, V, dict_origin, forward]
+    alias Element = V
 
     fn __iter__(self) -> Self:
         return self
@@ -175,13 +180,17 @@ struct _DictValueIter[
             )
         )
 
-    fn __next__(mut self) -> ref [dict_origin] V:
+    fn __next_ref__(mut self) -> ref [dict_origin] V:
         ref entry_ref = self.iter.__next__()
         # Cast through a pointer to grant additional mutability because
         # _DictEntryIter.next erases it.
         return UnsafePointer(to=entry_ref.value).origin_cast[
             origin=dict_origin
         ]()[]
+
+    @always_inline
+    fn __next__(mut self) -> Self.Element:
+        return self.__next_ref__()
 
     @always_inline
     fn __has_next__(self) -> Bool:
@@ -193,7 +202,7 @@ struct _DictValueIter[
 
 @fieldwise_init
 struct DictEntry[K: KeyElement, V: Copyable & Movable](
-    Copyable, Movable, ExplicitlyCopyable
+    Copyable, ExplicitlyCopyable, Movable
 ):
     """Store a key-value pair entry inside a dictionary.
 
@@ -337,7 +346,7 @@ struct _DictIndex(Movable):
 
 
 struct Dict[K: KeyElement, V: Copyable & Movable](
-    Sized, Copyable, Movable, ExplicitlyCopyable, Boolable
+    Boolable, Copyable, Defaultable, ExplicitlyCopyable, Movable, Sized
 ):
     """A container that stores key-value pairs.
 
@@ -1068,7 +1077,7 @@ struct Dict[K: KeyElement, V: Copyable & Movable](
 
 
 struct OwnedKwargsDict[V: Copyable & Movable](
-    Sized, Copyable, Movable, ExplicitlyCopyable
+    Copyable, Defaultable, ExplicitlyCopyable, Movable, Sized
 ):
     """Container used to pass owned variadic keyword arguments to functions.
 

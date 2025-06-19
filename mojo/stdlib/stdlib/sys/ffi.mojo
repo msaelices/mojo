@@ -17,7 +17,6 @@ from os import PathLike, abort
 from pathlib import DIR_SEPARATOR, Path
 from sys._libc import dlclose, dlerror, dlopen, dlsym
 
-from memory import UnsafePointer
 
 from .info import is_64bit, os_is_linux, os_is_macos, os_is_windows
 from .intrinsics import _mlirtype_is_eq
@@ -71,9 +70,6 @@ alias c_float = Float32
 
 alias c_double = Float64
 """C `double` type."""
-
-alias OpaquePointer = UnsafePointer[NoneType]
-"""An opaque pointer, equivalent to the C `void*` type."""
 
 
 fn _c_long_dtype() -> DType:
@@ -164,7 +160,7 @@ struct _OwnedDLHandle(Movable):
 
 @fieldwise_init
 @register_passable("trivial")
-struct DLHandle(Copyable, Movable, ExplicitlyCopyable, Boolable):
+struct DLHandle(Boolable, Copyable, ExplicitlyCopyable, Movable):
     """Represents a dynamically linked library that can be loaded and unloaded.
 
     The library is loaded on initialization and unloaded by `close`.
@@ -574,7 +570,7 @@ struct _Global[
     name: StaticString,
     StorageType: Movable,
     init_fn: fn () -> StorageType,
-]:
+](Defaultable):
     alias ResultType = UnsafePointer[StorageType]
 
     fn __init__(out self):

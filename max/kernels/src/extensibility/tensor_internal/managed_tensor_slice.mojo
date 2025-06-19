@@ -14,10 +14,8 @@
 Implements the `ManagedTensorSlice` type - a view of a tensor that doesn't own
 the underlying data. This type is used to build custom graph operations.
 """
-from collections import InlineArray, OptionalReg
-from collections.string import StaticString
-from math import ceil, fma, iota
-from random import rand
+from collections import OptionalReg
+from math import ceil, fma
 from sys import alignof, simdwidthof
 from sys.info import is_gpu
 from sys.intrinsics import strided_load, strided_store
@@ -27,15 +25,14 @@ from buffer import DimList, NDBuffer
 from buffer.dimlist import _make_partially_static_index_list
 from builtin.device_passable import DevicePassable
 from compiler_internal.directives import StaticTensorSpec, __mogg_intrinsic_attr
-from gpu.host._compile import _get_gpu_target
+from gpu.host import get_gpu_target
 from gpu.host.info import is_cpu
 from gpu.host.info import is_gpu as _is_gpu
-from layout import Layout, LayoutTensor, RuntimeLayout
-from memory import UnsafePointer
+from layout import LayoutTensor
 from memory.pointer import _GPUAddressSpace
 from register import register_internal
 from runtime.asyncrt import DeviceContextPtr
-from runtime.tracing import Trace, TraceLevel, trace_arg
+from runtime.tracing import trace_arg
 from tensor_internal import RuntimeTensorSpec
 
 from utils import IndexList, StaticTuple
@@ -338,32 +335,6 @@ fn _output_fusion_hook_impl[
 # ===----------------------------------------------------------------------=== #
 
 
-@register_internal(
-    "rebuild_mix_precision_static_tensor_specs_with_output_lambda"
-)
-@no_inline
-fn rebuild_mix_precision_static_tensor_specs_with_output_lambda[
-    func_type: AnyTrivialRegType, //,
-    src_rank: Int,
-    src_shape: DimList,
-    src_type: DType,
-](
-    spec: StaticTensorSpec,
-    out_lambda: func_type,
-    out result: StaticTensorSpec[src_type, src_rank],
-):
-    return StaticTensorSpec[src_type, src_rank](
-        shape=src_shape,
-        strides=spec.strides,
-        alignment=spec.alignment,
-        address_space=spec.address_space,
-        exclusive=spec.exclusive,
-        in_lambda=None,
-        out_lambda=rebind[result.out_lambda_t](out_lambda),
-        out_compute_lambda=None,
-    )
-
-
 @__mogg_intrinsic_attr("mogg.dps_mixed_precision_output_fusion_hook")
 @register_internal("mogg.dps_mixed_precision_output_fusion_hook")
 @no_inline
@@ -392,11 +363,20 @@ fn _mixed_precision_output_fusion_hook_impl[
             element_alignment=_elem_align,
         ](tensor, rebind[IndexList[rank]](i), rebind[SIMD[dst_type, _w]](v))
 
+    alias mixed_in_spec = StaticTensorSpec[src_type, src_rank](
+        shape=src_shape,
+        strides=static_spec.strides,
+        alignment=static_spec.alignment,
+        address_space=static_spec.address_space,
+        exclusive=static_spec.exclusive,
+        in_lambda=None,
+        out_lambda=None,
+        out_compute_lambda=None,
+    )
+
     return _extract_tensor_spec[
-        rebuild_mix_precision_static_tensor_specs_with_output_lambda[
-            src_rank, src_shape, src_type
-        ](
-            static_spec,
+        rebuild_static_tensor_specs_with_output_lambda[src_type, src_rank](
+            mixed_in_spec,
             _output_lambda,
         )
     ]()
@@ -488,7 +468,7 @@ struct DynamicTensor[
     ]
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct ManagedTensorSlice[
     mut: Bool,
@@ -515,7 +495,7 @@ struct ManagedTensorSlice[
         dtype, static_spec.to_layout(), MutableAnyOrigin
     ]
 
-    fn _to_device_type(self, target: UnsafePointer[NoneType]):
+    fn _to_device_type(self, target: OpaquePointer):
         target.bitcast[Self.device_type]()[] = self.to_layout_tensor()
 
     @staticmethod
@@ -1210,7 +1190,7 @@ alias _FusedInputVariadicTensors = VariadicTensors[io_spec=FusedInput]
 alias _FusedOutputVariadicTensors = VariadicTensors[io_spec=FusedOutput]
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
 struct VariadicTensors[
     mut: Bool,
@@ -1221,7 +1201,7 @@ struct VariadicTensors[
     io_spec: IOSpec[mut, input],
     *,
     static_specs: StaticTuple[StaticTensorSpec[dtype, rank], size],
-](Sized):
+](Copyable, Movable, Sized):
     """A tuple-like container of tensors representing variadic arguments from
     the graph compiler."""
 
@@ -1268,7 +1248,7 @@ struct VariadicTensors[
 fn get_kernel_simd_width[dtype: DType, target: StaticString]() -> Int:
     @parameter
     if _is_gpu[target]():
-        return simdwidthof[dtype, target = _get_gpu_target()]()
+        return simdwidthof[dtype, target = get_gpu_target()]()
 
     return simdwidthof[dtype]()
 

@@ -125,25 +125,47 @@ def configure_logging(settings: Settings) -> None:
 
     logging_handlers: list[logging.Handler] = []
 
+    # Set up log filtering
+    components_to_log = [
+        "root",
+        "max.entrypoints",
+        "max.pipelines",
+        "max.serve",
+    ]
+    try:
+        if settings.logs_enable_components is not None:
+            components = settings.logs_enable_components.split(",")
+            components_to_log.extend(components)
+    except Exception:
+        print(
+            "ERROR: Failed to parse logging components setting!  Using default."
+        )
+
+    def LogFilter(record):
+        return record.name in components_to_log
+
     # Create a console handler
-    console_handler = logging.StreamHandler()
-    console_formatter: logging.Formatter
-    if settings.structured_logging:
-        console_formatter = jsonlogger.JsonFormatter(
-            "%(levelname)s %(process)d %(threadName)s %(name)s %(message)s",
-            timestamp=True,
-        )
-    else:
-        console_formatter = logging.Formatter(
-            (
-                "%(asctime)s.%(msecs)03d %(levelname)s: %(process)d %(threadName)s:"
-                " %(name)s: %(message)s"
-            ),
-            datefmt="%H:%M:%S",
-        )
-    console_handler.setFormatter(console_formatter)
-    console_handler.setLevel(settings.logs_console_level)
-    logging_handlers.append(console_handler)
+    if settings.logs_console_level is not None:
+        console_handler = logging.StreamHandler()
+        console_formatter: logging.Formatter
+        if settings.structured_logging:
+            console_formatter = jsonlogger.JsonFormatter(
+                "%(levelname)s %(process)d %(threadName)s %(name)s %(message)s",
+                timestamp=True,
+            )
+        else:
+            console_formatter = logging.Formatter(
+                (
+                    "%(asctime)s.%(msecs)03d %(levelname)s: %(process)d %(threadName)s:"
+                    " %(name)s: %(message)s"
+                ),
+                datefmt="%H:%M:%S",
+            )
+        console_handler.setFormatter(console_formatter)
+        console_handler.setLevel(settings.logs_console_level)
+        console_handler.addFilter(LogFilter)
+
+        logging_handlers.append(console_handler)
 
     if (
         settings.logs_file_level is not None
@@ -167,6 +189,7 @@ def configure_logging(settings: Settings) -> None:
             )
         file_handler.setFormatter(file_formatter)
         file_handler.setLevel(settings.logs_file_level)
+        file_handler.addFilter(LogFilter)
         logging_handlers.append(file_handler)
 
     if egress_enabled and otlp_level is not None:
@@ -181,22 +204,25 @@ def configure_logging(settings: Settings) -> None:
             level=logging.getLevelName(otlp_level),
             logger_provider=logger_provider,
         )
+        otlp_handler.addFilter(LogFilter)
         logging_handlers.append(otlp_handler)
 
     # Configure root logger level
-    logger_level = min(h.level for h in logging_handlers)
     logger = logging.getLogger()
-    logger.setLevel(logger_level)
-    for handler in logging_handlers:
-        logger.addHandler(handler)
+    if len(logging_handlers) > 0:
+        logger_level = min(h.level for h in logging_handlers)
+        logger.setLevel(logger_level)
+        for handler in logging_handlers:
+            logger.addHandler(handler)
 
-    # TODO use FastAPIInstrumentor once Motel supports traces.
-    # For now, manually configure uvicorn.
-    logging.getLogger("uvicorn").setLevel(logging.WARNING)
-    # Explicit levels to reduce noise
-    logging.getLogger("sse_starlette.sse").setLevel(
-        max(logger_level, logging.INFO)
-    )
+        # TODO use FastAPIInstrumentor once Motel supports traces.
+        # For now, manually configure uvicorn.
+        logging.getLogger("uvicorn").setLevel(logging.WARNING)
+        # Explicit levels to reduce noise
+        logging.getLogger("sse_starlette.sse").setLevel(
+            max(logger_level, logging.INFO)
+        )
+
     logger.info(
         "Logging initialized: Console: %s, File: %s, Telemetry: %s",
         settings.logs_console_level,

@@ -26,7 +26,7 @@ from kernels.matrix_multiplication import MatrixMultiplication
 from kernels.causal_conv1d import CausalConv1Dgpu, CausalConv1Dcpu
 from kernels.top_k import TopK
 from math import iota
-from memory import AddressSpace, UnsafePointer
+from memory import AddressSpace
 from random import rand
 from sys import (
     argv,
@@ -49,13 +49,13 @@ from utils import IndexList
 
 
 # Wrap a ManagedTensorSlice and DeviceBuffer as an owning Tensor
-@value
+@fieldwise_init
 struct Tensor[
     dtype: DType,
     rank: Int, //,
     io_spec: IOSpec,
     static_spec: StaticTensorSpec[dtype, rank],
-]:
+](Copyable, Movable):
     alias size = Int(static_spec.shape.product())
 
     var slice: ManagedTensorSlice[io_spec=io_spec, static_spec=static_spec]

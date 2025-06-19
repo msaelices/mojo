@@ -27,6 +27,10 @@ from transformers import (
     PreTrainedTokenizerFast,
 )
 
+# The token ID for "<IMG_CONTEXT>" in the InternVL tokenizer
+# This is used to identify where to insert image embeddings in the text
+IMAGE_CONTEXT_TOKEN_ID = 151667
+
 
 def find_closest_aspect_ratio(
     aspect_ratio: float,
@@ -172,6 +176,8 @@ class InternVLProcessor:
                 image = image.convert("RGB")
 
             # Convert PIL image to numpy array (H, W, C format)
+            # TODO(MODELS-565): correctly patchify the image here.
+            image = image.resize((448, 448))
             image_array = np.array(image, dtype=np.float32)
             raw_pixel_values.append(image_array)
 
@@ -228,9 +234,7 @@ class InternVLTokenizer(TextAndVisionTokenizer):
 
         # Load config for image processing
         config = AutoConfig.from_pretrained(
-            model_path,
-            revision=revision,
-            trust_remote_code=trust_remote_code,
+            model_path, revision=revision, trust_remote_code=trust_remote_code
         )
 
         # Create custom processor instead of AutoProcessor (which doesn't exist for InternVL)

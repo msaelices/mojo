@@ -24,7 +24,6 @@ from gpu.host._tracing import _is_enabled as _gpu_is_enabled
 from gpu.host._tracing import _is_enabled_details as _gpu_is_enabled_details
 from gpu.host._tracing import _mark as _mark_gpu
 from gpu.host._tracing import _start_range as _start_gpu_range
-from memory import UnsafePointer
 
 from utils import IndexList, Variant
 
@@ -120,7 +119,7 @@ struct TraceCategory(EqualityComparable, Intable):
 
 
 @register_passable("trivial")
-struct TraceLevel(EqualityComparable, Copyable, Movable):
+struct TraceLevel(Copyable, EqualityComparable, Movable):
     """An enum-like struct specifying the level of tracing to perform."""
 
     alias ALWAYS = Self(0)

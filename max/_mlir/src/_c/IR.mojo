@@ -22,7 +22,6 @@
 
 from collections.string import StaticString
 
-from memory import UnsafePointer
 
 from utils.write import _WriteBufferStack
 
@@ -65,92 +64,92 @@ from .Support import *
 
 @register_passable("trivial")
 struct MlirAsmState:
-    var ptr: UnsafePointer[NoneType]
+    var ptr: OpaquePointer
 
 
 @register_passable("trivial")
 struct MlirBytecodeWriterConfig:
-    var ptr: UnsafePointer[NoneType]
+    var ptr: OpaquePointer
 
 
 @register_passable("trivial")
 struct MlirContext:
-    var ptr: UnsafePointer[NoneType]
+    var ptr: OpaquePointer
 
 
 @register_passable("trivial")
 struct MlirDialect:
-    var ptr: UnsafePointer[NoneType]
+    var ptr: OpaquePointer
 
 
 @register_passable("trivial")
 struct MlirDialectRegistry:
-    var ptr: UnsafePointer[NoneType]
+    var ptr: OpaquePointer
 
 
 @register_passable("trivial")
 struct MlirOperation:
-    var ptr: UnsafePointer[NoneType]
+    var ptr: OpaquePointer
 
 
 @register_passable("trivial")
 struct MlirOpOperand:
-    var ptr: UnsafePointer[NoneType]
+    var ptr: OpaquePointer
 
 
 @register_passable("trivial")
 struct MlirOpPrintingFlags:
-    var ptr: UnsafePointer[NoneType]
+    var ptr: OpaquePointer
 
 
 @register_passable("trivial")
 struct MlirBlock:
-    var ptr: UnsafePointer[NoneType]
+    var ptr: OpaquePointer
 
 
 @register_passable("trivial")
 struct MlirRegion:
-    var ptr: UnsafePointer[NoneType]
+    var ptr: OpaquePointer
 
 
 @register_passable("trivial")
 struct MlirSymbolTable:
-    var ptr: UnsafePointer[NoneType]
+    var ptr: OpaquePointer
 
 
 @register_passable("trivial")
 struct MlirAttribute:
-    var ptr: UnsafePointer[NoneType]
+    var ptr: OpaquePointer
 
 
 @register_passable("trivial")
 struct MlirIdentifier:
-    var ptr: UnsafePointer[NoneType]
+    var ptr: OpaquePointer
 
 
 @register_passable("trivial")
 struct MlirLocation:
-    var ptr: UnsafePointer[NoneType]
+    var ptr: OpaquePointer
 
 
 @register_passable("trivial")
 struct MlirModule:
-    var ptr: UnsafePointer[NoneType]
+    var ptr: OpaquePointer
 
 
 @register_passable("trivial")
 struct MlirType:
-    var ptr: UnsafePointer[NoneType]
+    var ptr: OpaquePointer
 
 
 @register_passable("trivial")
 struct MlirValue:
-    var ptr: UnsafePointer[NoneType]
+    var ptr: OpaquePointer
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
-struct MlirNamedAttribute:
+struct MlirNamedAttribute(Copyable, Movable):
     """Named MLIR attribute.
 
     A named attribute is essentially a (name, attribute) pair where the name is
@@ -167,9 +166,7 @@ struct MlirNamedAttribute:
 # the type being passed in:
 #  - an MlirStringRef representing the current portion of the string
 #  - a pointer to a buffer for any mutable `Writer` type.
-fn write_buffered_callback[
-    W: Writer
-](chunk: StaticString, data: UnsafePointer[NoneType]):
+fn write_buffered_callback[W: Writer](chunk: StaticString, data: OpaquePointer):
     var buffer = data.bitcast[_WriteBufferStack[origin=MutableAnyOrigin, W=W]]()
     buffer[].write(chunk)
 
@@ -345,7 +342,7 @@ fn mlirDialectGetNamespace(dialect: MlirDialect) -> MlirStringRef:
 
 @register_passable("trivial")
 struct MlirDialectHandle:
-    var ptr: UnsafePointer[NoneType]
+    var ptr: OpaquePointer
 
 
 fn mlirDialectHandleGetNamespace(a: MlirDialectHandle) -> MlirStringRef:
@@ -1164,9 +1161,9 @@ fn mlirOperationMoveBefore(op: MlirOperation, other: MlirOperation) -> None:
     return MLIR_func["mlirOperationMoveBefore", NoneType._mlir_type](op, other)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
-struct MlirWalkResult:
+struct MlirWalkResult(Copyable, Movable):
     """Operation walk result."""
 
     var value: Int8
@@ -1177,9 +1174,9 @@ alias MlirWalkResultInterrupt = MlirWalkResult(1)
 alias MlirWalkResultSkip = MlirWalkResult(2)
 
 
-@value
+@fieldwise_init
 @register_passable("trivial")
-struct MlirWalkOrder:
+struct MlirWalkOrder(Copyable, Movable):
     """Traversal order for operation walk."""
 
     var value: Int8
@@ -1191,14 +1188,14 @@ alias MlirWalkPostOrder = MlirWalkOrder(1)
 # Operation walker type. The handler is passed an (opaque) reference to an
 # operation and a pointer to a `userData`.
 alias MlirOperationWalkCallback = fn (
-    MlirOperation, UnsafePointer[NoneType]
+    MlirOperation, OpaquePointer
 ) -> MlirWalkResult
 
 
 fn mlirOperationWalk(
     op: MlirOperation,
     callback: MlirOperationWalkCallback,
-    user_data: UnsafePointer[NoneType],
+    user_data: OpaquePointer,
     walk_order: MlirWalkOrder,
 ) -> None:
     """Walks operation `op` in `walkOrder` and calls `callback` on that operation.
@@ -1802,8 +1799,8 @@ fn mlirSymbolTableReplaceAllSymbolUses(
 fn mlirSymbolTableWalkSymbolTables(
     `from`: MlirOperation,
     all_sym_uses_visible: Bool,
-    callback: fn (MlirOperation, Bool, UnsafePointer[NoneType]) -> None,
-    user_data: UnsafePointer[NoneType],
+    callback: fn (MlirOperation, Bool, OpaquePointer) -> None,
+    user_data: OpaquePointer,
 ) -> None:
     """Walks all symbol table operations nested within, and including, `op`. For
     each symbol table operation, the provided callback is invoked with the op

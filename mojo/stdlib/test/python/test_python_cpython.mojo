@@ -13,10 +13,9 @@
 # XFAIL: asan && !system-darwin
 # RUN: %mojo %s
 
-from memory import UnsafePointer
 from python import Python, PythonObject
 from python._cpython import PyObjectPtr
-from testing import assert_equal, assert_false, assert_raises, assert_true
+from testing import assert_equal, assert_raises
 
 
 def test_PyObject_HasAttrString(mut python: Python):
@@ -62,7 +61,9 @@ def test_PyCapsule(mut python: Python):
     with assert_raises(
         contains="PyCapsule_GetPointer called with incorrect name"
     ):
-        _ = cpython_env.PyCapsule_GetPointer(capsule, "some_other_name")
+        _ = cpython_env.PyCapsule_GetPointer(
+            capsule, "this name does not exist in the capsule"
+        )
 
 
 def main():
