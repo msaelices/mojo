@@ -24,8 +24,6 @@ _LIT_TESTS = [
     "builtin/test_uint_error.mojo",
     "os/test_no_trap.mojo",
     "runtime/test_tracing.mojo",
-    "sys/test_dlhandle.mojo",
-    "sys/test_exit_1.mojo",
     "sys/test_invalid_paramenv.mojo",
 ]
 
@@ -80,7 +78,11 @@ _MOJO_COMPILE_OPTS = {
         "-D",
         "ASSERT=warn",
     ],
-    "collections/test_list_getitem_invalid_index.mojo": [
+    "collections/test_list_getitem_invalid_index_int.mojo": [
+        "-D",
+        "BUILD_TYPE=debug",
+    ],
+    "collections/test_list_getitem_invalid_index_uint.mojo": [
         "-D",
         "BUILD_TYPE=debug",
     ],
@@ -145,9 +147,14 @@ _EXPECT_CRASH = [
     "builtin/test_debug_assert_default_error.mojo",
     "builtin/test_range_uint_reverse_range_bad.mojo",
     "builtin/test_debug_assert_mode_all_error.mojo",
-    "collections/test_list_getitem_invalid_index.mojo",
+    "collections/test_list_getitem_invalid_index_int.mojo",
+    "collections/test_list_getitem_invalid_index_uint.mojo",
     "logger/test_logger_critical.mojo",
     "os/test_trap.mojo",
+]
+
+_EXPECT_FAIL = [
+    "sys/test_exit_1.mojo",
 ]
 
 _FILECHECK_TESTS = [
@@ -180,7 +187,8 @@ _FILECHECK_TESTS = [
     "builtin/test_rebind.mojo",
     "builtin/test_sort_issue_1018.mojo",
     "collections/test_index_normalization.mojo",
-    "collections/test_list_getitem_invalid_index.mojo",
+    "collections/test_list_getitem_invalid_index_int.mojo",
+    "collections/test_list_getitem_invalid_index_uint.mojo",
     "logger/test_logger.mojo",
     "logger/test_logger_alias.mojo",
     "logger/test_logger_critical.mojo",
@@ -188,6 +196,7 @@ _FILECHECK_TESTS = [
     "os/test_trap.mojo",
     "runtime/test_asyncrt.mojo",
     "runtime/test_locks.mojo",
+    "sys/test_exit_1.mojo",
 ]
 
 [
@@ -203,6 +212,7 @@ _FILECHECK_TESTS = [
         enable_assertions = src not in _DISABLED_ASSERTIONS,
         env = _ENV.get(src, {}),
         expect_crash = src in _EXPECT_CRASH,
+        expect_fail = src in _EXPECT_FAIL,
         target_compatible_with = _PLATFORM_CONSTRAINTS.get(src, []),
         deps = [
             "@mojo//:stdlib",

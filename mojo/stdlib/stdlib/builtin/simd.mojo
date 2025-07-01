@@ -46,8 +46,7 @@ from collections.string.string import (
     _calc_format_buffer_size,
     _calc_initial_buffer_size,
 )
-from hashlib._hasher import _HashableWithHasher, _Hasher
-from hashlib.hash import _hash_simd
+from hashlib.hasher import Hasher
 from math import Ceilable, CeilDivable, Floorable, Truncable
 from math.math import _call_ptx_intrinsic
 from os import abort
@@ -72,7 +71,6 @@ from sys.info import _is_sm_9x_or_newer
 from bit import byte_swap, pop_count
 from builtin._format_float import _write_float
 from builtin.device_passable import DevicePassable
-from builtin.dtype import _uint_type_of_width
 from builtin.format_int import _try_write_int
 from builtin.io import _snprintf
 from builtin.math import Powable
@@ -95,6 +93,7 @@ from .dtype import (
     _get_dtype_printf_format,
     _integral_type_of,
     _scientific_notation_digits,
+    _uint_type_of_width,
     _unsigned_integral_type_of,
 )
 
@@ -231,10 +230,7 @@ fn _simd_construction_checks[dtype: DType, size: Int]():
 
 @always_inline("nodebug")
 fn _unchecked_zero[dtype: DType, size: Int]() -> SIMD[dtype, size]:
-    var zero = __mlir_op.`pop.cast`[_type = Scalar[dtype]._mlir_type](
-        __mlir_attr.`#pop.simd<0> : !pop.scalar<index>`
-    )
-    return Scalar[dtype](zero)
+    return SIMD[dtype, size](__mlir_attr.`0 : index`)
 
 
 @always_inline("nodebug")
@@ -277,7 +273,6 @@ struct SIMD[dtype: DType, size: Int](
     Stringable,
     Truncable,
     Writable,
-    _HashableWithHasher,
 ):
     """Represents a small vector that is backed by a hardware vector element.
 
@@ -326,13 +321,9 @@ struct SIMD[dtype: DType, size: Int](
         return Self.get_type_name()
 
     # Fields
-    alias _Mask = SIMD[DType.bool, size]
-
-    alias element_type = dtype
     alias _mlir_type = __mlir_type[
         `!pop.simd<`, size.value, `, `, dtype.value, `>`
     ]
-
     var value: Self._mlir_type
     """The underlying storage for the vector."""
 
@@ -348,6 +339,7 @@ struct SIMD[dtype: DType, size: Int](
     alias MIN_FINITE = Self(_min_finite[dtype]())
     """Returns the minimum (lowest) finite value of SIMD value."""
 
+    alias _Mask = SIMD[DType.bool, size]
     alias _default_alignment = alignof[Scalar[dtype]]() if is_gpu() else 1
 
     # ===-------------------------------------------------------------------===#
@@ -435,11 +427,12 @@ struct SIMD[dtype: DType, size: Int](
         Args:
             value: The input value.
         """
+        _simd_construction_checks[dtype, size]()
 
         @parameter
         if bitwidthof[dtype]() > bitwidthof[DType.index]():
             alias dt = _unsigned_integral_type_of[DType.index]()
-            self = Self(bitcast[dt](Scalar[DType.index](value)))
+            self = bitcast[dt](Scalar[DType.index](value.value)).cast[dtype]()
         else:
             self = Self(value.value)
 
@@ -454,18 +447,23 @@ struct SIMD[dtype: DType, size: Int](
         Args:
             value: The input value.
         """
+        _simd_construction_checks[dtype, size]()
         self = Self(value.value)
 
     @doc_private
     @always_inline("nodebug")
     @implicit
     fn __init__(out self, value: __mlir_type.index, /):
-        _simd_construction_checks[dtype, size]()
-        var t0 = __mlir_op.`pop.cast_from_builtin`[
+        var index = __mlir_op.`pop.cast_from_builtin`[
             _type = __mlir_type.`!pop.scalar<index>`
         ](value)
-        var casted = __mlir_op.`pop.cast`[_type = Scalar[dtype]._mlir_type](t0)
-        self = Scalar[dtype](casted)
+        var s = __mlir_op.`pop.cast`[_type = Scalar[dtype]._mlir_type](index)
+
+        @parameter
+        if size == 1:
+            self.value = rebind[Self._mlir_type](s)
+        else:
+            self.value = __mlir_op.`pop.simd.splat`[_type = Self._mlir_type](s)
 
     @always_inline
     fn __init__[T: Floatable, //](out self: Float64, value: T, /):
@@ -536,15 +534,19 @@ struct SIMD[dtype: DType, size: Int](
             value: The input value.
         """
         _simd_construction_checks[dtype, size]()
-
-        var tn1 = __mlir_attr[
+        var si128_ = __mlir_attr[
             `#pop<int_literal_convert<`, value.value, `, 0>> : si128`
         ]
-        var t0 = __mlir_op.`pop.cast_from_builtin`[
+        var si128 = __mlir_op.`pop.cast_from_builtin`[
             _type = __mlir_type.`!pop.scalar<si128>`
-        ](tn1)
-        var casted = __mlir_op.`pop.cast`[_type = Scalar[dtype]._mlir_type](t0)
-        self = Scalar[dtype](casted)
+        ](si128_)
+        var s = __mlir_op.`pop.cast`[_type = Scalar[dtype]._mlir_type](si128)
+
+        @parameter
+        if size == 1:
+            self.value = rebind[Self._mlir_type](s)
+        else:
+            self.value = __mlir_op.`pop.simd.splat`[_type = Self._mlir_type](s)
 
     @always_inline("nodebug")
     @implicit
@@ -557,12 +559,19 @@ struct SIMD[dtype: DType, size: Int](
             value: The bool value.
         """
         _simd_construction_checks[dtype, size]()
-
-        var casted = __mlir_op.`pop.cast_from_builtin`[
+        var s = __mlir_op.`pop.cast_from_builtin`[
             _type = __mlir_type.`!pop.scalar<bool>`
         ](value.value)
-        self = Scalar[DType.bool](casted)
 
+        @parameter
+        if size == 1:
+            self.value = rebind[Self._Mask._mlir_type](s)
+        else:
+            self.value = __mlir_op.`pop.simd.splat`[
+                _type = Self._Mask._mlir_type
+            ](s)
+
+    @doc_private
     @always_inline("nodebug")
     @implicit
     fn __init__(out self, value: Self._mlir_type, /):
@@ -585,8 +594,6 @@ struct SIMD[dtype: DType, size: Int](
             value: The value to splat to the elements of the vector.
         """
         _simd_construction_checks[dtype, size]()
-
-        # Construct by broadcasting a scalar.
         self.value = __mlir_op.`pop.simd.splat`[_type = Self._mlir_type](
             value.value
         )
@@ -639,13 +646,8 @@ struct SIMD[dtype: DType, size: Int](
         constrained[
             dtype.is_floating_point(), "the SIMD type must be floating point"
         ]()
-
-        # float_literal_convert implicitly splats to !pop.simd as needed.
         return __mlir_attr[
-            `#pop<float_literal_convert<`,
-            value.value,
-            `>> : `,
-            Self._mlir_type,
+            `#pop<float_literal_convert<`, value.value, `>> : `, Self._mlir_type
         ]
 
     @staticmethod
@@ -664,7 +666,12 @@ struct SIMD[dtype: DType, size: Int](
             The bitcast SIMD vector.
         """
         constrained[int_dtype.is_integral(), "the SIMD type must be integral"]()
-        return bitcast[dtype, size](value)
+
+        @parameter
+        if dtype is DType.bool and int_dtype in (DType.uint8, DType.int8):
+            return (value != 0)._refine[dtype]()
+        else:
+            return bitcast[dtype, size](value)
 
     # ===-------------------------------------------------------------------===#
     # Operator dunders
@@ -1691,17 +1698,7 @@ struct SIMD[dtype: DType, size: Int](
         var exp = Self(10) ** ndigits
         return (self * exp).__round__() / exp
 
-    fn __hash__(self) -> UInt:
-        """Hash the value using builtin hash.
-
-        Returns:
-            A 64-bit hash value. This value is _not_ suitable for cryptographic
-            uses. Its intended usage is for data structures. See the `hash`
-            builtin documentation for more details.
-        """
-        return _hash_simd(self)
-
-    fn __hash__[H: _Hasher](self, mut hasher: H):
+    fn __hash__[H: Hasher](self, mut hasher: H):
         """Updates hasher with this SIMD value.
 
         Parameters:
@@ -1925,31 +1922,37 @@ struct SIMD[dtype: DType, size: Int](
         if size > 1:
             writer.write("]")
 
-    # FIXME: `_integral_type_of` doesn't work with `DType.bool`.
     @always_inline
     fn to_bits[
-        int_dtype: DType = _integral_type_of[dtype]()
-    ](self) -> SIMD[int_dtype, size]:
+        dtype: DType = _uint_type_of_width[bitwidthof[dtype]()]()
+    ](self) -> SIMD[dtype, size]:
         """Bitcasts the SIMD vector to an integer SIMD vector.
 
         Parameters:
-            int_dtype: The integer type to cast to.
+            dtype: The integer type to cast to.
 
         Returns:
             An integer representation of the floating-point value.
         """
         constrained[
-            int_dtype.is_integral(), "the target type must be integral"
+            dtype.is_unsigned(),
+            "the target type must be unsigned integral",
         ]()
         constrained[
-            bitwidthof[int_dtype]() >= bitwidthof[dtype](),
-            (
-                "the target integer type must be at least as wide as the source"
-                " type"
-            ),
+            dtype.bitwidth() >= Self.dtype.bitwidth(),
+            "the target type must be at least as wide as the source type",
         ]()
 
-        return bitcast[_integral_type_of[dtype](), size](self).cast[int_dtype]()
+        @parameter
+        if Self.dtype is DType.bool:
+            return self.cast[DType.uint8]().to_bits[dtype]()
+        else:
+            alias uint = _unsigned_integral_type_of[Self.dtype]()
+            return bitcast[uint, size](self).cast[dtype]()
+
+    @always_inline
+    fn _to_bits_signed(self) -> SIMD[_integral_type_of[dtype](), size]:
+        return bitcast[_integral_type_of[dtype](), size](self)
 
     @staticmethod
     fn from_bytes[
@@ -3368,7 +3371,7 @@ fn _f32_to_bfloat16[
     if CompilationTarget.has_neon():
         # TODO(KERN-228): support BF16 on neon systems.
         return _unchecked_zero[DType.bfloat16, width]()
-    var f32_bits = f32.to_bits()
+    var f32_bits = f32.to_bits[DType.uint32]()
     var lsb = (f32_bits >> _f32_bf16_mantissa_diff) & 1
     var rounding_bias = 0x7FFF + lsb
     var bf16_bits = (f32_bits + rounding_bias) >> _f32_bf16_mantissa_diff
@@ -3508,7 +3511,7 @@ fn _floor(x: SIMD) -> __type_of(x):
     alias bias = FPUtils[x.dtype].exponent_bias()
     alias shift_factor = bitwidth - exponent_width - 1
 
-    var bits = x.to_bits()
+    var bits = x._to_bits_signed()
     var e = ((bits & mask) >> mantissa_width) - bias
     bits = (e < shift_factor).select(
         bits & ~((1 << (shift_factor - e)) - 1),

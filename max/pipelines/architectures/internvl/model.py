@@ -22,7 +22,13 @@ import numpy as np
 from max.driver import Device, Tensor
 from max.dtype import DType
 from max.engine import DLPackCompatible, InferenceSession, Model
-from max.graph import DeviceRef, Graph, TensorType, TensorValue, Type
+from max.graph import (
+    DeviceRef,
+    Graph,
+    TensorType,
+    TensorValue,
+    Type,
+)
 from max.graph.weights import (
     SafetensorWeights,
     WeightData,
@@ -66,8 +72,10 @@ class InternVLInputs(ModelInputs):
     input_ids: Tensor
     """Tensor containing the input token IDs."""
 
-    input_row_offsets: Tensor
-    """Tensor containing the offsets for each row in the ragged input sequence."""
+    input_row_offsets: list[Tensor]
+    """Per-device tensors containing the offsets for each row in the ragged
+    input sequence.
+    """
 
     signal_buffers: list[Tensor]
     """Device buffers used for synchronization in communication collectives."""
@@ -76,17 +84,21 @@ class InternVLInputs(ModelInputs):
     pixel_values: Tensor | None = None
     """Pixel values for vision inputs."""
 
+    image_token_indices: list[Tensor] | None = None
+    """Per-device pre-computed indices of image tokens in the input sequence."""
+
     return_n_logits: Tensor
     """Number of logits to return, used by speculative decoding for example."""
 
     def __init__(
         self,
         input_ids: Tensor,
-        input_row_offsets: Tensor,
+        input_row_offsets: list[Tensor],
         signal_buffers: list[Tensor],
         return_n_logits: Tensor,
         pixel_values: Tensor | None = None,
         kv_cache_inputs: KVCacheInputs | None = None,
+        image_token_indices: list[Tensor] | None = None,
     ) -> None:
         self.input_ids = input_ids
         self.input_row_offsets = input_row_offsets
@@ -94,6 +106,7 @@ class InternVLInputs(ModelInputs):
         self.return_n_logits = return_n_logits
         self.pixel_values = pixel_values
         self.kv_cache_inputs = kv_cache_inputs
+        self.image_token_indices = image_token_indices
 
     @property
     def has_vision_inputs(self) -> bool:
@@ -110,8 +123,10 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
     language_model: Model
     """The compiled language model for text generation."""
 
-    _input_row_offsets_prealloc: Tensor
-    """Pre-allocated tensor for input row offsets in multi-step execution."""
+    _input_row_offsets_prealloc: list[Tensor]
+    """Pre-allocated per-device tensors for input row offsets in multi-step
+    execution.
+    """
 
     def __init__(
         self,
@@ -220,9 +235,12 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
         assert self.pipeline_config.max_batch_size, (
             "Expected max_batch_size to be set"
         )
-        self._input_row_offsets_prealloc = Tensor.from_numpy(
+        input_row_offsets_prealloc_host = Tensor.from_numpy(
             np.arange(self.pipeline_config.max_batch_size + 1, dtype=np.uint32)
-        ).to(self.devices[0])
+        )
+        self._input_row_offsets_prealloc = [
+            input_row_offsets_prealloc_host.to(dev) for dev in self.devices
+        ]
 
         # Validate SafetensorWeights requirement
         if not isinstance(self.weights, SafetensorWeights):
@@ -246,6 +264,7 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
             pipeline_config=self.pipeline_config,
             huggingface_config=self.huggingface_config,
             llm_state_dict=llm_weights_dict,
+            vision_state_dict=vision_model_weights_dict,
             dtype=self.dtype,
             n_devices=len(self.devices),
             logits_postprocessor=None,
@@ -291,30 +310,50 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
         # Define input types for the vision model
         # Use static dimensions from the vision config
         image_size = config.vision_config.image_size
+        patch_size = config.vision_config.patch_size
+        # Calculate number of patches in each dimension
+        height_patches = image_size // patch_size
+        width_patches = image_size // patch_size
+
+        # Expect pre-extracted patches from the tokenizer.
         pixel_values_type = TensorType(
             DType.float32,
-            # Expect channels last and exactly 3 (RGB).
-            # Use static dimensions for height and width
-            shape=["batch_size", image_size, image_size, 3],
-            # Expect the input image on device 0.
+            shape=[
+                "batch_size",
+                height_patches,
+                width_patches,
+                3,
+                patch_size,
+                patch_size,
+            ],
+            # Expect the input on device 0.
             device=DeviceRef.GPU(),
         )
 
+        # Create signal types for distributed communication
+        signals = Signals(
+            devices=(DeviceRef(d.label, d.id) for d in self.devices)
+        )
+
         # Initialize graph with input types
-        with Graph("internvl_vision", input_types=[pixel_values_type]) as graph:
+        with Graph(
+            "internvl_vision",
+            input_types=[pixel_values_type, *signals.input_types()],
+        ) as graph:
             # Build vision model architecture.
             vision_model = InternVLVisionModel(config)
             vision_model.load_state_dict(
                 state_dict=state_dict,
                 override_quantization_encoding=True,
                 weight_alignment=1,
-                # TODO(MODELS-565): make `strict=True` once the VisionEncoder
-                # lands.
-                strict=False,
+                strict=True,
             )
 
             # Unpack inputs.
-            (pixel_values,) = graph.inputs
+            pixel_values, *signal_args = graph.inputs
+
+            # Extract signal buffers (one per device)
+            signal_buffers = [v.buffer for v in signal_args]
 
             # Execute vision model: pixel_values -> image_embeddings.
             image_embeddings = vision_model(
@@ -322,7 +361,8 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
                     # Transfer pixel values to each device.
                     pixel_values.tensor.to(DeviceRef.from_device(dev))
                     for dev in self.devices
-                ]
+                ],
+                signal_buffers,
             )
 
             # Set graph outputs.
@@ -344,9 +384,14 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
         tokens_type = TensorType(
             DType.int64, shape=["total_seq_len"], device=device_ref
         )
-        input_row_offsets_type = TensorType(
-            DType.uint32, shape=["input_row_offsets_len"], device=device_ref
-        )
+        input_row_offsets_types = [
+            TensorType(
+                DType.uint32,
+                shape=["input_row_offsets_len"],
+                device=DeviceRef.from_device(dev),
+            )
+            for dev in self.devices
+        ]
 
         # Add image embeddings type - one per device, can be empty for text-only inputs
         image_embeddings_types = [
@@ -356,6 +401,16 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
                     "num_image_tokens",
                     self.huggingface_config.llm_config.hidden_size,
                 ],
+                device=DeviceRef.from_device(dev),
+            )
+            for dev in self.devices
+        ]
+
+        # Add image token indices type
+        image_token_indices_types = [
+            TensorType(
+                DType.int32,
+                shape=["total_image_tokens"],
                 device=DeviceRef.from_device(dev),
             )
             for dev in self.devices
@@ -372,9 +427,10 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
 
         return (
             tokens_type,
-            input_row_offsets_type,
             return_n_logits_type,
+            *input_row_offsets_types,
             *image_embeddings_types,
+            *image_token_indices_types,
             *signals.input_types(),
             *flattened_kv_types,
         )
@@ -420,16 +476,23 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
                 weight_alignment=1,
             )
 
-            # Unpack inputs
-            (
-                tokens,
-                input_row_offsets,
-                return_n_logits,
-                *variadic_args,
-            ) = graph.inputs
+            # Unpack inputs.
+            (tokens, return_n_logits, *variadic_args) = graph.inputs
 
-            # Extract image embeddings (one per device)
+            # Extract input_row_offsets (one per device).
+            input_row_offsets = [
+                v.tensor for v in variadic_args[: len(self.devices)]
+            ]
+            variadic_args = variadic_args[len(self.devices) :]
+
+            # Extract image embeddings (one per device).
             image_embeddings = [
+                v.tensor for v in variadic_args[: len(self.devices)]
+            ]
+            variadic_args = variadic_args[len(self.devices) :]
+
+            # Extract image token indices.
+            image_token_indices = [
                 v.tensor for v in variadic_args[: len(self.devices)]
             ]
             variadic_args = variadic_args[len(self.devices) :]
@@ -448,8 +511,9 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
                 signal_buffers=signal_buffers,
                 kv_cache_inputs_per_dev=self._unflatten_kv_inputs(kv_cache),
                 return_n_logits=return_n_logits.tensor,
-                input_row_offsets=input_row_offsets.tensor,
+                input_row_offsets=input_row_offsets,
                 image_embeddings=image_embeddings,
+                image_token_indices=image_token_indices,
             )
 
             graph.output(*outputs)
@@ -466,22 +530,85 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
                 context.pixel_values is not None
                 and len(context.pixel_values) > 0
             ):
-                # InternVL expects images in CHW format
-                # context.pixel_values is a list of numpy arrays, take the first one
-                image = context.pixel_values[0]  # Shape: [patches, C, H, W]
+                # context.pixel_values is a list of numpy arrays containing pre-extracted patches
+                # TODO(MODELS-638): Support multiple images per request
+                image = context.pixel_values[
+                    0
+                ]  # Shape: [num_patches, height_patches, width_patches, channels, patch_size, patch_size]
 
-                # Add batch dimension: [1, patches, C, H, W]
-                image = np.expand_dims(image, axis=0)
-                images.append(image)
+                # Each image patch group needs to be processed separately by the vision model
+                # So we add each patch group as a separate "batch" item
+                for patch_group in image:
+                    images.append(patch_group)
 
         if not images:
             return None
 
         # Convert the list into a single NumPy array with shape
-        # (batch_size, patches, C, H, W).
-        final_images = np.concatenate(images, axis=0)
+        # (total_patch_groups, height_patches, width_patches, channels, patch_size, patch_size).
+        final_images = np.stack(images, axis=0)
 
         return Tensor.from_numpy(final_images).to(self.devices[0])
+
+    def _batch_image_token_indices(
+        self, context_batch: Sequence[TextAndVisionContext]
+    ) -> list[Tensor] | None:
+        """Batch image token indices from multiple contexts, adjusting for
+        position in batch.
+
+        This method efficiently combines image token indices from multiple
+        contexts, adjusting each context's indices by its position in the
+        batch to maintain correct absolute positions.
+
+        Args:
+            context_batch: Sequence of contexts that may contain image token
+                indices
+
+        Returns:
+            Tensor containing all batched indices, or None if no indices found
+        """
+        all_indices: list[int] = []
+
+        # Keep a running offset to avoid O(n²) computation of batch positions.
+        # Instead of summing all previous context lengths for each context,
+        # we maintain and update the offset incrementally.
+        batch_offset = 0
+
+        for ctx in context_batch:
+            if "image_token_indices" in ctx.extra_model_args:
+                indices = ctx.extra_model_args["image_token_indices"]
+                # Adjust indices for position in batch.
+                adjusted_indices = indices + batch_offset
+                all_indices.extend(adjusted_indices)
+
+            # Update running offset for next iteration.
+            batch_offset += ctx.active_length
+
+        return (
+            [
+                Tensor.from_numpy(np.array(all_indices, dtype=np.int32)).to(dev)
+                for dev in self.devices
+            ]
+            if all_indices
+            else None
+        )
+
+    def _create_empty_image_embeddings(self) -> list[Tensor]:
+        """Create empty image embeddings for text-only inputs."""
+        return [
+            Tensor.zeros(
+                shape=[0, self.huggingface_config.llm_config.hidden_size],
+                dtype=self.dtype,
+            ).to(dev)
+            for dev in self.devices
+        ]
+
+    def _create_empty_indices(self) -> list[Tensor]:
+        """Create empty image token indices tensor."""
+        return [
+            Tensor.zeros(shape=[0], dtype=DType.int32).to(dev)
+            for dev in self.devices
+        ]
 
     def execute(self, model_inputs: ModelInputs) -> ModelOutputs:
         """Executes the InternVL model with the prepared inputs."""
@@ -491,14 +618,16 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
 
         model_inputs = cast(InternVLInputs, model_inputs)
 
-        # Process vision inputs if present
+        # Process vision inputs if present.
         image_embeddings: list[Tensor]
+        image_token_indices: list[Tensor]
         if model_inputs.has_vision_inputs:
             assert model_inputs.pixel_values is not None
+            assert model_inputs.image_token_indices is not None
 
             # Execute vision model: pixel_values -> image_embeddings.
             vision_outputs = self.vision_model.execute(
-                model_inputs.pixel_values
+                model_inputs.pixel_values, *model_inputs.signal_buffers
             )
             assert len(vision_outputs) == len(self.devices)
 
@@ -507,15 +636,11 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
                 for output in vision_outputs
                 if isinstance(output, Tensor)
             ]
+            image_token_indices = model_inputs.image_token_indices
         else:
-            # Initialize image embeddings as empty tensors for text-only mode.
-            image_embeddings = [
-                Tensor.zeros(
-                    shape=[0, self.huggingface_config.llm_config.hidden_size],
-                    dtype=self.dtype,
-                ).to(dev)
-                for dev in self.devices
-            ]
+            # Initialize empty tensors for text-only mode.
+            image_embeddings = self._create_empty_image_embeddings()
+            image_token_indices = self._create_empty_indices()
 
         # Prepare KV cache inputs as list of tensors
         assert model_inputs.kv_cache_inputs
@@ -524,9 +649,10 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
         # Execute language model with text and image embeddings
         language_outputs = self.language_model.execute(
             model_inputs.input_ids,
-            model_inputs.input_row_offsets,
             model_inputs.return_n_logits,
+            *model_inputs.input_row_offsets,
             *image_embeddings,
+            *image_token_indices,
             *model_inputs.signal_buffers,
             *kv_cache_inputs_list,
         )
@@ -556,17 +682,23 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
         pixel_values = self._prepare_vision_inputs(context_batch)
 
         # Input row offset type: ["input_row_offsets_len"], UInt32
-        input_row_offsets = Tensor.from_numpy(
+        input_row_offsets_host = Tensor.from_numpy(
             np.cumsum(
                 [0] + [ctx.active_length for ctx in context_batch],
                 dtype=np.uint32,
-            )
-        ).to(self.devices[0])
+            ),
+        )
+        input_row_offsets = [
+            input_row_offsets_host.to(dev) for dev in self.devices
+        ]
 
         # Input Ids: ["total_seq_len"], Int64
         # Create a ragged token vector of length: sum(len(t) for t in tokens).
         tokens = np.concatenate([ctx.next_tokens for ctx in context_batch])
         input_ids = Tensor.from_numpy(tokens).to(self.devices[0])
+
+        # Batch image token indices, offsetting for position in the batch.
+        image_token_indices = self._batch_image_token_indices(context_batch)
 
         # Unset the context's pixel values so that subsequent next_token
         # calls reusing the same context won't run the vision encoder.
@@ -582,6 +714,7 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
             ),
             pixel_values=pixel_values,
             kv_cache_inputs=kv_cache_inputs,
+            image_token_indices=image_token_indices,
         )
 
     def prepare_next_token_inputs(
@@ -591,9 +724,13 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
         assert isinstance(prev_model_inputs, InternVLInputs)
         prev_inputs = prev_model_inputs
 
-        # Use pre-allocated row offsets for next token
-        next_row_offsets = self._input_row_offsets_prealloc[
-            : prev_inputs.input_row_offsets.shape[0]
+        # Use pre-allocated row offsets for next token.
+        # Since the pre-allocated array has length max_batch_size, slice out
+        # only the current step's batch size.
+        offset = prev_inputs.input_row_offsets[0].shape[0]
+        next_row_offsets = [
+            offsets_prealloc[:offset]
+            for offsets_prealloc in self._input_row_offsets_prealloc
         ]
 
         return InternVLInputs(

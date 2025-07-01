@@ -56,6 +56,77 @@ T = TypeVar("T", bound=InputContext)
 logger = logging.getLogger("max.pipelines")
 
 
+class SpeculativeDecodingMetrics:
+    """Metrics tracker for speculative decoding performance."""
+
+    def __init__(self) -> None:
+        """Initialize metrics counters."""
+        self.bonus_tokens_used = 0
+        self.draft_tokens_accepted = 0
+        self.draft_tokens_generated = 0
+        self.total_acceptance_lengths = 0
+        self.num_generations = 0
+
+    def update(
+        self,
+        draft_tokens_generated: int,
+        draft_tokens_accepted: int,
+        bonus_tokens_used: int,
+        acceptance_lengths: list[int],
+    ) -> None:
+        """Update metrics with results from a batch.
+
+        Args:
+            draft_tokens_generated: Total draft tokens generated in this batch
+            draft_tokens_accepted: Total draft tokens accepted in this batch
+            bonus_tokens_used: Number of bonus tokens used in this batch
+            acceptance_lengths: List of acceptance lengths for each sequence in batch
+        """
+        self.draft_tokens_generated += draft_tokens_generated
+        self.draft_tokens_accepted += draft_tokens_accepted
+        self.bonus_tokens_used += bonus_tokens_used
+        self.total_acceptance_lengths += sum(acceptance_lengths)
+        self.num_generations += len(acceptance_lengths)
+
+    def get_stats(self) -> dict[str, float]:
+        """Get current statistics.
+
+        Returns:
+            Dictionary with acceptance rate and total counts
+        """
+        if self.draft_tokens_generated == 0:
+            return {
+                "acceptance_rate": 0.0,
+                "bonus_tokens_used": 0,
+                "draft_tokens_accepted": 0,
+                "draft_tokens_generated": 0,
+                "avg_acceptance_length": 0.0,
+            }
+
+        return {
+            "acceptance_rate": self.draft_tokens_accepted
+            / self.draft_tokens_generated,
+            "bonus_tokens_used": self.bonus_tokens_used,
+            "draft_tokens_accepted": self.draft_tokens_accepted,
+            "draft_tokens_generated": self.draft_tokens_generated,
+            "avg_acceptance_length": self.total_acceptance_lengths
+            / self.num_generations
+            if self.num_generations > 0
+            else 0.0,
+        }
+
+    def __str__(self) -> str:
+        """String representation of current metrics."""
+        stats = self.get_stats()
+        return (
+            f"SpeculativeDecodingMetrics("
+            f"acceptance_rate={stats['acceptance_rate']:.2%}, "
+            f"avg_acceptance_length={stats['avg_acceptance_length']:.2f}, "
+            f"bonus_tokens_used={stats['bonus_tokens_used']}, "
+            f"draft_tokens_accepted={stats['draft_tokens_accepted']}/{stats['draft_tokens_generated']})"
+        )
+
+
 class SpeculativeDecodingTextGenerationPipeline(TokenGenerator[T]):
     """Generalized token generator pipeline with speculative decoding."""
 
@@ -84,9 +155,7 @@ class SpeculativeDecodingTextGenerationPipeline(TokenGenerator[T]):
         )
 
         # Expand EOS
-        if pipeline_config.ignore_eos:
-            self._eos_token_id = set([])
-        elif "eos_token_id" in target_config:
+        if "eos_token_id" in target_config:
             eos_tokens = target_config.eos_token_id
             if isinstance(eos_tokens, int):
                 if eos_tokens != eos_token_id:
@@ -103,6 +172,8 @@ class SpeculativeDecodingTextGenerationPipeline(TokenGenerator[T]):
                 msg = f"eos_token_id in huggingface_config, is neither int or list: {eos_tokens}"
                 logger.warning(msg)
                 self._eos_token_id = set([eos_token_id])
+        else:
+            self._eos_token_id = set([eos_token_id])
 
         target_hf_repo = (
             self.pipeline_config.model_config.huggingface_weight_repo
@@ -260,6 +331,9 @@ class SpeculativeDecodingTextGenerationPipeline(TokenGenerator[T]):
             )
         )
 
+        # Initialize metrics tracker
+        self._metrics = SpeculativeDecodingMetrics()
+
         # Check that the max length for both models are the same
         draft_seq_len = self._draft_model.calculate_max_seq_len(
             self.pipeline_config, draft_config
@@ -384,30 +458,12 @@ class SpeculativeDecodingTextGenerationPipeline(TokenGenerator[T]):
         model_outputs: ModelOutputs,
         prev_tokens: Tensor,
         prev_logits: Tensor,
+        top_k: Tensor,
+        max_k: Tensor,
+        temperature: Tensor,
+        top_p: Tensor,
+        seed: Tensor,
     ) -> tuple[Tensor, Tensor, Tensor]:
-        top_k_np = np.array(
-            [context.sampling_params.top_k for context in batch], dtype=np.int64
-        )
-        top_k = Tensor.from_numpy(top_k_np).to(self.draft_devices[0])
-        max_k_np = np.array(np.max(top_k_np), dtype=np.int64)
-        max_k = Tensor.from_numpy(max_k_np)
-        temperature_np = np.array(
-            [context.sampling_params.temperature for context in batch],
-            dtype=np.float32,
-        )
-        temperature = Tensor.from_numpy(temperature_np).to(
-            self.draft_devices[0]
-        )
-        top_p_np = np.array(
-            [context.sampling_params.top_p for context in batch],
-            dtype=np.float32,
-        )
-        top_p = Tensor.from_numpy(top_p_np).to(self.draft_devices[0])
-        seed_np = np.array(
-            [context.sampling_params.seed for context in batch], dtype=np.uint64
-        )
-        seed = Tensor.from_numpy(seed_np).to(self.draft_devices[0])
-
         graph_inputs = [
             model_outputs.logits,
             prev_tokens,
@@ -436,6 +492,30 @@ class SpeculativeDecodingTextGenerationPipeline(TokenGenerator[T]):
             return_n_logits=1,
             is_draft=True,
         )
+
+        # Create sampling parameters once for the entire batch
+        top_k_np = np.array(
+            [context.sampling_params.top_k for context in batch], dtype=np.int64
+        )
+        top_k = Tensor.from_numpy(top_k_np).to(self.draft_devices[0])
+        max_k_np = np.array(np.max(top_k_np), dtype=np.int64)
+        max_k = Tensor.from_numpy(max_k_np)
+        temperature_np = np.array(
+            [context.sampling_params.temperature for context in batch],
+            dtype=np.float32,
+        )
+        temperature = Tensor.from_numpy(temperature_np).to(
+            self.draft_devices[0]
+        )
+        top_p_np = np.array(
+            [context.sampling_params.top_p for context in batch],
+            dtype=np.float32,
+        )
+        top_p = Tensor.from_numpy(top_p_np).to(self.draft_devices[0])
+        seed_np = np.array(
+            [context.sampling_params.seed for context in batch], dtype=np.uint64
+        )
+        seed = Tensor.from_numpy(seed_np).to(self.draft_devices[0])
 
         # Generate tensor for generated tokens.
         generated_tokens = Tensor.zeros(
@@ -467,7 +547,15 @@ class SpeculativeDecodingTextGenerationPipeline(TokenGenerator[T]):
             # Sample next_token
             new_tokens, new_generated_tokens, new_generated_logits = (
                 self.sample_draft_logits(
-                    batch, model_outputs, generated_tokens, generated_logits
+                    batch,
+                    model_outputs,
+                    generated_tokens,
+                    generated_logits,
+                    top_k,
+                    max_k,
+                    temperature,
+                    top_p,
+                    seed,
                 )
             )
             generated_tokens = new_generated_tokens
@@ -610,6 +698,23 @@ class SpeculativeDecodingTextGenerationPipeline(TokenGenerator[T]):
 
         return res
 
+    @property
+    def metrics(self) -> SpeculativeDecodingMetrics:
+        """Get the current speculative decoding metrics.
+
+        Returns:
+            The SpeculativeDecodingMetrics instance with current statistics
+        """
+        return self._metrics
+
+    def __del__(self) -> None:
+        """Log metrics when the pipeline is destroyed."""
+        if (
+            hasattr(self, "_metrics")
+            and self._metrics.draft_tokens_generated > 0
+        ):
+            logger.info(f"Speculative decoding metrics: {self._metrics}")
+
     def update_contexts(
         self,
         context_batch: list[T],
@@ -628,6 +733,11 @@ class SpeculativeDecodingTextGenerationPipeline(TokenGenerator[T]):
             draft_tokens: Array of draft tokens
             num_draft_tokens_generated: Number of tokens generated by the draft model
         """
+        total_draft_generated = num_draft_tokens_generated * len(context_batch)
+        total_draft_accepted = 0
+        total_bonus_used = 0
+        acceptance_lengths = []
+
         for idx, rejected_token_idx in enumerate(first_rejected_tokens):
             context = context_batch[idx]
             rejected_token_idx = rejected_token_idx.item()
@@ -643,8 +753,12 @@ class SpeculativeDecodingTextGenerationPipeline(TokenGenerator[T]):
 
             if rejected_token_idx == num_draft_tokens_generated:
                 context.update(bonus_tokens[idx, 0].item())
+                total_bonus_used += 1
             else:
                 context.update(recovered_tokens[idx, rejected_token_idx].item())
+
+            total_draft_accepted += rejected_token_idx
+            acceptance_lengths.append(rejected_token_idx)
 
             # When some or all draft tokens are rejected, we apply a token from
             # the residual distribution. The draft and target models have not
@@ -654,6 +768,14 @@ class SpeculativeDecodingTextGenerationPipeline(TokenGenerator[T]):
             # processed the bonus token. In this case only the draft needs to
             # go one step back. At the moment we do this for all cases.
             context.bump_token_indices(start_idx=-1)
+
+        # Update metrics
+        self._metrics.update(
+            total_draft_generated,
+            total_draft_accepted,
+            total_bonus_used,
+            acceptance_lengths,
+        )
 
     def build_response(
         self,

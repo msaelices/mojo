@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import unittest.mock
 from typing import TYPE_CHECKING, Callable, Optional, Union, cast
 
 import torch
@@ -28,12 +29,19 @@ from max.pipelines.core import (
     PipelineTask,
     PipelineTokenizer,
 )
-from transformers import (
-    AutoConfig,
-    AutoTokenizer,
-    PreTrainedTokenizer,
-    PreTrainedTokenizerFast,
-)
+
+# transformers creates an OTLP exporter on import, which causes OTEL to
+# spew error logs in some configurations.  So we have to trick transformers
+# into not making such assumptions.
+with unittest.mock.patch(
+    "opentelemetry.sdk.resources.Resource.create", side_effect=ImportError
+):
+    from transformers import (
+        AutoConfig,
+        AutoTokenizer,
+        PreTrainedTokenizer,
+        PreTrainedTokenizerFast,
+    )
 
 if TYPE_CHECKING:
     from .audio_generator_pipeline import AudioGeneratorPipeline
@@ -108,7 +116,7 @@ class SupportedArchitecture:
         multi_gpu_supported: bool = False,
         rope_type: RopeType = RopeType.none,
         weight_adapters: dict[WeightsFormat, WeightsAdapter] | None = None,
-    ):
+    ) -> None:
         """Represents a model architecture configuration for MAX pipelines.
 
         This class defines all the necessary components and settings required to
@@ -208,7 +216,7 @@ class SupportedArchitecture:
 
 
 class PipelineRegistry:
-    def __init__(self, architectures: list[SupportedArchitecture]):
+    def __init__(self, architectures: list[SupportedArchitecture]) -> None:
         self.architectures = {arch.name: arch for arch in architectures}
         self._cached_huggingface_configs: dict[HuggingFaceRepo, AutoConfig] = {}
         self._cached_huggingface_tokenizers: dict[
@@ -355,8 +363,8 @@ class PipelineRegistry:
         quantization_encoding_str = str(
             pipeline_config.model_config.quantization_encoding
         )
-        if pipeline_config.model_config.cast_safetensor_weights_from_float32_to_bfloat16:
-            quantization_encoding_str = f"{quantization_encoding_str} (potentially downcasted from float32)"
+        if pipeline_config.model_config._applied_dtype_cast_from:
+            quantization_encoding_str = f"{quantization_encoding_str} (cast from {pipeline_config.model_config._applied_dtype_cast_from})"
 
         message = f"""
 
