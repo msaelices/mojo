@@ -1,7 +1,14 @@
 # ===----------------------------------------------------------------------=== #
+# Copyright (c) 2025, Modular Inc. All rights reserved.
 #
-# This file is Modular Inc proprietary.
+# Licensed under the Apache License v2.0 with LLVM Exceptions:
+# https://llvm.org/LICENSE.txt
 #
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 # ===----------------------------------------------------------------------=== #
 """Library for graph value types."""
 
@@ -274,6 +281,11 @@ class Dim:
         else:
             raise ValueError("graph api does not support unknown dimensions")
 
+    @property
+    def parameters(self) -> Iterable[SymbolicDim]:
+        """Lists the symbolic dimension names on which this dim depends."""
+        raise NotImplementedError
+
 
 @dataclass(frozen=True)
 class SymbolicDim(Dim):
@@ -365,6 +377,11 @@ class SymbolicDim(Dim):
             raise TypeError(f"Attr is not a symbolic dim: {attr}")
         return SymbolicDim(attr.name.value)
 
+    @property
+    def parameters(self) -> Iterable[SymbolicDim]:
+        """Lists the symbolic dimension names on which this dim depends."""
+        yield self
+
 
 @dataclass(frozen=True)
 class AlgebraicDim(Dim):
@@ -452,6 +469,12 @@ class AlgebraicDim(Dim):
             raise TypeError(f"Attribute is not an algebraic dimension: {attr}")
         return AlgebraicDim(attr)
 
+    @property
+    def parameters(self) -> Iterable[SymbolicDim]:
+        """Lists the symbolic dimension names on which this dim depends."""
+        for operand in self.attr.operands:
+            yield from Dim.from_mlir(operand).parameters
+
 
 @functools.total_ordering
 @dataclass(frozen=True)
@@ -533,6 +556,11 @@ class StaticDim(Dim):
             raise TypeError(f"Attribute is not a static dimension: {attr}")
         return StaticDim(attr.value)
 
+    @property
+    def parameters(self) -> Iterable[SymbolicDim]:
+        """Lists the symbolic dimension names on which this dim depends."""
+        return ()
+
 
 def _is_static_shape(dims: Shape) -> TypeGuard[StaticShape]:
     return all(isinstance(dim, StaticDim) and dim.dim >= 0 for dim in dims)
@@ -562,6 +590,12 @@ class Shape(list[Dim]):
     def static_dims(self) -> list[int]:
         """Returns all static dims in the shape as a list of integers."""
         return [d.dim for d in self if isinstance(d, StaticDim)]
+
+    @property
+    def parameters(self) -> Iterable[SymbolicDim]:
+        """Lists the symbolic dimension names on which this shape depends."""
+        for dim in self:
+            yield from dim.parameters
 
 
 @dataclass(frozen=True)
@@ -817,6 +851,11 @@ class _TensorTypeBase(Type[MlirType]):
             A new tensor type with the same shape, device, and the new element type.
         """
         return type(self)(dtype, self.shape, self.device)
+
+    @property
+    def parameters(self) -> Iterable[SymbolicDim]:
+        """Lists the symbolic dimension names on which this type depends."""
+        return self.shape.parameters
 
 
 @dataclass
