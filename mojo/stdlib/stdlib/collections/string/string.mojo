@@ -1007,7 +1007,7 @@ struct String(
             joining a very large `List` of elements to write into the stack
             instead of the heap.
         """
-        return self.as_string_slice().join[buffer_size=buffer_size](elems)
+        return self.as_string_slice().join(elems)
 
     fn codepoints(self) -> CodepointsIter[__origin_of(self)]:
         """Returns an iterator over the `Codepoint`s encoded in this string slice.
