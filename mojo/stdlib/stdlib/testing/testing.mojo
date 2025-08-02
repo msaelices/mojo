@@ -441,6 +441,68 @@ fn assert_not_equal(
 
 @always_inline
 fn assert_not_equal[
+    O: ImmutableOrigin,
+](
+    lhs: StringSlice[O],
+    rhs: String,
+    msg: String = "",
+    *,
+    location: Optional[_SourceLocation] = None,
+) raises:
+    """Asserts that the input values are not equal. If it is not then an
+    an Error is raised.
+
+    Args:
+        lhs: The lhs of the inequality.
+        rhs: The rhs of the inequality.
+        msg: The message to be printed if the assertion fails.
+        location: The location of the error (defaults to `__call_location`).
+
+    Raises:
+        An Error with the provided message if assert fails and `None` otherwise.
+    """
+    if lhs == rhs:
+        raise _assert_cmp_error["`left != right` comparison"](
+            lhs.__str__(),
+            rhs,
+            msg=msg,
+            loc=location.or_else(__call_location()),
+        )
+
+
+@always_inline
+fn assert_not_equal[
+    O: ImmutableOrigin,
+](
+    lhs: String,
+    rhs: StringSlice[O],
+    msg: String = "",
+    *,
+    location: Optional[_SourceLocation] = None,
+) raises:
+    """Asserts that the input values are not equal. If it is not then an
+    an Error is raised.
+
+    Args:
+        lhs: The lhs of the inequality.
+        rhs: The rhs of the inequality.
+        msg: The message to be printed if the assertion fails.
+        location: The location of the error (defaults to `__call_location`).
+
+    Raises:
+        An Error with the provided message if assert fails and `None` otherwise.
+    """
+    if lhs == rhs:
+        raise _assert_cmp_error["`left != right` comparison"](
+            lhs,
+            rhs.__str__(),
+            msg=msg,
+            loc=location.or_else(__call_location()),
+        )
+
+
+@always_inline
+fn assert_not_equal[
     dtype: DType, size: Int
 ](
     lhs: SIMD[dtype, size],
