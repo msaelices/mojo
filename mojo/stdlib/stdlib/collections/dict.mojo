@@ -796,7 +796,7 @@ struct Dict[
         Returns:
             True if the key exists in the dictionary, False otherwise.
         """
-        return self._find_index(hash[HasherType=H](key), key)[0]
+        return self._find_index(_hash_key[H=H](key), key)[0]
 
     fn __iter__(ref self) -> _DictKeyIter[K, V, H, __origin_of(self)]:
         """Iterate over the dict's keys as immutable references.
@@ -1128,7 +1128,7 @@ struct Dict[
             present.
         """
         self._maybe_resize()
-        var found, slot, index = self._find_index(hash[HasherType=H](key), key)
+        var found, slot, index = self._find_index(_hash_key[H=H](key), key)
         ref entry = self._entries[index]
         if not found:
             entry = DictEntry[H=H](key.copy(), default^)
