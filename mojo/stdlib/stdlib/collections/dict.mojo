@@ -74,7 +74,7 @@ fn _hash_str(s: String) -> UInt:
 
 
 @always_inline("nodebug")
-fn _hash_key[K: KeyElement, H: Hasher](key: K) -> Int:
+fn _hash_key[K: KeyElement, H: Hasher](key: K) -> UInt64:
     """Hash a key using the underlying hash function.
 
     Parameters:
@@ -285,7 +285,7 @@ struct DictEntry[K: KeyElement, V: ExplicitlyCopyable & Movable, H: Hasher](
         self.key = existing.key.copy()
         self.value = existing.value.copy()
 
-    fn __init__(out self, var key: K, var value: V, key_hash: Int):
+    fn __init__(out self, var key: K, var value: V, var key_hash: UInt64):
         """Create an entry from a key and value, computing the hash.
 
         Args:
@@ -1172,8 +1172,8 @@ struct Dict[
             self._n_entries += 1
 
     @always_inline("nodebug")
-    fn _insert_with_hash(mut self, var key: K, var value: V, hash: Int):
-        self._insert(DictEntry[K, V](key^, value^, hash))
+    fn _insert_with_hash(mut self, var key: K, var value: V, var hash: UInt64):
+        self._insert(DictEntry[K, V, H](key^, value^, hash))
 
     fn _get_index(self, slot: UInt64) -> Int:
         return self._index.get_index(self._reserved(), slot)
