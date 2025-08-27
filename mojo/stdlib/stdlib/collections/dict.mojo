@@ -1171,7 +1171,7 @@ struct Dict[
             self._len += 1
             self._n_entries += 1
 
-    @always_inline("nodebug")
+    @always_inline
     fn _insert_with_hash(mut self, var key: K, var value: V, var hash: UInt64):
         self._insert(DictEntry[K, V, H](key^, value^, hash))
 
