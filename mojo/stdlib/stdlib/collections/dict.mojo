@@ -68,8 +68,8 @@ fn _hash_str(s: String) -> UInt:
         uses. Its intended usage is for data structures.
     """
     var hash = 5381  # typical starting value
-    for c in s.as_string_slice():
-        hash = ((hash << 5) + hash) + ord(c)  # hash * 33 + ord(char)
+    for c in s.as_bytes():
+        hash = ((hash << 5) + hash) + Int(c)  # hash * 33 + ord(char)
     return hash
 
 
