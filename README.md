@@ -1,113 +1,137 @@
 <div align="center">
-    <img src="https://modular-assets.s3.amazonaws.com/images/mojo_github_logo_bg.png">
+    <img src="https://modular-assets.s3.amazonaws.com/images/GitHubBannerModular.png">
 
-  [Website][Mojo] | [Getting Started] | [API Documentation] | [Contributing] | [Changelog]
+  [About Modular] | [Get started] | [API docs] | [Contributing] | [Changelog]
 </div>
 
-[Mojo]: https://www.modular.com/mojo/
-[Getting Started]: https://docs.modular.com/mojo/manual/get-started/
-[API Documentation]: https://docs.modular.com/mojo/lib
+[About Modular]: https://www.modular.com/
+[Get started]: https://docs.modular.com/max/get-started
+[API docs]: https://docs.modular.com/max/api
 [Contributing]: ./CONTRIBUTING.md
-[Changelog]: ./docs/changelog.md
+[Changelog]: https://docs.modular.com/max/changelog
 
-# Welcome to Mojo 🔥
+# Modular Platform
 
-Mojo is a new programming language that bridges the gap between research
-and production by combining Python syntax and ecosystem with systems
-programming and metaprogramming features. Mojo is still young, but it is designed
-to become the best way to extend Python over time.
+> A unified platform for AI development and deployment, including **MAX**🧑‍🚀 and
+**Mojo**🔥.
 
-This repo includes source code for:
+The Modular Platform is an open and fully-integrated suite of AI libraries
+and tools that accelerates model serving and scales GenAI deployments. It
+abstracts away hardware complexity so you can run the most popular open
+models with industry-leading GPU and CPU performance without any code changes.
 
-- Mojo examples
-- Mojo documentation hosted at [modular.com](https://docs.modular.com/mojo/)
-- The [Mojo standard library](https://docs.modular.com/mojo/lib)
+![](https://docs.modular.com/images/modular-container-stack.png?20250513)
 
-This repo has two primary branches:
+## Get started
 
-- The [`main`](https://github.com/modularml/mojo/tree/main) branch, which is in
-sync with the last stable released version of Mojo. Use the examples here if you’re
-using a [release build of Mojo](#latest-released).
+You don't need to clone this repo.
 
-- The [`nightly`](https://github.com/modularml/mojo/tree/nightly) branch, which
-is in sync with the Mojo nightly build and subject to breakage. Use this branch
-for [contributions](./CONTRIBUTING.md), or if you're using the latest
-[nightly build of Mojo](#latest-nightly).
+You can install Modular as a `pip` or `conda` package and then start an
+OpenAI-compatible endpoint with a model of your choice.
 
-To learn more about Mojo, see the
-[Mojo Manual](https://docs.modular.com/mojo/manual/).
+If we trim the ceremonial steps, you can start a local LLM endpoint with just
+two commands:
 
-## Installing Mojo
-
-### Latest Released
-
-To install the last released build of Mojo, follow the guide to
-[Get started with Mojo](https://docs.modular.com/mojo/manual/get-started).
-
-### Latest Nightly
-
-The nightly Mojo builds are subject to breakage and provide an inside
-view of how the development of Mojo is progressing.  Use at your own risk
-and be patient!
-
-To get nightly builds, see the same instructions to [Get started with
-Mojo](https://docs.modular.com/mojo/manual/get-started), but when you create
-your project, instead use the following `magic init` command to set the
-conda package channel to `max-nightly`:
-
-```bash
-magic init hello-world-nightly --format mojoproject \
-  -c conda-forge -c https://conda.modular.com/max-nightly
+```sh
+pip install modular
 ```
 
-Or, if you're [using conda](https://docs.modular.com/magic/conda), add the
-`https://conda.modular.com/max-nightly/` channel to your `environment.yaml`
-file. For example:
-
-```yaml
-[project]
-name = "Mojo nightly example"
-channels = ["conda-forge", "https://conda.modular.com/max-nightly/"]
-platforms = ["osx-arm64", "linux-aarch64", "linux-64"]
-
-[dependencies]
-max = "*"
+```sh
+max serve --model-path=modularai/Llama-3.1-8B-Instruct-GGUF
 ```
 
-And when you clone this repo, switch to the `nightly` branch because the `main`
-branch might not be compatible with nightly builds:
+Then start sending the Llama 3 model inference requests using [our
+OpenAI-compatible REST API](https://docs.modular.com/max/api/serve).
 
-```bash
-git clone https://github.com/modularml/mojo.git
+Or try running hundreds of other models from [our model
+repository](https://builds.modular.com/?category=models).
+
+For a complete walkthrough, see [the quickstart
+guide](https://docs.modular.com/max/get-started).
+
+## Deploy our container
+
+The MAX container is our Kubernetes-compatible Docker container for convenient
+deployment, using the same inference server you get from the `max serve`
+command shown above. We have separate containers for NVIDIA and AMD GPU
+environments, and a unified container that works with both.
+
+For example, you can start a container for an NVIDIA GPU with this command:
+
+```sh
+docker run --gpus=1 \
+    -v ~/.cache/huggingface:/root/.cache/huggingface \
+    -p 8000:8000 \
+    docker.modular.com/modular/max-nvidia-full:latest \
+    --model-path modularai/Llama-3.1-8B-Instruct-GGUF
 ```
 
-```bash
-git checkout nightly
-```
+For more information, see our [MAX container
+docs](https://docs.modular.com/max/container) or the [Modular Docker Hub
+repository](https://hub.docker.com/u/modular).
 
-## Contributing
+## About the repo
 
-When you want to report issues or request features, [please create a GitHub
-issue here](https://github.com/modularml/mojo/issues).
-See [here](./CONTRIBUTING.md) for guidelines on filing good bugs.
+We're constantly open-sourcing more of the Modular Platform and you can find
+all of it in here. As of May, 2025, this repo includes over 450,000 lines of
+code from over 6000 contributors, providing developers with production-grade
+reference implementations and tools to extend the Modular Platform with new
+algorithms, operations, and hardware targets. It is quite likely **the world's
+largest repository of open source CPU and GPU kernels**!
 
-We welcome contributions to this repo on the
-[`nightly`](https://github.com/modularml/mojo/tree/nightly)
-branch. If you’d like to contribute to Mojo, please first read our [Contributor
-Guide](https://github.com/modularml/mojo/blob/main/CONTRIBUTING.md).
+Highlights include:
 
-For more general questions or to chat with other Mojo developers, check out our
-[Discord](https://discord.gg/modular).
+- Mojo standard library: [/mojo/stdlib](mojo/stdlib)
+- MAX GPU and CPU kernels: [/max/kernels](max/kernels) (Mojo kernels)
+- MAX inference server: [/max/serve](max/serve) (OpenAI-compatible endpoint)
+- MAX model pipelines: [/max/pipelines](max/pipelines) (Python-based graphs)
+- Code example: [/examples](examples)
+
+This repo has two major branches:
+
+- The [`main`](https://github.com/modular/modular/tree/main) branch, which is
+in sync with the nightly build and subject to new bugs. Use this branch for
+[contributions](./CONTRIBUTING.md), or if you [installed the nightly
+build](https://docs.modular.com/max/packages).
+
+- The [`stable`](https://github.com/modular/modular/tree/stable) branch, which
+is in sync with the last stable released version of Mojo. Use the examples in
+here if you [installed the stable
+build](https://docs.modular.com/max/packages).
+
+## Contribute
+
+Thanks for your interest in contributing to this repository!
+
+We accept contributions to the [Mojo standard library](./mojo), [MAX AI
+kernels](./max/kernels), code examples, and Mojo docs, but currently not to any
+other parts of the repository.
+
+Please see the [Contribution Guide](./CONTRIBUTING.md) for instructions.
+
+We also welcome your bug reports.  If you have a bug, please [file an issue
+here](https://github.com/modular/modular/issues/new/choose).
+
+## Contact us
+
+If you'd like to chat with the team and other community members, please send a
+message to our [Discord channel](https://discord.gg/modular) and [our
+forum board](https://forum.modular.com/).
 
 ## License
 
-This repository and its contributions are licensed under the Apache License v2.0
-with LLVM Exceptions (see the LLVM [License](https://llvm.org/LICENSE.txt)).
-MAX and Mojo usage and distribution are licensed under the
-[MAX & Mojo Community License](https://www.modular.com/legal/max-mojo-license).
+This repository and its contributions are licensed under the Apache License
+v2.0 with LLVM Exceptions (see the LLVM [License](https://llvm.org/LICENSE.txt)).
+Modular, MAX and Mojo usage and distribution are licensed under the
+[Modular Community License](https://www.modular.com/legal/community).
+
+### Third party licenses
+
+You are entirely responsible for checking and validating the licenses of
+third parties (i.e. Huggingface) for related software and libraries that are downloaded.
 
 ## Thanks to our contributors
 
-<a href="https://github.com/modularml/mojo/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=modularml/mojo" />
+<a href="https://github.com/modular/modular/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=modular/modular" />
 </a>

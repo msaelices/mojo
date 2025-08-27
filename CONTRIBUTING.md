@@ -1,27 +1,28 @@
-# Mojo contributor guide
+# Modular contributor guide
 
-Welcome to the Mojo community! 🔥 We’re very excited that you’re interested in
-contributing to the project. To help you get started and ensure a smooth
-process, we’ve put together this contributor guide.
+Thank you for your interest in contributing to this repository!
 
-There are many ways to contribute to the project, from joining the
-[Discord community](https://www.discord.gg/modular), to filing bugs, to
-contributing documentation, examples, or code.
+This page explains the overall process to create a pull request (PR), from
+forking the repo all the way through review and final merge.
+
+> [!NOTE]
+> We accept code contributions to the [Mojo standard library](./mojo), [MAX
+> AI kernels](./max/kernels), [code examples](./examples), and
+> [Mojo docs](./mojo/docs), but currently not to
+> other parts of the repository.
 
 ## Submitting bugs
 
-Reporting issues is a great way to contribute to the project. Mojo uses GitHub
-Issues for tracking bugs.
+Reporting issues is a great way to contribute to the project.
 
-Keep in mind that bugs with a reproducible test case and well-written supporting
-documentation are considered a higher priority. Ensure that reproducible steps
-are the smallest possible to maximize contributor time.
-
-Also, before opening a new issue, take a moment to search through the already
-submitted issues to avoid creating duplicate issues for the maintainers to
-address.
+Before opening a new issue, take a moment to search through the already
+[submitted issues](https://github.com/modular/modular/issues) to avoid creating
+duplicate issues for the maintainers to address.
 
 ### Writing high-quality bug descriptions
+
+Bugs with a reproducible test case and well-written descriptions will be
+considered a higher priority.
 
 We encourage you to provide as much information about the issue as practical.
 The more details you provide, the faster we can resolve the issue. The following
@@ -33,386 +34,216 @@ is a template of the information that should accompany every submitted issue.
 - **Description.** A detailed account of the bug, including what was expected
   and what occurred.
 - **Environment details.**
-  - Mojo Compiler Version
-  - Operating System version
-  - Hardware Specifications
+  - MAX or Mojo version (run `max --version` or `mojo --version`)
+  - Operating system version
+  - Hardware specifications
 - **Severity/frequency.** An assessment of the impact ranging from inconvenience
   to a blocker.
 
-## Contributing to docs and examples
-
-We’re happy to accept pull requests for the docs and examples.
-If your change is any one of the following, please create a pull request and we
-will happily accept it as quickly as possible:
-
-- Example code improvement:
-  - Bug fix
-  - Performance improvement
-  - Code readability improvement
-  - Conformity to style improvement
-- Documentation improvement:
-  - Typo fix
-  - Markup/rendering fix
-  - Factual information fix
-  - New factual information for an existing page
-
-Before embarking on any major change, please **create an issue** or
-**start a discussion**, so we can collaborate and agree on a solution.
-
-For example, refactoring an entire code example or adding an entire new page to
-the documentation is a lot of work and it might conflict with other work that’s
-already in progress. We don’t want you to spend time on something that might
-require difficult reviews and rework, or that might get rejected.
-
-See [Pull Requests](#pull-requests) for information on creating your first pull
-request.
-
-## Contributing to the standard library
-
-The standard library team is dedicated to creating a vibrant technical community
-around the Mojo programming language. Our vision includes a diverse and
-inclusive environment where developers are motivated to contribute to the growth
-of the Mojo package ecosystem with a myriad of community-driven additions.
-
-For more information on our priorities, see the following documents:
-
-- Our [Vision document](./stdlib/docs/vision.md) describes the guiding
-  principles behind our development efforts.
-- Our [Roadmap](./stdlib/docs/roadmap.md) identifies concrete development goals
-  as we work towards an even more robust and feature-rich standard library.
-
-For technical details on developing for the standard library, see the following
-documents:
-
-- [Developing the standard library](./stdlib/docs/development.md) covers building,
-  testing, and other information you’ll need to work in the standard library.
-- [Coding Standards and Style Guide](./stdlib/docs/style-guide.md) provides
-  guidelines for writing code for the standard library.
-
-### Accepting open source PRs
-
-To ensure a streamlined process, contributors are encouraged to focus on
-enhancements, bug fixes, and optimizations aligned with the library's
-overarching goals. These guidelines aim to facilitate a collaborative
-environment where contributors and the standard library team can work together
-effectively toward the continued improvement of Mojo.
-
-#### Changes we *accept*
-
-These changes are uncontroversial, easier to review, and more likely to be
-accepted:
-
-- Well-documented bug fixes submitted with code reproducing the issue in a test
-  or benchmark.
-- Performance improvements that don’t sacrifice code readability or
-  maintainability and are accompanied by benchmarks.
-- Improvements to stdlib documentation or that expand on it.
-- Improvements to the test coverage.
-- Porting of tests from `FileCheck` to using `assert_*` functions from the
-  `testing` module.
-- Changes that address security vulnerabilities.
-
-#### Changes we *avoid*
-
-Changes that don’t align with our vision and roadmap are unlikely to be
-accepted. For example:
-
-- Changes that do not align with the published roadmap or the core principles of
-  the standard library.
-- Changes to the math module until more thorough performance
-  benchmarking is available.
-- Code without tests—especially for core primitives.
-- Changes that break existing API or implicit behavior semantics.
-- Changes where the contributors’ favorite feature or system isn’t being used
-  and they submit a change unilaterally switching the project to use it. For
-  example, the contributor doesn’t like CMake as a build system and submits a PR
-  changing the repository to use their favorite build system.
-- Adding support for esoteric platforms.
-- Adding dependencies to the code base.
-- Broad formatting or refactoring changes.
-- Changes that need broad community consensus.
-- Changes if contributors are not responsive.
-- Adding an entire new module without going through the RFC/proposal process.
-
-### About pull request sizes
-
-We ask that contributors make pull requests as small as possible. When
-you are opening a pull request, check the number of lines modified in GitHub.
-The smaller the better (but don't exclude the tests or docstrings). If your
-pull request is over 100 lines, please try to split it into multiple pull
-requests. If you make them independent, it's even better as no synchronization
-will be needed for the merge.
-
-This guideline is here for the following reasons:
-
-- **Higher quality reviews**: It is much easier to spot a bug in a few lines
-than in 1000 lines.
-- **Faster overall review**: Reviewers, to approve a pull request, need to
-understand every line and understand how it fits into your overall change.
-They also need to go back and forth between files and functions to understand
-the flow of the code. This is exponentially hard as there are more lines in the code.
-- **Avoiding blocking changes that are valid**: In a huge pull request, it's
-likely that some changes are valid and some need to be reworked/discussed. If all
-the changes are in the same pull request, then the valid changes will be be blocked
-until all discussions have been resolved.
-- **Reducing the number of git conflicts**: Bigger pull request means slower reviews,
-thus means that the pull request will be open longer and will have more git conflicts
-to be resolved before being merged.
-- **Parallel processing**: All programmers like to parallelize. Well, reviewers also
-like to parallelize code reviews to merge your code faster. If you open two pull
-requests that are independent, then two reviewers will be able to work on your
-code.
-- **Finding the time for a code review**: Doing a code review often requires
-that the code is reviewed in one go, as it's hard to remember functions and code
-logic from one review session to another. Thus a big pull request will require
-the reviewer to allocate a big chunk of time to do the code review, which is not
-always possible and might delay the review and merge of your pull request
-for multiple days.
-
-Smaller pull requests means less work for the maintainers and faster reviews
-and merges for the contributors. It's a win-win!
-
-### Proposals
-
-If you’re interested in making a significant change—one that doesn’t fall into
-the list of “Changes we accept,” your first step is a written proposal. The
-proposals process ensures feedback from the widest possible set of community
-members and serves as an audit log of past proposal changes with most
-importantly the rationale behind it.
-
-Proposals consist of a GitHub [Pull Request](#pull-requests) that adds a
-document to the [`proposals/`](./proposals) directory. Contributors are
-encouraged to react with a *thumbs-up* to proposal PRs if they are generally
-interested and supportive of the high-level direction. These are assigned to
-Mojo standard library leads to decide. The proposal PR can be merged once the
-assigned lead approves, all blocking issues have been decided, and any related
-decisions are incorporated. If the leads choose to defer or reject the proposal,
-the reviewing lead should explain why and close the PR.
-
-This process is heavily inspired by the process used by several other
-open-source projects. We’ll add more documentation in the future as we gain
-experience with the process.
-
-## Pull requests
-
-You can use a pull request to propose a change or bug fix to the Mojo Standard
-Library, Mojo examples, or Mojo documentation. This page gives an overview of
-the process. For a more detailed walkthrough, see
-[How to contribute to the Mojo standard library: a step-by-step guide](https://www.modular.com/blog/how-to-contribute-to-mojo-standard-library-a-step-by-step-guide).
-
-**Note:** Pull requests should be submitted against the `nightly` branch,
-which represents the most recent nightly build.
-
-### Pull request process
-
-#### First-time checklist
+## Contributing changes
 
 Before you start your first pull request, please complete this checklist:
 
 - Read this entire contributor guide.
 - Read the [Code of Conduct](./CODE_OF_CONDUCT.md).
 
-#### Evaluate and get buy-in on the change
+### Step 1: Evaluate and get buy-in on the change
 
-We want to be sure that you spend your time efficiently and prepare changes that
-aren’t controversial and get stuck in long rounds of reviews. See the sections
-on [Contributing to Docs and Examples](#contributing-to-docs-and-examples) and
-[Contributing to the standard library](#contributing-to-the-standard-library)
-for more details.
+First, consider that several parts of this repository currently do not accept
+contributions. You should refer to the README or CONTRIBUTING file nearest the
+code you're interested in.
 
-#### Fork and clone the repo
+We also want to be sure that you spend your time efficiently and prepare
+changes that aren’t controversial and get stuck in long rounds of reviews. So
+if the change is non-trivial, please submit an issue or write a proposal, as
+described in the corresponding sections.
 
-Go to the [Mojo repo](https://github.com/modularml/mojo) and click the fork
-button:
+For example, we accept contributions to the following sections where you can
+find specific contribution guidelines:
 
-![Create Fork](stdlib/docs/images/create-fork.png)
+- [Mojo standard library](mojo/CONTRIBUTING.md)
+- [MAX AI kernels](max/kernels/CONTRIBUTING.md)
+- [Code examples](examples#contributing)
+- [Mojo documentation](mojo/docs#contributing)
 
-Clone your forked repo locally with the command:
+### Step 2: Create a pull request
 
-```bash
-git clone git@github.com:[your-username]/mojo.git
-cd mojo
-```
+If you're experienced with GitHub, here's the basic process:
 
-Add the upstream remote and fetch it:
+1. Fork this repo.
 
-```bash
-git remote add upstream git@github.com:modularml/mojo.git
-git fetch upstream
-```
+2. Create a branch from `main`.
 
-#### Branching off nightly
+   If you're contributing to the Mojo standard library, see the
+   [Mojo standard library developer guide](mojo/stdlib/docs/development.md).
 
-Make sure to branch off `nightly` to work on your PR:
+3. Create a PR into the `main` branch of this repo.
 
-```bash
-git checkout upstream/nightly
-git checkout -b my-fix-pr
-```
+4. Skip to [Step 3: PR triage and review](#step-3-pr-triage-and-review).
 
-You should periodically make sure you've synced the latest changes, especially
-before raising a PR:
+#### Pull request walkthrough
 
-```bash
-git fetch upstream
-git rebase upstream/nightly
-```
+For more specifics, here's a detailed walkthrough of the process to create a
+pull request:
 
-#### Getting the nightly Mojo compiler
+1. Fork and clone this repo:
 
-Now that you're on the nightly branch, you need to install the latest nightly
-build.
+    Go to the [modular repo home](https://github.com/modular/modular) and click
+    the **Fork** button at the top.
 
-If you're using [`magic`](https://docs.modular.com/magic), create a new
-project environment with the `max-nightly` channel like this:
+    Your fork will be accessible at `https://github.com/<your-username>/modular`.
 
-```bash
-magic init mojo-nightly --format mojoproject \
-  -c conda-forge -c https://conda.modular.com/max-nightly
-```
+    Clone your forked repo to your computer:
 
-If you're [using conda](https://docs.modular.com/magic/conda), add the
-`https://conda.modular.com/max-nightly/` channel to your `environment.yaml`
-file. For example:
+    ```bash
+    git clone git@github.com:<your-username>/modular.git
+    cd modular
+    ```
 
-```yaml
-[project]
-name = "Mojo nightly example"
-channels = ["conda-forge", "https://conda.modular.com/max-nightly/"]
-platforms = ["osx-arm64", "linux-aarch64", "linux-64"]
+    To clarify, you're working with three repo entities:
 
-[dependencies]
-max = "*"
-```
+    - This repo (`https://github.com/modular/modular`) is known as the upstream
+      repo. In Git terminology, it's the *upstream remote*.
+    - Your fork on GitHub is known as *origin* (also remote).
+    - Your local clone is stored on our computer.
 
-#### Mojo nightly vscode extension
+    Because a fork can diverge from the upstream repo it was forked from, it is
+    crucial to configure our local clone to track upstream changes:
 
-Install the [Mojo nightly VS Code
-extension](https://marketplace.visualstudio.com/items?itemName=modular-mojotools.vscode-mojo-nightly):
+    ```bash
+    git remote add upstream git@github.com:modular/modular.git
+    ```
 
-<img src="./stdlib/docs/images/nightly-extension.png" width=350 />
+    Then sync your fork to the latest code from upstream:
 
-You can only have one Mojo extension enabled at a time, remember to switch back
-when using the stable release!
+    ```bash
+    git pull --rebase upstream
+    ```
 
-#### Create a pull request
+2. Create a branch off `main` to work on your change:
 
-If your change is one of the improvements described above or it has been
-discussed and agreed upon by the project maintainers, please create a pull
-request into the `nightly` branch.
+    ```bash
+    git checkout -b my-fix
+    ```
 
-First push your changes:
+    Now start your work on the repo! If you're contributing to the Mojo
+    standard library, see the [Mojo standard library developer
+    guide](mojo/stdlib/docs/development.md).
 
-```bash
-git push -u origin my-fix-pr
-```
+    Although not necessary right now, you should periodically make sure you have
+    the latest code, especially right before you create the pull request:
 
-You'll see a link to create a PR:
+    ```bash
+    git fetch upstream
+    git rebase upstream/main
+    ```
 
-```plaintext
-remote: Create a pull request for 'my-fix-pr' on GitHub by visiting:
-remote:      https://github.com/jackos/mojo/pull/new/my-fix-pr
-```
+3. Create a pull request:
 
-Make sure you point it to the `nightly` branch:
+    When you're code is ready, create a pull request into the `main` branch.
 
-![Base Branch](stdlib/docs/images/base-branch.png)
+    First push the local changes to your origin on GitHub:
 
-Now fill out the details:
+    ```bash
+    git push -u origin my-fix
+    ```
 
-- A short commit title describing the change.
-- A detailed commit description that includes rationalization for the change
-  and/or explanation of the problem that it solves, with a link to any relevant
-  GitHub issues.
-- A `Signed-off-by` line, as per the
-  [Developer Certificate of Origin](#signing-your-work).
+    You'll see a link to create a PR:
 
-**Note:** Accepted changes will generally show up in the release build (or on
-the website) for the next *major* release.
+    ```plaintext
+    remote: Create a pull request for 'my-fix' on GitHub by visiting:
+    remote:      https://github.com/[your-username]/modular/pull/new/my-fix
+    ```
 
-Thank you for your contributions! ❤️
+    You can open that URL or visit your fork on GitHub and click **Contribute** to
+    start a pull request.
 
-### Signing your work
+    GitHub should automatically set the base repository to `modular/modular`
+    and the base (branch) to `main`. If not, you can select it from the drop-down.
+    Then click **Create pull request**.
 
-For each pull request, we require that you certify that you wrote the change or
-otherwise have the right to pass it on as an open-source patch by adding a line
-at the end of your commit description message in the form of:
+    Now fill out the pull request details in the GitHub UI:
 
-`Signed-off-by: Jamie Smith <jamie.smith@example.com>`
+    - Add a short commit title describing the change.
+    - Add a detailed commit description that includes rationalization for the change
+      and/or explanation of the problem that it solves, with a link to any relevant
+      GitHub issues.
 
-You must use your real name to contribute (no pseudonyms or anonymous
-contributions). If you set your `user.name` and `user.email` git configs, you
-can sign your commit automatically with `git commit -s`.
+    Click **Create pull request**.
 
-Doing so serves as a digital signature in agreement to the following
-Developer Certificate of Origin (DCO):
+### Step 3: PR triage and review
 
-```text
-Developer Certificate of Origin
-Version 1.1
+A Modular team member will take an initial look the the pull request and
+determine how to proceed. This may include:
 
-Copyright (C) 2004, 2006 The Linux Foundation and its contributors.
-1 Letterman Drive
-Suite D4700
-San Francisco, CA, 94129
+- **Leaving the PR as-is** (e.g. if it's a draft).
+- **Reviewing the PR directly**, especially if the changes are straightforward.
+- **Assigning the PR** to a subject-matter expert on the appropriate team
+  (Libraries, Kernels, Documentation etc.) for deeper review.
 
-Everyone is permitted to copy and distribute verbatim copies of this
-license document, but changing it is not allowed.
+We aim to respond in a timely manner based on the time tables in the
+[guidelines for review time](#guidelines-for-review-time), below.
 
-Developer's Certificate of Origin 1.1
+### Step 4: Internal review and syncing
 
-By making a contribution to this project, I certify that:
+Once a PR passes initial review and is progressing toward approval, a Modular
+team member will sync it to our internal repository for further validation and
+integration. This is done using an automated tool that mirrors your changes into
+our internal environment.
 
-(a) The contribution was created in whole or in part by me and I
-    have the right to submit it under the open source license
-    indicated in the file; or
+This process is transparent to you as a contributor. You'll see a bot
+(Modularbot) comment on your PR with status updates like:
 
-(b) The contribution is based upon previous work that, to the best
-    of my knowledge, is covered under an appropriate open source
-    license and I have the right under that license to submit that
-    work with modifications, whether created in whole or in part
-    by me, under the same open source license (unless I am
-    permitted to submit under a different license), as indicated
-    in the file; or
+- `Synced internally` - when your change has been synced internally into our
+  repository
+- `Merged internally` - when your change has been merged internally into our
+  repository
+- `Merged externally` - when your change has gone out with the latest nightly and
+  is now available upstream in the `main` branch.
 
-(c) The contribution was provided directly to me by some other
-    person who certified (a), (b) or (c) and I have not modified
-    it.
+These messages help track the lifecycle of your contribution across our systems.
 
-(d) I understand and agree that this project and the contribution
-    are public and that a record of the contribution (including all
-    personal information I submit with it, including my sign-off) is
-    maintained indefinitely and may be redistributed consistent with
-    this project or the open source license(s) involved.
-```
+### Step 5: Review feedback and iteration
 
-### Guidelines for Review Time
+All feedback intended for you will be posted directly on the **external** pull
+request. Internal discussions (e.g. security/privacy reviews or cross-team
+coordination) may happen privately but won't affect your ability to contribute.
+If we need changes from you, we'll leave clear comments with action items.
+
+Once everything is approved and CI checks pass, we'll take care of the final
+steps to get your PR merged.
+
+Merged changes will generally show up in the the next nightly build (or docs
+website), a day or two after it's merged.
+
+## Guidelines for review time
 
 1. Pull Request (PR) Review Timeline
 
-- Initial Review:
-  - Maintainers will provide an initial review or feedback within 3 weeks of
-    the PR submission.  At times, it may be significantly quicker, but it
-    depends on a variety of factors.
-- Subsequent Reviews:
-  - Once a contributor addresses feedback, maintainers will review updates as
-    soon as they can, typically within 5 business days.
+   Initial Review:
+    - Maintainers will provide an initial review or feedback within 3 weeks of
+      the PR submission.  At times, it may be significantly quicker, but it
+      depends on a variety of factors.
+
+   Subsequent Reviews:
+    - Once a contributor addresses feedback, maintainers will review updates as
+      soon as they can, typically within 5 business days.
 
 1. Issue Triage Timeline
 
-- New Issues:
-  - Maintainers will label and acknowledge new issues within 10 days of the
-    issue submission.
+   New Issues:
+   - Maintainers will label and acknowledge new issues within 10 days of the
+      issue submission.
 
 1. Proposals
 
-- Proposals take more time for the team to review, discuss, and make sure this
-  is in line with the overall strategy and vision for the standard library.
-  These will get discussed in the team's weekly design meetings internally and
-  feedback will be communicated back on the relevant proposal.  As a team, we'll
-  ensure these get reviewed and discussed within 6 weeks of submission.
+   - Proposals take more time for the team to review, discuss, and make sure this
+    is in line with the overall strategy and vision for the standard library.
+    These will get discussed in the team's weekly design meetings internally and
+    feedback will be communicated back on the relevant proposal.  As a team, we'll
+    ensure these get reviewed and discussed within 6 weeks of submission.
 
-#### Exceptions
+### Exceptions
 
 While we strive our best to adhere to these timelines, there may be occasional
 delays due any of the following:
@@ -423,7 +254,7 @@ delays due any of the following:
   the team's weekly design discussion meetings).
 
 Note that just because a pull request has been reviewed does not necessarily
-mean it will be able to merged internally immediately.  This could be due to a
+mean it will be able to be merged internally immediately.  This could be due to a
 variety of reasons, such as:
 
 - Mojo compiler bugs.  These take time to find a minimal reproducer, file an
@@ -433,10 +264,10 @@ variety of reasons, such as:
   fix - remember, we have the largest Mojo codebase in the world internally.
 
 If delays occur, we'll provide status updates in the relevant thread (pull
-request or GitHub issue).  Please bare with us as Mojo is an early language.
+request or GitHub issue).  Please bear with us as Mojo is an early language.
 We look forward to working together with you in making Mojo better for everyone!
 
-#### How You Can Help
+### How you can help
 
 To ensure quicker reviews:
 
@@ -447,3 +278,36 @@ To ensure quicker reviews:
   clarify this further.
 - Use descriptive titles and comments for clarity.
 - Code-review other contributor pull requests and help each other.
+
+## Behind the scenes (FYI)
+
+Here are a few implementation details that help us keep things running smoothly:
+
+- We use a tool called [**Copybara**](https://github.com/google/copybara) to
+  sync changes between internal and external repos.
+
+- Your GitHub username and PR number are automatically preserved via commit
+  metadata like:
+
+    ```plaintext
+    ORIGINAL_AUTHOR=username 12345678+username@users.noreply.github.com
+    PUBLIC_PR_LINK=modularml/mojo#2439
+    ```
+
+- This repo is synced nightly with Modular's internal repo around 2 am ET
+almost every day. This means the `main` branch may lag slightly behind our
+internal repository by up to 24 hours. At times, it may be longer in case of a
+(blocking) release failure in our internal CI release workflows.
+
+## 🙌 Thanks for contributing
+
+We deeply appreciate your interest in improving the Modular ecosystem. Whether
+you're fixing typos, improving docs, or contributing core library features, your
+input makes a difference.
+
+If you have questions or need help, feel free to:
+
+- Leave a comment on your pull request
+- Join our community [forum](https://forum.modular.com/) and post a question
+
+Let's build something great together!
