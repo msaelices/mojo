@@ -90,7 +90,7 @@ fn _hash_key[K: KeyElement, H: Hasher](key: K) -> Int:
     """
 
     @parameter
-    if _type_is_eq[K, String]() or _type_is_eq[K, StringLiteral]():
+    if _type_is_eq[K, String]():
         return _hash_str(rebind[String](key))
     return hash[HasherType=H](key)
 
