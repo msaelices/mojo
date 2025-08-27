@@ -38,7 +38,6 @@ See the `Dict` docs for more details.
 """
 
 from .optional import Optional
-from bit import is_power_of_two
 from sys.ffi import OpaquePointer
 from memory import memcpy, bitcast, UnsafePointer
 from sys.intrinsics import _type_is_eq
@@ -272,7 +271,7 @@ struct DictEntry[K: KeyElement, V: ExplicitlyCopyable & Movable, H: Hasher](
             key: The key of the entry.
             value: The value of the entry.
         """
-        self.hash = _hash_key(key)
+        self.hash = _hash_key[H=H](key)
         self.key = key^
         self.value = value^
 
@@ -286,7 +285,7 @@ struct DictEntry[K: KeyElement, V: ExplicitlyCopyable & Movable, H: Hasher](
         self.key = existing.key.copy()
         self.value = existing.value.copy()
 
-    fn __init__(inoutself, owned key: K, owned value: V, key_hash: Int):
+    fn __init__(out self, var key: K, var value: V, key_hash: Int):
         """Create an entry from a key and value, computing the hash.
 
         Args:
@@ -790,7 +789,7 @@ struct Dict[
             key: The key to associate with the specified value.
             value: The data to store in the dictionary.
         """
-        self._insert_with_hash(key^, value^, _hash_key(key))
+        self._insert_with_hash(key^, value^, _hash_key[H=H](key))
 
     fn __contains__(self, key: K) -> Bool:
         """Check if a given key is in the dictionary or not.
@@ -952,7 +951,7 @@ struct Dict[
             An optional value containing a reference to the value if it is
             present, otherwise an empty Optional.
         """
-        var hash = _hash_key(key)
+        var hash = _hash_key[H=H](key)
         var found, _, index = self._find_index(hash, key)
 
         if found:
@@ -1017,7 +1016,7 @@ struct Dict[
         Raises:
             "KeyError" if the key was not present in the dictionary.
         """
-        var hash = _hash_key(key)
+        var hash = _hash_key[H=H](key)
         var found, slot, index = self._find_index(hash, key)
         if found:
             self._set_index(slot, Self.REMOVED)
@@ -1173,7 +1172,7 @@ struct Dict[
             self._n_entries += 1
 
     @always_inline("nodebug")
-    fn _insert_with_hash(inoutself, owned key: K, owned value: V, hash: Int):
+    fn _insert_with_hash(mut self, var key: K, var value: V, hash: Int):
         self._insert(DictEntry[K, V](key^, value^, hash))
 
     fn _get_index(self, slot: UInt64) -> Int:
