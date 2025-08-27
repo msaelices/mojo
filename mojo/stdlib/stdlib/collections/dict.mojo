@@ -37,13 +37,9 @@ value types must always be Movable so we can resize the dictionary as it grows.
 See the `Dict` docs for more details.
 """
 
-from .optional import Optional
-from sys.ffi import OpaquePointer
-from memory import memcpy, bitcast, UnsafePointer
-from sys.intrinsics import _type_is_eq
 from hashlib import Hasher, default_hasher, default_comp_time_hasher
-from sys.intrinsics import likely
-from memory import bitcast, memcpy
+from memory import memcpy
+from sys.intrinsics import likely, _type_is_eq
 
 
 alias KeyElement = ExplicitlyCopyable & Movable & Hashable & EqualityComparable
