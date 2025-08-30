@@ -983,7 +983,7 @@ struct StringSlice[mut: Bool, //, origin: Origin[mut]](
 
     @always_inline
     fn __le__(self, rhs: String) -> Bool:
-        """Define whether this String slice is less than or equal to the RHS
+        """Define whether this String slice is less than or equal to the RHS.
 
         Args:
             rhs: The other String to compare against.
