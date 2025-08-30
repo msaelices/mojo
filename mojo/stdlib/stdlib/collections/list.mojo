@@ -17,7 +17,7 @@ These APIs are imported automatically, just like builtins.
 
 
 from os import abort
-from sys import sizeof
+from sys import size_of
 from sys.intrinsics import _type_is_eq
 
 from collections._index_normalization import normalize_index
@@ -568,12 +568,11 @@ struct List[T: ExplicitlyCopyable & Movable, hint_trivial_type: Bool = False](
 
     @no_inline
     fn write_to[
-        W: Writer, U: Representable & Copyable & Movable, //
-    ](self: List[U, *_], mut writer: W):
+        U: Representable & Copyable & Movable, //
+    ](self: List[U, *_], mut writer: Some[Writer]):
         """Write `my_list.__str__()` to a `Writer`.
 
         Parameters:
-            W: A type conforming to the Writable trait.
             U: The type of the List elements. Must have the trait
                 `Representable`.
 
@@ -619,12 +618,12 @@ struct List[T: ExplicitlyCopyable & Movable, hint_trivial_type: Bool = False](
     # ===-------------------------------------------------------------------===#
 
     fn byte_length(self) -> Int:
-        """Gets the byte length of the List (`len(self) * sizeof[T]()`).
+        """Gets the byte length of the List (`len(self) * size_of[T]()`).
 
         Returns:
-            The byte length of the List (`len(self) * sizeof[T]()`).
+            The byte length of the List (`len(self) * size_of[T]()`).
         """
-        return len(self) * sizeof[T]()
+        return len(self) * size_of[T]()
 
     @no_inline
     fn _realloc(mut self, new_capacity: Int):
@@ -1006,7 +1005,7 @@ struct List[T: ExplicitlyCopyable & Movable, hint_trivial_type: Bool = False](
         while length > 1:
             var half = length >> 1
             length -= half
-            cursor += Int(b[cursor + half - 1] < needle) * half
+            cursor += UInt(Int(b[cursor + half - 1] < needle) * half)
 
         return Optional(cursor) if b[cursor] == needle else None
 
@@ -1063,7 +1062,7 @@ struct List[T: ExplicitlyCopyable & Movable, hint_trivial_type: Bool = False](
         """
 
         var normalized_idx = normalize_index["List", assert_always=False](
-            idx, len(self)
+            idx, UInt(len(self))
         )
         return (self._data + normalized_idx)[]
 

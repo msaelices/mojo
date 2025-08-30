@@ -361,7 +361,10 @@ struct StringLiteral[value: __mlir_type.`!kgen.string`](
         # FIXME(MSTDL-160):
         #   Enforce UTF-8 encoding in StringLiteral so this is actually
         #   guaranteed to be valid.
-        return StaticString(ptr=self.unsafe_ptr(), length=self.byte_length())
+        return StaticString(
+            ptr=self.unsafe_ptr(),
+            length=UInt(self.byte_length()),
+        )
 
     @always_inline("nodebug")
     fn as_bytes(self) -> Span[Byte, StaticConstantOrigin]:
@@ -373,15 +376,12 @@ struct StringLiteral[value: __mlir_type.`!kgen.string`](
         """
 
         return Span[Byte, StaticConstantOrigin](
-            ptr=self.unsafe_ptr(), length=self.byte_length()
+            ptr=self.unsafe_ptr(), length=UInt(self.byte_length())
         )
 
-    fn write_to[W: Writer](self, mut writer: W):
+    fn write_to(self, mut writer: Some[Writer]):
         """
         Formats this string literal to the provided Writer.
-
-        Parameters:
-            W: A type conforming to the Writable trait.
 
         Args:
             writer: The object to write to.

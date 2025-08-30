@@ -33,8 +33,8 @@ from math import (
     tanh,
 )
 from random import randn, seed
-from sys import bitwidthof, external_call, llvm_intrinsic
-from sys.info import simdwidthof, sizeof
+from sys import bit_width_of, external_call, llvm_intrinsic
+from sys.info import simd_width_of, size_of
 from sys.intrinsics import _type_is_eq
 
 import compiler_internal as compiler
@@ -72,8 +72,9 @@ from linalg.fp8_quantization import (
     matmul_dynamic_scaled_fp8,
     quantize_dynamic_scaled_fp8,
     quantize_static_scaled_fp8,
+    convert_e4m3fn_to_e4m3fnuz,
 )
-from linalg.grouped_matmul import grouped_matmul
+from linalg.grouped_matmul import grouped_matmul, grouped_matmul_vendor
 from linalg.matmul import matmul
 from linalg.matrix_band_part import matrix_band_part
 from linalg.packing import _pack_b_ndbuffer_impl, pack_matmul_b_shape_func
@@ -159,11 +160,9 @@ from nn.kv_cache_ragged import (
     generic_fused_qkv_matmul_kv_cache_paged_ragged,
     generic_fused_qkv_matmul_kv_cache_paged_ragged_bias,
     generic_fused_qkv_matmul_kv_cache_paged_ragged_scale,
-    k_grouped_matmul_ragged_paged,
     k_matmul_ragged_paged,
     kv_matmul_ragged_paged,
     unfused_qkv_matmul_ragged_paged_gguf_quantized,
-    v_grouped_matmul_ragged_paged,
     generic_kv_cache_radd_dispatch,
 )
 from nn.mha import flash_attention
@@ -181,6 +180,7 @@ from nn.normalization import (
 from nn.pad import pad_constant, pad_reflect, pad_repeat, pad_shape
 from nn.pad_gpu import pad_constant as pad_constant_gpu
 from nn.pool import avg_pool, max_pool, pool_shape, pool_shape_ceil
+from nn.rand_normal import random_normal
 from nn.rand_uniform import random_uniform
 from nn.repeat_interleave import repeat_interleave, repeat_interleave_shape
 from nn.reshape import reshape, reshape_shape
@@ -846,6 +846,30 @@ struct Abs(ElementwiseUnaryOp):
         width: Int,
     ](x: SIMD[dtype, width]) -> SIMD[dtype, width]:
         return abs(x)
+
+
+@compiler.register("mo.convert_e4m3fn_to_e4m3fnuz")
+struct ConvertE4M3FNToE4M3FNUZ:
+    @staticmethod
+    fn execute[
+        target: StaticString,
+        _trace_name: StaticString,
+    ](
+        output: OutputTensor[dtype = DType.float8_e4m3fnuz, rank=2],
+        input: InputTensor[dtype = DType.float8_e4m3fn, rank=2],
+        ctx: DeviceContextPtr,
+    ) raises:
+        convert_e4m3fn_to_e4m3fnuz(
+            managed_tensor_slice_to_ndbuffer(input),
+            managed_tensor_slice_to_ndbuffer(output),
+            ctx.get_device_context(),
+        )
+
+    @staticmethod
+    fn shape(
+        input: InputTensor[dtype = DType.float8_e4m3fn, rank=2],
+    ) -> IndexList[2]:
+        return IndexList[2](input.dim_size[0](), input.dim_size[1]())
 
 
 @compiler.register("mo.squeeze_shape")
@@ -2012,17 +2036,21 @@ struct Slice:
         ],
     ):
         var view_buffer = slice_as_view(
-            managed_tensor_slice_to_ndbuffer(input),
-            managed_tensor_slice_to_ndbuffer(starts),
-            managed_tensor_slice_to_ndbuffer(stops),
-            managed_tensor_slice_to_ndbuffer(steps),
+            input.to_layout_tensor(),
+            starts.to_layout_tensor(),
+            stops.to_layout_tensor(),
+            steps.to_layout_tensor(),
         )
 
-        return __type_of(result)(
-            view_buffer.data,
-            view_buffer.get_shape(),
-            view_buffer.get_strides(),
-        )
+        result = {
+            view_buffer.ptr,
+            rebind[IndexList[rank]](
+                view_buffer.runtime_layout.shape.value.canonicalize()
+            ),
+            rebind[IndexList[rank]](
+                view_buffer.runtime_layout.stride.value.canonicalize()
+            ),
+        }
 
     @staticmethod
     fn execute[
@@ -2055,11 +2083,13 @@ struct Slice:
         stops: InputTensor[rank=1],
         steps: InputTensor[rank=1],
     ) raises -> IndexList[input.rank]:
-        return slice_shape[single_thread_blocking_override=True](
-            managed_tensor_slice_to_ndbuffer(input),
-            managed_tensor_slice_to_ndbuffer(starts),
-            managed_tensor_slice_to_ndbuffer(stops),
-            managed_tensor_slice_to_ndbuffer(steps),
+        return rebind[IndexList[input.rank]](
+            slice_shape[single_thread_blocking_override=True](
+                input.to_layout_tensor(),
+                starts.to_layout_tensor(),
+                stops.to_layout_tensor(),
+                steps.to_layout_tensor(),
+            )
         )
 
 
@@ -2101,11 +2131,11 @@ struct MutableStoreSlice:
         ctx: DeviceContextPtr,
     ) raises:
         copy_to_slice[target=target](
-            managed_tensor_slice_to_ndbuffer(to_buffer),
-            managed_tensor_slice_to_ndbuffer(in_slice),
-            managed_tensor_slice_to_ndbuffer(starts),
-            managed_tensor_slice_to_ndbuffer(stops),
-            managed_tensor_slice_to_ndbuffer(steps),
+            to_buffer.to_layout_tensor(),
+            in_slice.to_layout_tensor(),
+            starts.to_layout_tensor(),
+            stops.to_layout_tensor(),
+            steps.to_layout_tensor(),
             ctx,
         )
 
@@ -2155,17 +2185,21 @@ struct SliceDim:
         ],
     ):
         var view_buffer = slice_dim_as_view[dim=axis](
-            managed_tensor_slice_to_ndbuffer(input),
+            input.to_layout_tensor(),
             Int(starts),
             Int(stops),
             Int(steps),
         )
 
-        return __type_of(result)(
-            view_buffer.data,
-            view_buffer.get_shape(),
-            view_buffer.get_strides(),
-        )
+        result = {
+            view_buffer.ptr,
+            rebind[IndexList[rank]](
+                view_buffer.runtime_layout.shape.value.canonicalize()
+            ),
+            rebind[IndexList[rank]](
+                view_buffer.runtime_layout.stride.value.canonicalize()
+            ),
+        }
 
     @staticmethod
     fn execute[
@@ -3152,7 +3186,7 @@ struct GatherSum:
         ]:
             return x + y
 
-        gather_reduce[output.dtype, 0, 1, simdwidthof[output.dtype](), add](
+        gather_reduce[output.dtype, 0, 1, simd_width_of[output.dtype](), add](
             output_ndbuffer, input_ndbuffer, indices_ndbuffer, 0
         )
 
@@ -3781,7 +3815,7 @@ struct LinalgBandPart:
 
         matrix_band_part[
             input_0_fn=input_fn,
-            simd_width = simdwidthof[dtype](),
+            simd_width = simd_width_of[dtype](),
             single_thread_blocking_override=False,
             target=target,
         ](
@@ -4042,23 +4076,30 @@ struct RepeatInterleave:
 @compiler.register("mo.random.normal")
 struct RandomNormal:
     @staticmethod
-    fn execute(
-        output: OutputTensor,
+    fn execute[
+        dtype: DType,
+        target: StaticString,
+    ](
+        output: FusedOutputTensor[dtype=dtype],
         shape: InputTensor[rank=1],
-        mean: Scalar,
-        variance: Scalar,
+        mean: Scalar[dtype],
+        variance: Scalar[dtype],
         seed_value: Scalar,
-    ):
-        seed(Int(seed_value))
-        var num_elements = 1
-        # TODO: Add __len__ support in InputTensor.
-        for i in range(shape.dim_size[0]()):
-            num_elements *= Int(shape[i])
-        randn(
-            output._ptr,
-            num_elements,
-            mean.cast[DType.float64](),
-            variance.cast[DType.float64](),
+        ctx: DeviceContextPtr,
+    ) capturing raises:
+        @parameter
+        @always_inline
+        fn output_fn[
+            _width: Int,
+            _rank: Int,
+        ](coords: IndexList[_rank], val: SIMD[dtype, _width]):
+            output._lambda_store[width=_width](
+                rebind[IndexList[output.rank]](coords),
+                rebind[SIMD[output.dtype, _width]](val),
+            )
+
+        random_normal[output_fn, target=target](
+            output.shape(), mean, variance, UInt64(seed_value), ctx
         )
 
     @staticmethod
@@ -4080,19 +4121,29 @@ struct RandomNormal:
 @compiler.register("mo.static.random.normal")
 struct StaticRandomNormal:
     @staticmethod
-    fn execute(
-        output: OutputTensor,
-        mean: Scalar,
-        variance: Scalar,
+    fn execute[
+        dtype: DType,
+        target: StaticString,
+    ](
+        output: FusedOutputTensor[dtype=dtype],
+        mean: Scalar[dtype],
+        variance: Scalar[dtype],
         seed_value: Scalar,
-    ):
-        seed(Int(seed_value))
-        var num_elements = output.size()
-        randn(
-            output._ptr,
-            num_elements,
-            mean.cast[DType.float64](),
-            variance.cast[DType.float64](),
+        ctx: DeviceContextPtr,
+    ) capturing raises:
+        @parameter
+        @always_inline
+        fn output_fn[
+            _width: Int,
+            _rank: Int,
+        ](coords: IndexList[_rank], val: SIMD[dtype, _width]):
+            output._lambda_store[width=_width](
+                rebind[IndexList[output.rank]](coords),
+                rebind[SIMD[output.dtype, _width]](val),
+            )
+
+        random_normal[output_fn, target=target](
+            output.shape(), mean, variance, UInt64(seed_value), ctx
         )
 
 
@@ -4173,7 +4224,7 @@ struct Softmax:
 
         softmax[
             output.dtype,
-            simdwidthof[output.dtype](),
+            simd_width_of[output.dtype](),
             output.rank,
             output_ndbuffer.shape,
             input_fn,
@@ -4210,7 +4261,7 @@ struct LogSoftmax:
 
         logsoftmax[
             output.dtype,
-            simdwidthof[output.dtype](),
+            simd_width_of[output.dtype](),
             output.rank,
             output_ndbuffer.shape,
             input_fn,
@@ -5481,7 +5532,7 @@ struct GGMLQ40Dequantize:
     @staticmethod
     @always_inline
     fn shape(input: InputTensor[dtype = DType.uint8, rank=2]) -> IndexList[2]:
-        alias block_nbytes = sizeof[Q4sym[group_size=32]]()
+        alias block_nbytes = size_of[Q4sym[group_size=32]]()
         alias quants_per_block = 32
         var num_block_per_batch = (
             input.size() // input.dim_size[0]()
@@ -5562,7 +5613,7 @@ struct GGMLQ4KDequantize:
     @staticmethod
     @always_inline
     fn shape(input: InputTensor[dtype = DType.uint8, rank=2]) -> IndexList[2]:
-        alias block_nbytes = sizeof[block_Q4_K]()
+        alias block_nbytes = size_of[block_Q4_K]()
         alias elements_per_block = block_QK_K.quantized_k
 
         var num_block_per_batch = (
@@ -5655,7 +5706,7 @@ struct GGMLQ6KDequantize:
     @staticmethod
     @always_inline
     fn shape(input: InputTensor[dtype = DType.uint8, rank=2]) -> IndexList[2]:
-        alias block_nbytes = sizeof[block_Q6_K]()
+        alias block_nbytes = size_of[block_Q6_K]()
         alias elements_per_block = block_QK_K.quantized_k
 
         var num_block_per_batch = (
@@ -8124,7 +8175,7 @@ fn _check_signal_buffer_size(
     signal_buffer_size: Int, input_size_bytes: Int
 ) raises:
     # The signal buffer has to be large enough to hold the entire input buffer.
-    var min_signal_buffer_size = sizeof[Signal]() + input_size_bytes
+    var min_signal_buffer_size = size_of[Signal]() + input_size_bytes
     if signal_buffer_size < min_signal_buffer_size:
         raise Error(
             "Expected signal buffer to be at least ",
@@ -8184,7 +8235,7 @@ struct DistributedAllReduceSum:
             ),
         ]()
 
-        var input_size_bytes = inputs[0].size() * sizeof[dtype]()
+        var input_size_bytes = inputs[0].size() * size_of[dtype]()
         _check_signal_buffer_size(signal_buffers[0].size(), input_size_bytes)
 
         var dev_ctxs = List[DeviceContext]()
@@ -8272,7 +8323,7 @@ struct DistributedAllGather:
             ),
         ]()
 
-        var input_size_bytes = inputs[0].size() * sizeof[dtype]()
+        var input_size_bytes = inputs[0].size() * size_of[dtype]()
         _check_signal_buffer_size(signal_buffers[0].size(), input_size_bytes)
 
         var dev_ctxs = List[DeviceContext]()
@@ -8356,7 +8407,7 @@ struct DistributedMatmulAllReduce:
             ),
         ]()
 
-        var input_size_bytes = outputs[0].size() * sizeof[c_type]()
+        var input_size_bytes = outputs[0].size() * size_of[c_type]()
         _check_signal_buffer_size(signal_buffers[0].size(), input_size_bytes)
 
         var dev_ctxs = List[DeviceContext]()
@@ -8911,10 +8962,7 @@ struct Struct_lora_sgmv_ragged:
         constrained[is_gpu[target](), "SGMV only supported on GPUs"]()
         cuda_ctx = context.get_device_context()
 
-        if lora_ids.dim_size[0]() == 0:
-            return
-
-        grouped_matmul(
+        grouped_matmul_vendor(
             managed_tensor_slice_to_ndbuffer(c),
             managed_tensor_slice_to_ndbuffer(a),
             managed_tensor_slice_to_ndbuffer(b),
@@ -8923,92 +8971,6 @@ struct Struct_lora_sgmv_ragged:
             Int(max_seq_length),
             lora_ids.dim_size[0](),
             cuda_ctx,
-        )
-
-
-# ===-----------------------------------------------------------------------===#
-# K Cache Grouped Matmul Kernel
-# ===-----------------------------------------------------------------------===#
-
-
-@compiler.register("mo.k_grouped.matmul.ragged.paged")
-struct Struct_k_grouped_matmul_ragged_paged:
-    @always_inline
-    @staticmethod
-    fn execute[
-        dtype: DType,
-        num_heads: Int,
-        head_dim: Int,
-        page_size: Int, //,
-        target: StaticString,
-    ](
-        a: InputTensor[dtype=dtype, rank=2],
-        b: InputTensor[dtype=dtype, rank=3],
-        input_row_offsets: InputTensor[dtype = DType.uint32, rank=1],
-        ids: InputTensor[dtype = DType.int32, rank=1],
-        max_num_tokens_per_expert: UInt32,
-        kv_collection: PagedKVCacheCollection[
-            dtype,
-            KVCacheStaticParams(num_heads=num_heads, head_size=head_dim),
-            page_size,
-        ],
-        layer_idx: UInt32,
-        context: DeviceContextPtr,
-    ) raises:
-        constrained[is_gpu[target](), "k_grouped_matmul only supports GPUs"]()
-        k_grouped_matmul_ragged_paged[dtype, target=target,](
-            managed_tensor_slice_to_ndbuffer(a),
-            managed_tensor_slice_to_ndbuffer(b),
-            managed_tensor_slice_to_ndbuffer(input_row_offsets),
-            managed_tensor_slice_to_ndbuffer(ids),
-            Int(max_num_tokens_per_expert),
-            ids.dim_size[0](),
-            kv_collection,
-            layer_idx,
-            context,
-        )
-
-
-# ===-----------------------------------------------------------------------===#
-# V Cache Grouped Matmul Kernel
-# ===-----------------------------------------------------------------------===#
-
-
-@compiler.register("mo.v_grouped.matmul.ragged.paged")
-struct Struct_v_grouped_matmul_ragged_paged:
-    @always_inline
-    @staticmethod
-    fn execute[
-        dtype: DType,
-        num_heads: Int,
-        head_dim: Int,
-        page_size: Int, //,
-        target: StaticString,
-    ](
-        a: InputTensor[dtype=dtype, rank=2],
-        b: InputTensor[dtype=dtype, rank=3],
-        input_row_offsets: InputTensor[dtype = DType.uint32, rank=1],
-        ids: InputTensor[dtype = DType.int32, rank=1],
-        max_num_tokens_per_expert: UInt32,
-        kv_collection: PagedKVCacheCollection[
-            dtype,
-            KVCacheStaticParams(num_heads=num_heads, head_size=head_dim),
-            page_size,
-        ],
-        layer_idx: UInt32,
-        context: DeviceContextPtr,
-    ) raises:
-        constrained[is_gpu[target](), "v_grouped_matmul only supports GPUs"]()
-        v_grouped_matmul_ragged_paged[dtype, target=target,](
-            managed_tensor_slice_to_ndbuffer(a),
-            managed_tensor_slice_to_ndbuffer(b),
-            managed_tensor_slice_to_ndbuffer(input_row_offsets),
-            managed_tensor_slice_to_ndbuffer(ids),
-            Int(max_num_tokens_per_expert),
-            ids.dim_size[0](),
-            kv_collection,
-            layer_idx,
-            context,
         )
 
 

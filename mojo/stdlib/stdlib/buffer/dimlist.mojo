@@ -79,7 +79,6 @@ struct Dim(
         self = Dim(index(value))
 
     @always_inline("builtin")
-    @implicit
     fn __init__(out self, value: __mlir_type.index):
         """Creates a statically-known dimension.
 
@@ -170,7 +169,7 @@ struct Dim(
         Returns:
             The corresponding __mlir_type.index value.
         """
-        return self.get().value
+        return self.get()._mlir_value
 
     @always_inline("nodebug")
     fn __mul__(self, rhs: Dim) -> Dim:
@@ -253,18 +252,6 @@ struct Dim(
             return self.get() == rhs.get()
         return (not self) == (not rhs)
 
-    @always_inline("nodebug")
-    fn __ne__(self, rhs: Dim) -> Bool:
-        """Compare two dimensions for inequality.
-
-        Args:
-            rhs: The dimension to compare.
-
-        Returns:
-            True if they are not equal.
-        """
-        return not self == rhs
-
     @no_inline
     fn __str__(self) -> String:
         """Converts the Dim to a String. If the value is unknown, then the
@@ -276,12 +263,9 @@ struct Dim(
         return String.write(self)
 
     @no_inline
-    fn write_to[W: Writer](self, mut writer: W):
+    fn write_to(self, mut writer: Some[Writer]):
         """
         Formats this DimList to the provided Writer.
-
-        Parameters:
-            W: A type conforming to the Writable trait.
 
         Args:
             writer: The object to write to.
@@ -334,7 +318,6 @@ struct DimList(Representable, Sized, Stringable, Writable):
         self.value = VariadicList[Dim](Int(value))
 
     @always_inline("nodebug")
-    @implicit
     fn __init__[I: Indexer & Copyable & Movable](out self, values: (I,)):
         """Creates a dimension list from the given list of values.
 
@@ -347,7 +330,6 @@ struct DimList(Representable, Sized, Stringable, Writable):
         self.value = VariadicList[Dim](Int(index(values[0])))
 
     @always_inline("nodebug")
-    @implicit
     fn __init__[
         I0: Indexer & Copyable & Movable,
         I1: Indexer & Copyable & Movable,
@@ -366,7 +348,6 @@ struct DimList(Representable, Sized, Stringable, Writable):
         )
 
     @always_inline("nodebug")
-    @implicit
     fn __init__[
         I0: Indexer & Copyable & Movable,
         I1: Indexer & Copyable & Movable,
@@ -441,15 +422,16 @@ struct DimList(Representable, Sized, Stringable, Writable):
             val2: The initial dim value.
             val3: The initial dim value.
         """
-        self = VariadicList[Dim](
-            Int(index(val0)),
-            Int(index(val1)),
-            Int(index(val2)),
-            Int(index(val3)),
+        self = Self(
+            VariadicList[Dim](
+                Int(index(val0)),
+                Int(index(val1)),
+                Int(index(val2)),
+                Int(index(val3)),
+            )
         )
 
     @always_inline("nodebug")
-    @implicit
     fn __init__(out self, values: VariadicList[Dim]):
         """Creates a dimension list from the given list of values.
 
@@ -459,7 +441,6 @@ struct DimList(Representable, Sized, Stringable, Writable):
         self.value = values
 
     @always_inline("nodebug")
-    @implicit
     fn __init__(out self, *values: Dim):
         """Creates a dimension list from the given Dim values.
 
@@ -668,10 +649,12 @@ struct DimList(Representable, Sized, Stringable, Writable):
         """
         constrained[length > 0, "length must be positive"]()
 
-        return VariadicList[Dim](
-            __mlir_op.`pop.variadic.splat`[
-                numElements = length.value, _type = Variadic[Dim]
-            ](Dim())
+        return Self(
+            VariadicList[Dim](
+                __mlir_op.`pop.variadic.splat`[
+                    numElements = length._mlir_value, _type = Variadic[Dim]
+                ](Dim())
+            )
         )
 
     fn __str__(self) -> String:
@@ -713,12 +696,9 @@ struct DimList(Representable, Sized, Stringable, Writable):
 
         return True
 
-    fn write_to[W: Writer](self, mut writer: W):
+    fn write_to(self, mut writer: Some[Writer]):
         """
         Formats this DimList to the provided Writer.
-
-        Parameters:
-            W: A type conforming to the Writable trait.
 
         Args:
             writer: The object to write to.

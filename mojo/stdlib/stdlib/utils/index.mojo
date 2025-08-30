@@ -21,7 +21,7 @@ from utils import IndexList
 """
 
 from hashlib.hasher import Hasher
-from sys import bitwidthof
+from sys import bit_width_of
 
 from builtin.dtype import _int_type_of_width, _uint_type_of_width
 
@@ -202,7 +202,6 @@ struct IndexList[size: Int, *, element_type: DType = DType.int64](
 
     @doc_private
     @always_inline
-    @implicit
     fn __init__(out self, value: __mlir_type.index):
         """Constructs a sized 1 static int tuple of given the element value.
 
@@ -242,7 +241,6 @@ struct IndexList[size: Int, *, element_type: DType = DType.int64](
         self = tup
 
     @always_inline
-    @implicit
     fn __init__(out self, elems: (Int, Int, Int)):
         """Constructs a static int tuple given a tuple of integers.
 
@@ -268,7 +266,6 @@ struct IndexList[size: Int, *, element_type: DType = DType.int64](
         self = tup
 
     @always_inline
-    @implicit
     fn __init__(out self, elems: (Int, Int, Int, Int)):
         """Constructs a static int tuple given a tuple of integers.
 
@@ -310,19 +307,18 @@ struct IndexList[size: Int, *, element_type: DType = DType.int64](
 
     @always_inline
     @implicit
-    fn __init__(out self, elem: Int):
+    fn __init__(out self, fill: Int):
         """Constructs a static int tuple given a set of arguments.
 
         Args:
-            elem: The elem to splat into the tuple.
+            fill: The elem to splat into the tuple.
         """
         constrained[
             element_type.is_integral(), "Element type must be of integral type."
         ]()
-        self.data = StaticTuple[_, size](fill=Self._int_type(elem))
+        self.data = StaticTuple[_, size](fill=Self._int_type(fill))
 
     @always_inline
-    @implicit
     fn __init__(out self, values: VariadicList[Int]):
         """Creates a tuple constant using the specified values.
 
@@ -587,21 +583,6 @@ struct IndexList[size: Int, *, element_type: DType = DType.int64](
         )
 
     @always_inline
-    fn __ne__(self, rhs: Self) -> Bool:
-        """Compares this tuple to another tuple for non-equality.
-
-        The tuples are non-equal if at least one element of LHS isn't equal to
-        the corresponding element from RHS.
-
-        Args:
-            rhs: The other tuple.
-
-        Returns:
-            The comparison result.
-        """
-        return not (self == rhs)
-
-    @always_inline
     fn __lt__(self, rhs: Self) -> Bool:
         """Compares this tuple to another tuple using LT comparison.
 
@@ -698,12 +679,9 @@ struct IndexList[size: Int, *, element_type: DType = DType.int64](
         )
 
     @no_inline
-    fn write_to[W: Writer](self, mut writer: W):
+    fn write_to(self, mut writer: Some[Writer]):
         """
         Formats this IndexList value to the provided Writer.
-
-        Parameters:
-            W: A type conforming to the Writable trait.
 
         Args:
             writer: The object to write to.
@@ -718,7 +696,7 @@ struct IndexList[size: Int, *, element_type: DType = DType.int64](
             var element = self[i]
 
             @parameter
-            if bitwidthof[element_type]() == 32:
+            if bit_width_of[element_type]() == 32:
                 writer.write(Int32(element))
             else:
                 writer.write(Int64(element))

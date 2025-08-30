@@ -15,8 +15,10 @@ from algorithm.functional import unswitch
 from buffer import NDBuffer
 from collections import OptionalReg
 from gpu import thread_idx
+from gpu.globals import WARPGROUP_SIZE
+from gpu.mma import st_matrix
 from gpu.host import DeviceContext
-from gpu.memory import AddressSpace
+from gpu.memory import AddressSpace, bitcast
 from gpu.sync import async_copy_arrive
 import gpu.warp as warp
 from layout.int_tuple import IntTuple
@@ -25,8 +27,10 @@ from layout.layout_tensor import (
     LayoutTensor,
     cp_async_k_major,
     cp_async_mn_major,
+    copy_local_to_shared,
 )
 from gpu.host._nvidia_cuda import TensorMapSwizzle
+from layout.swizzle import Swizzle
 from layout.runtime_layout import RuntimeLayout, RuntimeTuple
 from layout.tma_async import (
     PipelineState,
@@ -34,7 +38,7 @@ from layout.tma_async import (
     TMANestedTensorTile,
     create_nested_tma_tile,
 )
-from layout.tensor_core_async import tile_layout_k_major
+from layout.tensor_core_async import tile_layout_k_major, st_matrix_n_layout
 from math import ceildiv
 from math.constants import log2e
 from nn.mha_mask import MHAMask, TileMaskStatus
@@ -57,7 +61,7 @@ from nn.mha_utils import (
 )
 from tensor_internal import ManagedTensorSlice
 from utils.index import Index, IndexList
-from sys import sizeof
+from sys import size_of
 
 
 @register_passable("trivial")
@@ -122,7 +126,7 @@ struct MHAPosition[
             return self.head_idx // Self.group
 
     @no_inline
-    fn write_to[W: Writer](self, mut writer: W):
+    fn write_to(self, mut writer: Some[Writer]):
         writer.write(
             "(",
             self.q_out_offset,
@@ -420,7 +424,7 @@ fn _produce[
         consumed_mbar[write_idx].wait(write_phase)
 
     p_mbar = produced_mbar + write_idx
-    p_mbar[0].expect_bytes(BN * depth * sizeof[kv_t.dtype]())
+    p_mbar[0].expect_bytes(BN * depth * size_of[kv_t.dtype]())
     tma_tile.async_copy(smem_tile, p_mbar[0], (UInt(src_col), UInt(src_row)))
 
 
@@ -705,7 +709,7 @@ fn produce[
     alias q_smem_size = (2 * q_size if persistent else q_size)
 
     alias q_copy_rows = max(group, 8) if decoding else Int(BM)
-    alias qk_bytes = (q_copy_rows + BN) * depth * sizeof[qkv_type]()
+    alias qk_bytes = (q_copy_rows + BN) * depth * size_of[qkv_type]()
 
     tile_state = tile_state_arg
     position = initial_position
@@ -778,7 +782,7 @@ fn produce[
         @parameter
         if wait:
             consumed_mbar_kv[write_idx].wait(write_phase)
-            alias bytes = BN * depth * sizeof[qkv_type]()
+            alias bytes = BN * depth * size_of[qkv_type]()
             p_mbar.expect_bytes(bytes)
         k_tma_op.async_copy(k_sub, p_mbar, (UInt(col), UInt(row)))
         state.step()
@@ -794,7 +798,7 @@ fn produce[
         ref p_mbar = produced_mbar_kv[write_idx]
         v_sub = v_tile(write_idx)
         consumed_mbar_kv[write_idx].wait(write_phase)
-        alias bytes = BN * depth * sizeof[qkv_type]()
+        alias bytes = BN * depth * size_of[qkv_type]()
         p_mbar.expect_bytes(bytes)
         v_tma_op.async_copy(v_sub, p_mbar, (UInt(col), UInt(row)))
         state.step()
@@ -894,7 +898,7 @@ fn produce[
                     break
                 ref pq_mbar = produced_mbar_q[q_idx_old]
                 position = get_position(docontinue.value())
-                pq_mbar.expect_bytes(q_copy_rows * depth * sizeof[qkv_type]())
+                pq_mbar.expect_bytes(q_copy_rows * depth * size_of[qkv_type]())
 
                 @parameter
                 for d in range((depth // 64) if decoding else 1):
@@ -927,3 +931,92 @@ fn produce[
         kv_col_prev = kv_col
 
     produce_v(write_pipeline_states, kv_row_prev, kv_col_prev)
+
+
+fn output_reg_to_smem[
+    BM: Int,
+    BN: Int,
+    WM: Int,
+    depth: Int,
+    kv_type: DType,
+    output_type: DType,
+    accum_type: DType,
+    reg_layout: Layout,
+    o_frag_size: Int,
+    num_consumer_threads: Int,
+    simd_size: Int,
+    swizzle: Swizzle,
+    num_m_mmas: Int,
+    num_consumer: Int,
+    mma_thread_layout: Layout,
+](
+    tid: UInt32,
+    local_warp_group_idx: UInt32,
+    warp_x: UInt32,
+    warp_y: UInt32,
+    q_smem: UnsafePointer[
+        Scalar[kv_type], address_space = AddressSpace.SHARED, alignment=128
+    ],
+    output_reg_tile: LayoutTensor[
+        accum_type,
+        reg_layout,
+        MutableAnyOrigin,
+        address_space = AddressSpace.LOCAL,
+    ],
+) -> LayoutTensor[
+    output_type,
+    Layout.row_major(BM, depth),
+    MutableAnyOrigin,
+    address_space = AddressSpace.SHARED,
+]:
+    accum_smem_tile = LayoutTensor[
+        output_type,
+        Layout.row_major(BM, depth),
+        address_space = AddressSpace.SHARED,
+    ](q_smem.bitcast[Scalar[output_type]]())
+    alias use_stmatrix = accum_type is DType.float32 and depth % 16 == 0 and size_of[
+        output_type
+    ]() == 2 and o_frag_size % 8 == 0
+    if use_stmatrix:
+        var st_matrix_rt_layout = RuntimeLayout[
+            st_matrix_n_layout[output_type, depth, num_m_mmas, num_consumer](),
+            element_type = DType.int32,
+            linear_idx_type = DType.int32,
+        ]()
+
+        @parameter
+        for m_mma in range(num_m_mmas):
+
+            @parameter
+            for i in range(depth // 16):
+                var warp_group_thread_idx = tid % WARPGROUP_SIZE
+                var st_matrix_args = RuntimeTuple[
+                    IntTuple(UNKNOWN_VALUE, IntTuple(i, m_mma, UNKNOWN_VALUE))
+                ](
+                    Int(warp_group_thread_idx),
+                    i,
+                    m_mma,
+                    Int(local_warp_group_idx),
+                )
+                var accum_smem_idx = swizzle(
+                    st_matrix_rt_layout(st_matrix_args)
+                )
+                var offset = accum_smem_tile.ptr.offset(accum_smem_idx)
+                var output_frag = (
+                    output_reg_tile.tile[1, 8](m_mma, i)
+                    .load[8](0, 0)
+                    .cast[output_type]()
+                )
+                var output_frag_f32_packed = bitcast[DType.float32, 4](
+                    output_frag
+                )
+                st_matrix[simd_width=4](offset, output_frag_f32_packed)
+    else:
+        accum_smem_warp_tile = accum_smem_tile.tile[WM, BN](
+            Int(warp_y), Int(warp_x)
+        )
+        copy_local_to_shared[thread_layout=mma_thread_layout, swizzle=swizzle](
+            accum_smem_warp_tile.vectorize[1, 2](),
+            output_reg_tile.vectorize[1, 2]().transpose(),
+        )
+    return accum_smem_tile

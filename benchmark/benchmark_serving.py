@@ -42,6 +42,7 @@ from benchmark_datasets import (
     AxolotlBenchmarkDataset,
     BenchmarkDataset,
     CodeDebugBenchmarkDataset,
+    ObfuscatedConversationsBenchmarkDataset,
     RandomBenchmarkDataset,
     ShareGPTBenchmarkDataset,
     SonnetBenchmarkDataset,
@@ -676,15 +677,15 @@ async def chat_session_driver(
     lora_id: str,
     api_url: str,
     request_func: Callable[
-        [RequestFuncInput, Optional[tqdm]],
+        [RequestFuncInput],
         Awaitable[RequestFuncOutput],
     ],
     request_counter: RequestCounter,
     chat_session: ChatSession,
     max_chat_len: int,
     delay_between_chat_turns: Optional[int],
-    pbar: Optional[tqdm] = None,
     skip_session_count: Optional[int] = None,
+    ignore_first_turn_stats: bool = False,
 ) -> list[RequestFuncOutput]:
     request_func_input = RequestFuncInput(
         model=model_id,
@@ -727,18 +728,19 @@ async def chat_session_driver(
         request_func_input.prompt = message_history
         request_func_input.prompt_len = chat_len
         request_func_input.max_tokens = output_len
-        response = await request_func(request_func_input, pbar)
+        response = await request_func(request_func_input)
         if (
             skip_session_count is None
             or chat_session.id is None
             or chat_session.id >= skip_session_count
-        ):
+        ) and not (ignore_first_turn_stats and content_idx == 0):
             session_outputs.append(response)
 
         if not response.success:
-            logger.error(
-                f"Ending chat session {chat_session.id} due to server error response: {response.error}"
-            )
+            if not response.cancelled:
+                logger.error(
+                    f"Ending chat session {chat_session.id} due to server error response: {response.error}"
+                )
             break
 
         content_idx += 2
@@ -787,7 +789,14 @@ async def benchmark(
     top_p: float,
     max_benchmark_duration_s: Optional[int],
     warmup_delay_ms: float = 0,
+    ignore_first_turn_stats: bool = False,
 ):
+    if ignore_first_turn_stats and ttft_skip_requests:
+        logger.warning(
+            "--ignore-first-turn-stats and --ttft-skip-requests both set. Ignoring --ttft-skip-requests due to first turn in each chat already being ignored."
+        )
+        ttft_skip_requests = 0
+
     full_backend = backend + ("-chat" if chat else "")
     if full_backend in ASYNC_REQUEST_FUNCS:
         request_func = ASYNC_REQUEST_FUNCS[full_backend]
@@ -942,6 +951,17 @@ async def benchmark(
             total_sent_requests=0,
         )
 
+        # Limit the request function only to deal with timeouts.
+        async def limited_request_func(
+            request_func_input: RequestFuncInput,
+        ) -> RequestFuncOutput:
+            if benchmark_should_end_time is not None:
+                if time.perf_counter_ns() >= benchmark_should_end_time:
+                    return RequestFuncOutput(cancelled=True)
+            return await request_func(
+                request_func_input=request_func_input, pbar=pbar
+            )
+
         # apply the semaphore at the session level
         # ex: with max_concurrency = 1,
         # the first session finishes before the second session starts
@@ -953,26 +973,26 @@ async def benchmark(
                     model_id,
                     lora_id,
                     api_url,
-                    request_func,
+                    limited_request_func,
                     request_counter,
                     chat_session,
                     tokenizer.model_max_length,
                     delay_between_chat_turns,
-                    pbar,
                     ttft_skip_requests,
+                    ignore_first_turn_stats,
                 )
             async with semaphore:
                 return await chat_session_driver(
                     model_id,
                     lora_id,
                     api_url,
-                    request_func,
+                    limited_request_func,
                     request_counter,
                     chat_session,
                     tokenizer.model_max_length,
                     delay_between_chat_turns,
-                    pbar,
                     ttft_skip_requests,
+                    ignore_first_turn_stats,
                 )
 
         for idx, chat_session in enumerate(chat_sessions):
@@ -1329,6 +1349,28 @@ def main(args: argparse.Namespace) -> None:
                 args.output_lengths is None and not args.record_output_lengths
             ),
         )
+    elif isinstance(benchmark_dataset, ObfuscatedConversationsBenchmarkDataset):
+        if output_lengths is None:
+            output_scale = (
+                args.obfuscated_conversations_average_output_len
+                * args.obfuscated_conversations_coefficient_of_variation
+            )
+            output_lengths = np.random.normal(
+                loc=args.obfuscated_conversations_average_output_len,
+                scale=output_scale,
+                size=num_requests,
+            ).tolist()
+            output_lengths = np.round(output_lengths).astype(int).tolist()
+            output_lengths = [
+                max(output_len, 1) for output_len in output_lengths
+            ]
+        input_requests = benchmark_dataset.sample_requests(
+            num_requests=args.num_prompts,
+            tokenizer=tokenizer,
+            output_lengths=output_lengths,
+            seed=args.seed,
+            shuffle=args.obfuscated_conversations_shuffle,
+        )
     else:
         raise ValueError(f"Unknown / unsupported dataset: {benchmark_dataset}")
 
@@ -1377,6 +1419,7 @@ def main(args: argparse.Namespace) -> None:
             top_p=args.top_p,
             max_benchmark_duration_s=args.max_benchmark_duration_s,
             warmup_delay_ms=args.chat_warmup_delay_ms,
+            ignore_first_turn_stats=args.ignore_first_turn_stats,
         )
     )
 
