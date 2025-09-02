@@ -60,15 +60,15 @@ struct _Enumerate[InnerIteratorType: Iterator](
     index and the element of the original iterator.
     """
 
-    alias Element = Tuple[UInt, InnerIteratorType.Element]
+    alias Element = Tuple[Int, InnerIteratorType.Element]
     alias IteratorType[mut: Bool, //, origin: Origin[mut]]: Iterator = Self
     var _inner: InnerIteratorType
-    var _count: UInt
+    var _count: Int
 
     fn __iter__(ref self) -> Self.IteratorType[__origin_of(self)]:
         return self.copy()
 
-    fn __init__(out self, var iterator: InnerIteratorType, *, start: UInt = 0):
+    fn __init__(out self, var iterator: InnerIteratorType, *, start: Int = 0):
         self._inner = iterator^
         self._count = start
 
