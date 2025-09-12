@@ -18,6 +18,7 @@ from collections.abc import MutableSequence
 from typing import Any, Optional
 
 import numpy as np
+from max.driver import accelerator_architecture_name
 from max.dtype import DType
 from max.graph import (
     BufferValue,
@@ -928,6 +929,109 @@ def flash_attention_ragged(
     )[0].tensor
 
 
+def flash_attention_ragged_gpu(
+    q: TensorValue,
+    k: TensorValue,
+    v: TensorValue,
+    input_row_offsets: TensorValue,
+    max_seq_len: TensorValue,
+    mask_variant: MHAMaskVariant,
+    scale: float,
+    local_window_size: int = -1,
+) -> TensorValue:
+    """Computes flash attention for ragged inputs using GPU-optimized kernel
+    without a KV cache.
+
+    Args:
+        q: Query tensor of shape [total_seq_len, num_heads, head_dim] (ragged)
+        k: Key tensor of shape [total_seq_len, num_heads, head_dim] (ragged)
+        v: Value tensor of shape [total_seq_len, num_heads, head_dim] (ragged)
+        input_row_offsets: Tensor of shape [batch_size + 1] with dtype uint32.
+            Indicates where each sequence starts and ends in the ragged tensors.
+            The values should be a prefix sum (cumulative sum) of sequence lengths.
+        mask_variant: The mask variant to use for attention
+        scale: Scaling factor for attention scores
+        local_window_size: Local window size for sliding window attention
+
+    Returns:
+        Output tensor of shape [total_seq_len, num_heads, head_dim]
+    """
+    if q.dtype != k.dtype or q.dtype != v.dtype:
+        msg = (
+            "q, k, v must have matching dtypes. Got "
+            f"q.dtype={q.dtype}, k.dtype={k.dtype}, v.dtype={v.dtype}"
+        )
+        raise ValueError(msg)
+
+    expected_rank = 3
+    for name, tensor in [("q", q), ("k", k), ("v", v)]:
+        if tensor.rank != expected_rank:
+            msg = f"{name} must be rank {expected_rank}, got {tensor.rank}"
+            raise ValueError(msg)
+
+    # Validate head dimension matches across all inputs
+    head_dim = q.shape[-1]
+    if k.shape[-1] != head_dim or v.shape[-1] != head_dim:
+        msg = (
+            "All inputs must have same head_dim. Got "
+            f"q: {head_dim}, k: {k.shape[-1]}, v: {v.shape[-1]}"
+        )
+        raise ValueError(msg)
+
+    # Validate total sequence lengths match
+    if q.shape[0] != k.shape[0] or q.shape[0] != v.shape[0]:
+        msg = (
+            "q, k, v must have same total sequence length. Got "
+            f"q: {q.shape[0]}, k: {k.shape[0]}, v: {v.shape[0]}"
+        )
+        raise ValueError(msg)
+
+    # Validate num_heads match
+    if q.shape[1] != k.shape[1] or q.shape[1] != v.shape[1]:
+        msg = (
+            "q, k, v must have same num_heads. Got "
+            f"q: {q.shape[1]}, k: {k.shape[1]}, v: {v.shape[1]}"
+        )
+        raise ValueError(msg)
+
+    # Validate input_row_offsets
+    if input_row_offsets.dtype != DType.uint32:
+        msg = f"input_row_offsets must have dtype uint32, got {input_row_offsets.dtype}"
+        raise ValueError(msg)
+
+    if input_row_offsets.rank != 1:
+        msg = f"input_row_offsets must be rank 1, got {input_row_offsets.rank}"
+        raise ValueError(msg)
+
+    mha_mask_config = _MHA_MASK_CONFIG_DICT[mask_variant]
+    parameters: dict[str, int | str | DType] = {}
+    parameters["mask_str"] = mha_mask_config.attention_mask_variant.value
+    parameters["score_mod_str"] = (
+        mha_mask_config.positional_encoding_variant.value
+    )
+    parameters["local_window_size"] = local_window_size
+
+    op_name = "mo.mha.ragged.no_cache"
+    values = [q, k, v, input_row_offsets, max_seq_len]
+    values.append(
+        ops.constant(scale, dtype=DType.float32, device=DeviceRef.CPU())
+    )
+
+    return ops.custom(
+        op_name,
+        values=values,
+        out_types=[
+            TensorType(
+                dtype=q.dtype,
+                shape=q.shape,
+                device=q.device,
+            )
+        ],
+        parameters=parameters,
+        device=q.device,
+    )[0].tensor
+
+
 def flare_mla_decode_ragged(
     kv_params: KVCacheParams,
     input: TensorValue,
@@ -1737,6 +1841,7 @@ def quantize_static_scaled_float8(
     x: TensorValue,
     scale: TensorValue,
     scale_is_inverted: bool = True,
+    out_type: DType = DType.float8_e4m3fn,
 ) -> TensorValue:
     if scale.shape not in [[], [1]]:
         msg = f"expected scale to be a scalar, but got shape of {scale.shape}"
@@ -1759,11 +1864,7 @@ def quantize_static_scaled_float8(
         device=x.device,
         values=[x, scale.reshape([])],
         parameters={"scale_is_inverted": scale_is_inverted},
-        out_types=[
-            TensorType(
-                dtype=DType.float8_e4m3fn, shape=x.shape, device=x.device
-            )
-        ],
+        out_types=[TensorType(dtype=out_type, shape=x.shape, device=x.device)],
     )[0].tensor
 
 
@@ -1795,9 +1896,8 @@ def quantize_dynamic_scaled_float8(
         msg = "input must be rank 2 tensor"
         raise ValueError(msg)
 
-    if out_type != DType.float8_e4m3fn:
-        msg = "out_type must be float8_e4m3fn"
-        raise ValueError(msg)
+    if out_type not in (DType.float8_e4m3fn, DType.float8_e4m3fnuz):
+        raise ValueError("out_type must be float8_e4m3fn or float8_e4m3fnuz")
 
     group_size = (
         group_size_or_per_token
@@ -1948,14 +2048,14 @@ def matmul_static_scaled_float8(
         msg = f"expected weight_scale to be a scalar, but got shape of {weight_scale.shape}"
         raise ValueError(msg)
 
-    if input.dtype != DType.float8_e4m3fn:
-        msg = f"expected input dtype to be float8_e4m3fn, but got {input.dtype}"
-        raise ValueError(msg)
-    if weight.dtype != DType.float8_e4m3fn:
-        msg = (
-            f"expected weight dtype to be float8_e4m3fn, but got {weight.dtype}"
+    if input.dtype not in (DType.float8_e4m3fn, DType.float8_e4m3fnuz):
+        raise ValueError(
+            f"expected input dtype to be float8_e4m3fn or float8_e4m3fnuz, but got {input.dtype}"
         )
-        raise ValueError(msg)
+    if weight.dtype not in (DType.float8_e4m3fn, DType.float8_e4m3fnuz):
+        raise ValueError(
+            f"expected weight dtype to be float8_e4m3fn or float8_e4m3fnuz, but got {weight.dtype}"
+        )
 
     if input.rank != 2:
         msg = f"expected input rank to be 2, but got {input.rank}"
@@ -1994,6 +2094,92 @@ def matmul_static_scaled_float8(
             )
         ],
     )[0].tensor
+
+
+def needs_fp8_fnuz_conversion() -> bool:
+    """Check if we need to convert FP8 E4M3FN to FNUZ for AMD GPUs.
+
+    Returns:
+        True if running on AMD GPU with CDNA3 architecture, False otherwise.
+    """
+    try:
+        return "gfx94" in accelerator_architecture_name()
+    except Exception:
+        return False
+
+
+def normalize_e4m3fn_to_e4m3fnuz(
+    weight: TensorValue,
+    weight_scale: TensorValue,
+) -> tuple[TensorValue, TensorValue]:
+    """Convert E4M3FN weights to E4M3FNUZ format for AMD GPUs.
+
+    This conversion is necessary because AMD GPUs use the E4M3FNUZ format
+    while NVIDIA GPUs use E4M3FN. The key differences are:
+    1. The bit pattern 10000000 (-128) represents zero in E4M3FN but NaN in E4M3FNUZ
+    2. For the same bit representation, E4M3FNUZ values are half of E4M3FN values
+
+    Args:
+        weight: The weight tensor in E4M3FN format.
+        weight_scale: The weight scale factor.
+
+    Returns:
+        Tuple of (converted_weight, adjusted_weight_scale, adjusted_input_scale).
+    """
+    if weight.dtype != DType.float8_e4m3fn:
+        raise ValueError(
+            f"Expected weight dtype to be float8_e4m3fn, but got {weight.dtype}"
+        )
+
+    # Convert using custom op that takes float8_e4m3fn input and returns float8_e4m3fnuz
+    # Then cast back to float8_e4m3fn to maintain dtype compatibility with kernels
+    converted_weight_fnuz = ops.custom(
+        "mo.convert_e4m3fn_to_e4m3fnuz",
+        device=weight.device,
+        values=[weight],
+        out_types=[
+            TensorType(
+                dtype=DType.float8_e4m3fnuz,
+                shape=weight.shape,
+                device=weight.device,
+            )
+        ],
+    )[0].tensor
+
+    # Cast back to float8_e4m3fn to maintain kernel compatibility
+    # The bit pattern has been converted, but we need FN dtype for the kernels
+    # converted_weight = ops.cast(converted_weight_fnuz, DType.float8_e4m3fn)
+
+    # For the same bits representation, e4m3fnuz value is half of
+    # the e4m3fn value, so we should double the scaling factor to
+    # get the same dequantized value.
+    adjusted_weight_scale = weight_scale * ops.constant(
+        2.0, weight_scale.dtype, device=weight_scale.device
+    )
+
+    return converted_weight_fnuz, adjusted_weight_scale
+
+
+def convert_weights_to_fp8_fnuz_if_needed(
+    weight: TensorValue,
+    weight_scale: TensorValue,
+) -> tuple[TensorValue, TensorValue]:
+    """Convert weights and scales to FP8 FNUZ format if needed for AMD GPUs.
+
+    This utility function checks if FP8 FNUZ conversion is needed, currently onli AMD MI300 GPUs,
+    and performs the conversion if required. This centralizes the conversion logic
+    that was previously duplicated across multiple files.
+
+    Args:
+        weight: The weight tensor to potentially convert.
+        weight_scale: The weight scale factor.
+
+    Returns:
+        Tuple of (weight, weight_scale) - converted if needed, original otherwise.
+    """
+    if needs_fp8_fnuz_conversion() and weight.dtype == DType.float8_e4m3fn:
+        return normalize_e4m3fn_to_e4m3fnuz(weight, weight_scale)
+    return weight, weight_scale
 
 
 def merge_ragged_tensors(

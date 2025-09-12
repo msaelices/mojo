@@ -126,7 +126,7 @@ fn case_downcast_unbound_type(value: PythonObject) raises:
 
 
 @fieldwise_init
-struct Person(Copyable, Defaultable, Movable, Representable):
+struct Person(Defaultable, ImplicitlyCopyable, Movable, Representable):
     var name: String
     var age: Int
 
@@ -155,7 +155,7 @@ struct Person(Copyable, Defaultable, Movable, Representable):
     ) raises -> PythonObject:
         var self0 = UnsafePointer[Self, **_](
             unchecked_downcast_value=self_
-        ).origin_cast[mut=True]()
+        ).origin_cast[True]()
 
         if len(new_name) > len(self0[].name.codepoints()):
             raise Error("cannot make name longer than current name")

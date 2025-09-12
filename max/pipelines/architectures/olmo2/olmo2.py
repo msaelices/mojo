@@ -16,6 +16,7 @@ import functools
 from typing import Callable
 
 from max.dtype import DType
+from max.graph import DeviceRef, TensorType
 from max.graph.quantization import QuantizationEncoding
 from max.nn import (
     MLP,
@@ -28,11 +29,13 @@ from max.nn import (
 )
 from max.nn.kv_cache import (
     FetchPagedKVCacheCollection,
+    KVCacheManager,
     KVCacheStrategy,
 )
 from max.pipelines.architectures.llama3.llama3 import StackedMLP
 from max.pipelines.architectures.llama3.model_config import Llama3Config
 from max.pipelines.architectures.olmo2.layers.attention import Olmo2Attention
+from max.pipelines.core import TextContext
 
 from .layers.transformer import Olmo2TransformerBlock
 
@@ -40,6 +43,7 @@ from .layers.transformer import Olmo2TransformerBlock
 class Olmo2(Transformer):
     def __init__(self, config: Llama3Config) -> None:
         assert len(config.devices) == 1
+        self.config = config
         rope = Llama3RotaryEmbedding(
             dim=config.hidden_size,
             n_heads=config.num_attention_heads,
@@ -188,5 +192,33 @@ class Olmo2(Transformer):
             rope=rope,
             return_logits=config.return_logits,
             embedding_multiplier=config.embedding_multiplier,
-            logits_postprocessor=config.logits_postprocessor,
+        )
+
+    def input_types(
+        self, kv_manager: KVCacheManager[TextContext]
+    ) -> tuple[TensorType, ...]:
+        # TODO: Move input symbol computation from the manager classes.
+        # It should be possible to compute the input symbols from the model
+        # config.
+        device_ref = self.config.devices[0]
+
+        # Construct general input types
+        return_n_logits_type = TensorType(
+            DType.int64, shape=["return_n_logits"], device=DeviceRef.CPU()
+        )
+
+        kv_inputs = kv_manager.input_symbols()
+
+        # Construct Graph Inputs
+        tokens_type = TensorType(
+            DType.int64, shape=["total_seq_len"], device=device_ref
+        )
+        input_row_offsets_type = TensorType(
+            DType.uint32, shape=["input_row_offsets_len"], device=device_ref
+        )
+        return (
+            tokens_type,
+            input_row_offsets_type,
+            return_n_logits_type,
+            *kv_inputs[0],
         )

@@ -21,6 +21,7 @@ from buffer import Dim
 """
 from utils import IndexList, StaticTuple
 from builtin.variadics import Variadic
+from math import CeilDivable, ceildiv
 
 # ===-----------------------------------------------------------------------===#
 # Dim
@@ -29,6 +30,7 @@ from builtin.variadics import Variadic
 
 @register_passable("trivial")
 struct Dim(
+    CeilDivable,
     Defaultable,
     EqualityComparable,
     ImplicitlyBoolable,
@@ -85,7 +87,7 @@ struct Dim(
         Args:
             value: The static dimension value.
         """
-        self._value_or_missing = Int(value)
+        self._value_or_missing = Int(mlir_value=value)
 
     @always_inline("builtin")
     @implicit
@@ -186,6 +188,22 @@ struct Dim(
         if not self or not rhs:
             return Dim()
         return Dim(self.get() * rhs.get())
+
+    @always_inline("nodebug")
+    fn __ceildiv__(self, rhs: Dim) -> Dim:
+        """Return the rounded-up result of dividing self by denominator dimension.
+
+        If either are unknown, the result is unknown as well.
+
+        Args:
+            rhs: The denominator dimension.
+
+        Returns:
+            The rounded-up result of dividing self by denominator dimension.
+        """
+        if self and rhs:
+            return Dim(ceildiv(self.get(), rhs.get()))
+        return Dim()
 
     @always_inline("nodebug")
     fn __imul__(mut self, rhs: Dim):
@@ -327,7 +345,7 @@ struct DimList(Representable, Sized, Stringable, Writable):
         Args:
             values: The initial dim values list.
         """
-        self.value = VariadicList[Dim](Int(index(values[0])))
+        self.value = VariadicList[Dim](index(values[0]))
 
     @always_inline("nodebug")
     fn __init__[
@@ -343,9 +361,7 @@ struct DimList(Representable, Sized, Stringable, Writable):
         Args:
             values: The initial dim values list.
         """
-        self.value = VariadicList[Dim](
-            Int(index(values[0])), Int(index(values[1]))
-        )
+        self.value = VariadicList[Dim](index(values[0]), index(values[1]))
 
     @always_inline("nodebug")
     fn __init__[
@@ -364,7 +380,7 @@ struct DimList(Representable, Sized, Stringable, Writable):
             values: The initial dim values list.
         """
         self.value = VariadicList[Dim](
-            Int(index(values[0])), Int(index(values[1])), Int(index(values[2]))
+            index(values[0]), index(values[1]), index(values[2])
         )
 
     @always_inline("nodebug")
@@ -382,7 +398,7 @@ struct DimList(Representable, Sized, Stringable, Writable):
             val0: The initial dim value.
             val1: The initial dim value.
         """
-        self.value = VariadicList[Dim](Int(index(val0)), Int(index(val1)))
+        self.value = VariadicList[Dim](index(val0), index(val1))
 
     @always_inline("nodebug")
     fn __init__[
@@ -400,9 +416,7 @@ struct DimList(Representable, Sized, Stringable, Writable):
             val1: The initial dim value.
             val2: The initial dim value.
         """
-        self.value = VariadicList[Dim](
-            Int(index(val0)), Int(index(val1)), Int(index(val2))
-        )
+        self.value = VariadicList[Dim](index(val0), index(val1), index(val2))
 
     @always_inline("nodebug")
     fn __init__[
@@ -424,10 +438,7 @@ struct DimList(Representable, Sized, Stringable, Writable):
         """
         self = Self(
             VariadicList[Dim](
-                Int(index(val0)),
-                Int(index(val1)),
-                Int(index(val2)),
-                Int(index(val3)),
+                index(val0), index(val1), index(val2), index(val3)
             )
         )
 
@@ -672,7 +683,7 @@ struct DimList(Representable, Sized, Stringable, Writable):
         Returns:
             The string representation of the type.
         """
-        return "DimList(" + String(self) + ")"
+        return String("DimList(", self, ")")
 
     @always_inline("nodebug")
     fn __eq__(self, rhs: DimList) -> Bool:
@@ -732,7 +743,7 @@ fn _make_tuple[
     for idx in range(size):
         tup = tup._replace[idx](result._int_type(values.at[idx]().get()))
 
-    return __type_of(result)(tup)
+    return {tup}
 
 
 @always_inline
@@ -763,4 +774,4 @@ fn _make_partially_static_index_list[
                 result._int_type(static_list.at[idx]().get())
             )
 
-    return __type_of(result)(tup)
+    return {tup}

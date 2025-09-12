@@ -45,6 +45,12 @@ class Backend(str, enum.Enum):
     sglang_chat = "sglang-chat"
 
 
+class Endpoint(str, enum.Enum):
+    completions = "/v1/completions"
+    chat_completions = "/v1/chat/completions"
+    ensemble_generate_stream = "/v2/models/ensemble/generate_stream"
+
+
 @dataclass
 class BaseBenchmarkConfig(MAXConfig):
     """Base configuration class containing parameters common to all benchmark types.
@@ -69,6 +75,9 @@ class BaseBenchmarkConfig(MAXConfig):
     tokenizer: Optional[str] = None
     """Name or path of the tokenizer, if not using the default tokenizer."""
 
+    model_max_length: Optional[int] = None
+    """Override for tokenizer max length. Needed if server has a lower max length than the tokenizer."""
+
     trust_remote_code: bool = False
     """Trust remote code from huggingface."""
 
@@ -83,7 +92,7 @@ class BaseBenchmarkConfig(MAXConfig):
     num_prompts: int = 1000
     """Number of prompts to process."""
 
-    seed: int = 42
+    seed: int = 0
     """Random seed for reproducibility."""
 
     # Control flags
@@ -127,6 +136,7 @@ class BaseBenchmarkConfig(MAXConfig):
         return {
             # TODO: Propagate proper enum choices here than just the string values
             "backend": [backend.value for backend in Backend],
+            "endpoint": [endpoint.value for endpoint in Endpoint],
             "dataset_name": list(DATASET_REGISTRY.keys()),
             "random_distribution_type": ["uniform", "normal"],
         }
@@ -152,104 +162,223 @@ class ServingBenchmarkConfig(BaseBenchmarkConfig):
 
     # Backend and API configuration (serving-specific)
     # TODO: Propagate proper enum choices here than just the string values
-    backend: str = Backend.modular.value
+    backend: str = field(
+        default=Backend.modular.value,
+        metadata={
+            "group": "Backend and API Configuration",
+            "group_description": "Configuration for backend selection and API endpoints",
+        },
+    )
     """Backend to use for benchmarking. Choices: vllm, vllm-chat, trt-llm, modular, modular-chat, sglang, sglang-chat"""
 
-    base_url: Optional[str] = None
+    base_url: Optional[str] = field(
+        default=None, metadata={"group": "Backend and API Configuration"}
+    )
     """Server or API base url if not using http host and port."""
 
-    host: str = "localhost"
+    host: str = field(
+        default="localhost", metadata={"group": "Backend and API Configuration"}
+    )
     """Server host."""
 
-    port: int = 8000
+    port: int = field(
+        default=8000, metadata={"group": "Backend and API Configuration"}
+    )
     """Server port."""
 
-    endpoint: str = "/v1/completions"
+    endpoint: str = field(
+        default=Endpoint.chat_completions.value,
+        metadata={"group": "Backend and API Configuration"},
+    )
     """API endpoint. Choices: /v1/completions, /v1/chat/completions, /v2/models/ensemble/generate_stream"""
 
     # Request configuration (serving-specific)
-    max_concurrency: Optional[int] = None
+    max_concurrency: Optional[int] = field(
+        default=None,
+        metadata={
+            "group": "Request Configuration",
+            "group_description": "Parameters controlling request concurrency and processing",
+        },
+    )
     """Maximum concurrent requests (optimized for serving benchmarks)."""
 
-    lora: Optional[str] = None
+    lora: Optional[str] = field(
+        default=None, metadata={"group": "Request Configuration"}
+    )
     """Optional LoRA name."""
 
     # Workload configuration (serving-specific)
-    max_benchmark_duration_s: Optional[int] = None
+    max_benchmark_duration_s: Optional[int] = field(
+        default=None,
+        metadata={
+            "group": "Workload Configuration",
+            "group_description": "Parameters controlling benchmark duration and workload characteristics",
+        },
+    )
     """Maximum benchmark duration in seconds."""
 
-    num_chat_sessions: Optional[int] = None
+    num_chat_sessions: Optional[int] = field(
+        default=None, metadata={"group": "Workload Configuration"}
+    )
     """Number of multiturn chat sessions."""
 
-    delay_between_chat_turns: Optional[int] = None
+    delay_between_chat_turns: Optional[int] = field(
+        default=None, metadata={"group": "Workload Configuration"}
+    )
     """Delay between chat turns in ms."""
 
     # Output control (serving-specific extensions)
-    output_lengths: Optional[str] = None
+    output_lengths: Optional[str] = field(
+        default=None,
+        metadata={
+            "group": "Output Control",
+            "group_description": "Parameters controlling output generation and sampling",
+        },
+    )
     """Path to YAML file with output lengths or int."""
 
-    max_output_len: Optional[int] = None
+    max_output_len: Optional[int] = field(
+        default=None, metadata={"group": "Output Control"}
+    )
     """Maximum output length per request."""
 
-    temperature: float = 0.0
+    temperature: float = field(
+        default=0.0, metadata={"group": "Output Control"}
+    )
     """Temperature for sampling."""
 
-    top_p: float = 1.0
+    top_p: float = field(default=1.0, metadata={"group": "Output Control"})
     """Top-p for sampling."""
 
     # Traffic control (serving-specific)
-    request_rate: float = float("inf")
+    request_rate: float = field(
+        default=float("inf"),
+        metadata={
+            "group": "Traffic Control",
+            "group_description": "Parameters controlling request rate and traffic patterns",
+        },
+    )
     """Requests per second (finite rate for realistic benchmarking)."""
 
-    burstiness: float = 1.0
+    burstiness: float = field(
+        default=1.0, metadata={"group": "Traffic Control"}
+    )
     """Burstiness factor (1.0 = Poisson process)."""
 
-    ttft_skip_requests: int = 0
-    """Skip first N requests for TTFT measurements."""
+    skip_first_n_requests: int = field(
+        default=0, metadata={"group": "Traffic Control"}
+    )
+    """Skip first N requests for measurements."""
 
-    chat_warmup_delay_ms: float = 0.0
+    chat_warmup_delay_ms: float = field(
+        default=0.0, metadata={"group": "Traffic Control"}
+    )
     """Delay between starting chat sessions."""
 
-    ignore_first_turn_stats: bool = False
+    ignore_first_turn_stats: bool = field(
+        default=False, metadata={"group": "Traffic Control"}
+    )
     """Ignore the first turn statistics in multiturn chat sessions."""
 
     # Dataset-specific parameters (serving workloads)
-    sonnet_input_len: int = 550
-    sonnet_prefix_len: int = 200
-    arxiv_summarization_input_len: int = 15000
-    random_input_len: int = 1024
-    random_output_len: int = 128
-    random_coefficient_of_variation: str = "0.3,0.7"
-    random_image_size: str = ""
-    random_sys_prompt_ratio: float = 0.0
-    random_first_turn_ratio: float = 1.0
-    random_max_num_unique_sys_prompt: int = 1
-    random_distribution_type: str = "normal"  # choices: uniform, normal
-    random_num_turns: int = 1
-    obfuscated_conversations_coefficient_of_variation: float = 0.1
-    obfuscated_conversations_average_output_len: int = 175
-    obfuscated_conversations_shuffle: bool = False
+    arxiv_summarization_input_len: int = field(
+        default=15000,
+        metadata={
+            "group": "Dataset-Specific Parameters",
+            "group_description": "Parameters specific to different dataset types and workloads",
+        },
+    )
+    obfuscated_conversations_average_output_len: int = field(
+        default=175, metadata={"group": "Dataset-Specific Parameters"}
+    )
+    obfuscated_conversations_coefficient_of_variation: float = field(
+        default=0.1, metadata={"group": "Dataset-Specific Parameters"}
+    )
+    obfuscated_conversations_shuffle: bool = field(
+        default=False, metadata={"group": "Dataset-Specific Parameters"}
+    )
+    random_coefficient_of_variation: str = field(
+        default="0.3,0.7", metadata={"group": "Dataset-Specific Parameters"}
+    )
+    random_distribution_type: str = field(
+        default="normal",  # choices: uniform, normal
+        metadata={"group": "Dataset-Specific Parameters"},
+    )
+    random_first_turn_ratio: float = field(
+        default=1.0, metadata={"group": "Dataset-Specific Parameters"}
+    )
+    random_image_size: str = field(
+        default="", metadata={"group": "Dataset-Specific Parameters"}
+    )
+    random_input_len: int = field(
+        default=1024, metadata={"group": "Dataset-Specific Parameters"}
+    )
+    random_max_num_unique_sys_prompt: int = field(
+        default=1, metadata={"group": "Dataset-Specific Parameters"}
+    )
+    random_num_turns: int = field(
+        default=1, metadata={"group": "Dataset-Specific Parameters"}
+    )
+    random_output_len: int = field(
+        default=128, metadata={"group": "Dataset-Specific Parameters"}
+    )
+    random_sys_prompt_ratio: float = field(
+        default=0.0, metadata={"group": "Dataset-Specific Parameters"}
+    )
+    sonnet_input_len: int = field(
+        default=550, metadata={"group": "Dataset-Specific Parameters"}
+    )
+    sonnet_prefix_len: int = field(
+        default=200, metadata={"group": "Dataset-Specific Parameters"}
+    )
 
     # Control flags (serving-specific)
-    skip_test_prompt: bool = False
-    collect_gpu_stats: bool = True
+    skip_test_prompt: bool = field(
+        default=False,
+        metadata={
+            "group": "Control Flags",
+            "group_description": "Boolean flags controlling benchmark behavior",
+        },
+    )
+    collect_gpu_stats: bool = field(
+        default=True, metadata={"group": "Control Flags"}
+    )
     """Enable GPU stats collection for serving benchmarks."""
 
     # Result saving (serving-specific extensions)
-    server_args: str = ""
+    server_args: str = field(
+        default="",
+        metadata={
+            "group": "Result Saving",
+            "group_description": "Parameters controlling result saving and output",
+        },
+    )
     """Server arguments string."""
 
     # Result saving (serving-specific extensions)
-    save_result: bool = False
+    save_result: bool = field(
+        default=False, metadata={"group": "Result Saving"}
+    )
     """Specify to save benchmark results to a json file."""
 
-    result_dir: Optional[str] = None
+    record_output_lengths: Optional[str] = field(
+        default=None, metadata={"group": "Result Saving"}
+    )
+    """Path to save output lengths in YAML format."""
+
+    result_dir: Optional[str] = field(
+        default=None, metadata={"group": "Result Saving"}
+    )
     """Directory to save results."""
 
-    result_filename: Optional[str] = None
+    result_filename: Optional[str] = field(
+        default=None, metadata={"group": "Result Saving"}
+    )
     """Custom filename (auto-generated if null)."""
 
-    metadata: list[str] = field(default_factory=list)
+    metadata: list[str] = field(
+        default_factory=list, metadata={"group": "Result Saving"}
+    )
     """Key-value pairs for metadata (format: ["key=value", ...])."""
 
     @staticmethod
@@ -278,29 +407,30 @@ class ServingBenchmarkConfig(BaseBenchmarkConfig):
             "top_p": "Top-p for sampling.",
             "request_rate": "Requests per second (finite rate for realistic benchmarking).",
             "burstiness": "Burstiness factor (1.0 = Poisson process).",
-            "ttft_skip_requests": "Skip first N requests for TTFT measurements.",
+            "skip_first_n_requests": "Skip first N requests for measurements.",
             "chat_warmup_delay_ms": "Delay between starting chat sessions.",
             "sonnet_input_len": "Number of input tokens per request, used only for sonnet dataset.",
             "sonnet_prefix_len": "Number of prefix tokens per request, used only for sonnet dataset.",
             "arxiv_summarization_input_len": "Number of input tokens per request, used only for arxiv-summarization dataset.",
-            "random_input_len": "Number of input tokens per request, used only for random sampling.",
-            "random_output_len": "Number of output tokens per request, used only for random sampling.",
-            "random_coefficient_of_variation": "Coefficient of variation for input/output length, used only for random sampling.",
-            "random_image_size": "Size of random images to generate.",
-            "random_sys_prompt_ratio": "Ratio to determine the system prompt length, used only for random sampling.",
-            "random_first_turn_ratio": "Ratio of the length of the first turn to the length of subsequent turns.",
-            "random_max_num_unique_sys_prompt": "Maximum number of unique system prompts, used only for random sampling.",
-            "random_distribution_type": "Type of probability distribution for sampled input/output length. Choices: uniform, normal",
-            "random_num_turns": "Number of turns per session, used only for random sampling and --num-chat-sessions.",
-            "obfuscated_conversations_coefficient_of_variation": "Coefficient of variation for output length for obfuscated-conversations dataset when output_lengths is not provided.",
             "obfuscated_conversations_average_output_len": "Average output length for obfuscated-conversations dataset when output_lengths is not provided.",
+            "obfuscated_conversations_coefficient_of_variation": "Coefficient of variation for output length for obfuscated-conversations dataset when output_lengths is not provided.",
             "obfuscated_conversations_shuffle": "Shuffle the obfuscated-conversations dataset.",
+            "random_coefficient_of_variation": "Coefficient of variation for input/output length, used only for random sampling.",
+            "random_distribution_type": "Type of probability distribution for sampled input/output length. Choices: uniform, normal",
+            "random_first_turn_ratio": "Ratio of the length of the first turn to the length of subsequent turns.",
+            "random_image_size": "Size of random images to generate.",
+            "random_input_len": "Number of input tokens per request, used only for random sampling.",
+            "random_max_num_unique_sys_prompt": "Maximum number of unique system prompts, used only for random sampling.",
+            "random_num_turns": "Number of turns per session, used only for random sampling and --num-chat-sessions.",
+            "random_output_len": "Number of output tokens per request, used only for random sampling.",
+            "random_sys_prompt_ratio": "Ratio to determine the system prompt length, used only for random sampling.",
             "skip_test_prompt": "Skip the test prompt. Useful when doing external profiling.",
             "collect_gpu_stats": "Enable GPU stats collection for serving benchmarks.",
             "server_args": "Server arguments string.",
             "save_result": "Specify to save benchmark results to a json file.",
             "result_dir": "Directory to save results.",
             "result_filename": "Custom filename (auto-generated if null).",
+            "record_output_lengths": "Path to save output lengths in YAML format.",
             "metadata": 'Key-value pairs for metadata (format: ["key=value", ...]).',
         }
         return {**base_help, **serving_help}

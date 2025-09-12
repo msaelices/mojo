@@ -19,6 +19,7 @@ from algorithm import map
 ```
 """
 
+from collections import OptionalReg
 from collections.string.string_slice import get_static_string
 from math import align_down, ceildiv, clamp
 from os import abort
@@ -41,7 +42,7 @@ from gpu.host import DeviceContext
 from gpu.host.info import is_cpu, is_gpu
 from runtime import tracing
 from runtime.asyncrt import DeviceContextPtr, TaskGroup, parallelism_level
-from runtime.tracing import Trace, TraceLevel, trace_arg
+from runtime.tracing import Trace, TraceLevel, trace_arg, get_safe_task_id
 
 from utils.index import Index, IndexList
 from utils.numerics import FlushDenormals
@@ -49,6 +50,7 @@ from utils.static_tuple import StaticTuple
 from pathlib import Path
 
 from gpu.host.info import B200
+
 
 # ===-----------------------------------------------------------------------===#
 # Map
@@ -361,13 +363,13 @@ fn sync_parallelize[
     @always_inline
     fn func_wrapped(i: Int):
         with FlushDenormals():
-            with Trace[TraceLevel.THREAD, target = StaticString("cpu")](
-                "task", task_id=i, parent_id=parent_id
-            ):
-                try:
+            try:
+                with Trace[TraceLevel.THREAD, target = StaticString("cpu")](
+                    "task", task_id=i, parent_id=parent_id
+                ):
                     func(i)
-                except e:
-                    abort(String(e))
+            except e:
+                abort(String(e))
 
     if num_work_items == 1:
         # Just run inline.
@@ -1073,7 +1075,7 @@ fn _get_num_workers(problem_size: Int, grain_size: Int = 32768) -> Int:
 @always_inline
 fn _get_start_indices_of_nth_subvolume[
     rank: Int, //, subvolume_rank: Int = 1
-](n: Int, shape: IndexList[rank, **_]) -> __type_of(shape):
+](n: Int, shape: IndexList[rank, **_], out res: __type_of(shape)):
     """Converts a flat index into the starting ND indices of the nth subvolume
     with rank `subvolume_rank`.
 
@@ -1114,27 +1116,25 @@ fn _get_start_indices_of_nth_subvolume[
     # fast impls for common cases
     @parameter
     if rank == 2 and subvolume_rank == 1:
-        return __type_of(shape)(n, 0)
+        return {n, 0}
 
     @parameter
     if rank - 1 == subvolume_rank:
-        var out = __type_of(shape)(0)
-        out[0] = n
-        return out
+        res = {0}
+        res[0] = n
+        return
 
     @parameter
     if rank == subvolume_rank:
-        return __type_of(shape)(0)
+        return {0}
 
-    var out = __type_of(shape)()
+    res = {}
     var curr_index = n
 
     @parameter
     for i in reversed(range(rank - subvolume_rank)):
-        out[i] = curr_index._positive_rem(shape[i])
+        res[i] = curr_index._positive_rem(shape[i])
         curr_index = curr_index._positive_div(shape[i])
-
-    return out
 
 
 # TODO(KERN-637) - optimize this algorithm for UInt rather than delegating
@@ -1370,14 +1370,14 @@ fn elementwise[
         )
 
     # Intern the kind string as a static string so we don't allocate.
-    alias kind = get_static_string[
-        "elementwise",
-        ("(" + _trace_description + ")" if _trace_description else ""),
-    ]()
+    alias d = _trace_description
+    alias desc = String("(", d, ")") if d else ""
+    alias kind = get_static_string["elementwise", desc]()
 
     with Trace[TraceLevel.OP, target=target](
         kind,
         Trace[TraceLevel.OP]._get_detail_str[description_fn](),
+        task_id=get_safe_task_id(context),
     ):
 
         @parameter

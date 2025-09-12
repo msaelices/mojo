@@ -17,10 +17,9 @@ from test_utils import MoveCopyCounter, ObservableDel
 from testing import assert_equal, assert_false, assert_true
 
 from utils import Variant
+from os import abort
 
-alias TEST_VARIANT_POISON = _Global[
-    "TEST_VARIANT_POISON", Bool, _initialize_poison
-]
+alias TEST_VARIANT_POISON = _Global["TEST_VARIANT_POISON", _initialize_poison]
 
 
 fn _initialize_poison() -> Bool:
@@ -28,14 +27,19 @@ fn _initialize_poison() -> Bool:
 
 
 fn _poison_ptr() -> UnsafePointer[Bool]:
-    return TEST_VARIANT_POISON.get_or_create_ptr()
+    try:
+        return TEST_VARIANT_POISON.get_or_create_ptr()
+    except:
+        return abort[UnsafePointer[Bool]](
+            "Failed to get or create TEST_VARIANT_POISON"
+        )
 
 
 fn assert_no_poison() raises:
     assert_false(_poison_ptr().take_pointee())
 
 
-struct Poison(Copyable, Movable):
+struct Poison(ImplicitlyCopyable, Movable):
     fn __init__(out self):
         pass
 

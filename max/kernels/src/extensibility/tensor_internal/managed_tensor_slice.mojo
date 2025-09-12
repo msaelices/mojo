@@ -554,7 +554,7 @@ struct ManagedTensorSlice[
     io_spec: IOSpec[mut, input],
     *,
     static_spec: StaticTensorSpec[dtype, rank],
-](Copyable, DevicePassable, Movable, Stringable, Writable):
+](DevicePassable, ImplicitlyCopyable, Movable, Stringable, Writable):
     """A view of a tensor that does not own the underlying allocated pointer.
     When the object lifetime ends it does not free the underlying pointer.
     Conversely, if a `ManagedTensorSlice` is created, it will not extend the
@@ -1150,11 +1150,11 @@ struct ManagedTensorSlice[
             and _is_consistent[new_static_strides](new_runtime_strides)
         )
 
-        return __type_of(result)(
+        return {
             offset_ptr.or_else(self._ptr),
             new_runtime_shape,
             new_runtime_strides,
-        )
+        }
 
     @always_inline
     fn to_layout_tensor(
@@ -1279,7 +1279,7 @@ struct VariadicTensors[
     io_spec: IOSpec[mut, input],
     *,
     static_specs: StaticTuple[StaticTensorSpec[dtype, rank], size],
-](Copyable, Movable, Sized):
+](ImplicitlyCopyable, Movable, Sized):
     """A tuple-like container of tensors representing variadic arguments from
     the graph compiler."""
 
@@ -1312,9 +1312,7 @@ struct VariadicTensors[
         """
         constrained[index < size]()
         var tensor = self._tensors[index]
-        return __type_of(result)(
-            tensor._ptr, tensor._spec, tensor._runtime_strides
-        )
+        return {tensor._ptr, tensor._spec, tensor._runtime_strides}
 
 
 # ===----------------------------------------------------------------------=== #

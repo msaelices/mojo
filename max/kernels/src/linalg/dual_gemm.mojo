@@ -54,7 +54,7 @@ from memory import memset_zero, stack_allocation
 from memory.pointer import _GPUAddressSpace as AddressSpace
 from register import register_internal
 from runtime.asyncrt import DeviceContextPtr
-from runtime.tracing import Trace, TraceLevel, trace_arg
+from runtime.tracing import Trace, TraceLevel, get_safe_task_id, trace_arg
 
 from utils import StaticTuple
 from utils.index import Index, IndexList
@@ -161,7 +161,7 @@ fn multistage_dual_mma[
     fn _mask_tensor_row(
         tensor: LayoutTensor, num_rows: Int, out result: __type_of(tensor)
     ):
-        return __type_of(tensor)(
+        return {
             tensor.ptr,
             RuntimeLayout[
                 element_type = tensor.layout_int_type,
@@ -172,7 +172,7 @@ fn multistage_dual_mma[
                 ](num_rows, tensor.dim[1]()),
                 tensor.runtime_layout.stride,
             ),
-        )
+        }
 
     @always_inline
     @parameter
@@ -248,7 +248,7 @@ fn multistage_dual_mma[
     alias MMA_M = mma_shape[0]
     alias MMA_N = mma_shape[1]
     alias MMA_K = mma_shape[2]
-    alias num_k_mmas: UInt = BK // MMA_K
+    alias num_k_mmas: UInt = UInt(BK // MMA_K)
     alias num_k_mma_iters: UInt = num_k_mmas // k_group_size
     alias num_m_mmas = WM // MMA_M
     alias num_n_mmas = WN // (2 * MMA_N)
@@ -314,8 +314,8 @@ fn multistage_dual_mma[
         mma_op.load_a[swizzle_a_pattern](
             a_warp_tile, a_reg_tiles[i].vectorize[1, a_frag_size](), i
         )
-        mma_op.load_b(b0_warp_tile, b0_reg_tiles[i], i, Int(warp_x))
-        mma_op.load_b(b1_warp_tile, b1_reg_tiles[i], i, Int(warp_x))
+        mma_op.load_b(b0_warp_tile, b0_reg_tiles[i], i, UInt(warp_x))
+        mma_op.load_b(b1_warp_tile, b1_reg_tiles[i], i, UInt(warp_x))
 
     for k_tile_id in range(num_iters):
         var a_warp_tile = a_smem_iter[].tile[WM, BK](Int(warp_y), 0)
@@ -406,20 +406,20 @@ fn multistage_dual_mma[
                 mma_op.load_a[swizzle_a_pattern](
                     a_warp_tile,
                     a_reg_tiles[next].vectorize[1, a_frag_size](),
-                    kidx,
+                    UInt(kidx),
                 )
 
                 mma_op.load_b(
                     b0_warp_tile,
                     b0_reg_tiles[next],
-                    kidx,
-                    Int(warp_x),
+                    UInt(kidx),
+                    UInt(warp_x),
                 )
                 mma_op.load_b(
                     b1_warp_tile,
                     b1_reg_tiles[next],
-                    kidx,
-                    Int(warp_x),
+                    UInt(kidx),
+                    UInt(warp_x),
                 )
 
             @parameter
@@ -472,9 +472,9 @@ fn multistage_dual_gemm_kernel[
 
     alias simd_size = simd_width_of[c_type]()
 
-    var M: UInt = c.dim[0]()
-    var N: UInt = b0.dim[0 if transpose_b else 1]()
-    var K: UInt = b0.dim[1 if transpose_b else 0]()
+    var M: UInt = UInt(c.dim[0]())
+    var N: UInt = UInt(b0.dim[0 if transpose_b else 1]())
+    var K: UInt = UInt(b0.dim[1 if transpose_b else 0]())
     # we require b0 and b1 to be of the same size
 
     alias BM = config.block_tile_shape[0]
@@ -519,21 +519,10 @@ fn multistage_dual_gemm_kernel[
         a_type,
         Layout.row_major(BM, BK),
         address_space = a_smem.address_space,
-        alignment = a_smem.alignment,
+        alignment = a_smem.alignment2,
         circular=True,
     ](
-        rebind[
-            __type_of(
-                LayoutTensorIter[
-                    a_type,
-                    Layout.row_major(BM, BK),
-                    MutableAnyOrigin,
-                    address_space = a_smem.address_space,
-                    alignment = a_smem.alignment,
-                    circular=True,
-                ]().ptr
-            )
-        ](a_smem),
+        a_smem,
         a_smem_size,
     )
 
@@ -616,7 +605,7 @@ fn multistage_dual_gemm_kernel[
         a_smem_iter,
         b0_smem_iter,
         b1_smem_iter,
-        Int(ceildiv(K, BK)),
+        Int(ceildiv(K, UInt(BK))),
     )
 
     alias HWN = WN // 2
@@ -739,7 +728,9 @@ fn multistage_dual_gemm_kernel[
             @parameter
             for i in range(__type_of(c_gmem_frag).layout.size()):
                 alias src_idx = c_reg_frag.layout(i)
-                alias dst_static_idx: UInt = __type_of(c_gmem_frag).layout(i)
+                alias dst_static_idx: UInt = UInt(
+                    __type_of(c_gmem_frag).layout(i)
+                )
                 var dst_idx: Int
 
                 @parameter
@@ -765,8 +756,8 @@ fn multistage_dual_gemm_kernel[
 
 
 fn swilu[
-    type: DType, width: Int
-](x: SIMD[type, width], y: SIMD[type, width]) -> SIMD[type, width]:
+    dtype: DType, width: Int
+](x: SIMD[dtype, width], y: SIMD[dtype, width]) -> SIMD[dtype, width]:
     return (x * y) / (1 + exp(-x))
 
 
@@ -821,7 +812,7 @@ fn multistage_dual_gemm[
         a,
         b0,
         b1,
-        grid_dim=config.grid_dim(M, 2 * N),
+        grid_dim=config.grid_dim(UInt(M), UInt(2 * N)),
         block_dim=config.block_dim(),
         shared_mem_bytes=smem_usage,
         func_attribute=FuncAttribute.MAX_DYNAMIC_SHARED_SIZE_BYTES(smem_usage),
@@ -874,13 +865,13 @@ fn config_in_smem[
     var i = 0
     while c.shared_mem_usage() > max_smem:
         if c.block_tile_shape[1] >= 256:
-            c = __type_of(res)(
-                block_tile_shape=Index(
+            c = {
+                block_tile_shape = Index(
                     c.block_tile_shape[0],
                     c.block_tile_shape[1] // 2,
                     c.block_tile_shape[2],
                 ),
-                warp_tile_shape=Index(
+                warp_tile_shape = Index(
                     c.warp_tile_shape[0],
                     c.warp_tile_shape[1] if c.warp_tile_shape[1]
                     >= c.block_tile_shape[1]
@@ -888,17 +879,17 @@ fn config_in_smem[
                     // 2,
                     c.warp_tile_shape[2],
                 ),
-                num_pipeline_stages=c.num_pipeline_stages,
-                num_k_partitions=c.num_k_partitions,
-            )
+                num_pipeline_stages = c.num_pipeline_stages,
+                num_k_partitions = c.num_k_partitions,
+            }
         else:
-            c = __type_of(res)(
-                block_tile_shape=Index(
+            c = {
+                block_tile_shape = Index(
                     c.block_tile_shape[0] // 2,
                     c.block_tile_shape[1],
                     c.block_tile_shape[2],
                 ),
-                warp_tile_shape=Index(
+                warp_tile_shape = Index(
                     c.warp_tile_shape[0] if c.warp_tile_shape[0]
                     >= c.block_tile_shape[0]
                     // 2 else c.block_tile_shape[0]
@@ -906,9 +897,9 @@ fn config_in_smem[
                     c.warp_tile_shape[1],
                     c.warp_tile_shape[2],
                 ),
-                num_pipeline_stages=c.num_pipeline_stages,
-                num_k_partitions=c.num_k_partitions,
-            )
+                num_pipeline_stages = c.num_pipeline_stages,
+                num_k_partitions = c.num_k_partitions,
+            }
         i += 1
         if i > 8:
             abort("too many iterations")
@@ -1174,9 +1165,9 @@ fn dual_gemv_kernel[
     b0: NDBuffer[b_type, 2, MutableAnyOrigin, b_shape],
     b1: NDBuffer[b_type, 2, MutableAnyOrigin, b_shape],
 ):
-    var m: UInt = c.dim(0)
-    var n: UInt = b0.dim(0)
-    var k: UInt = b0.dim(1)
+    var m: UInt = UInt(c.dim(0))
+    var n: UInt = UInt(b0.dim(0))
+    var k: UInt = UInt(b0.dim(1))
 
     var tid = thread_idx.x
 
@@ -1327,7 +1318,7 @@ fn dual_gemv[
         a_shape,
         b_type,
         b_shape,
-        simd_width,
+        UInt(simd_width),
         tile_m,
         tile_n,
         num_threads,
@@ -1393,5 +1384,6 @@ fn swishGLU[
     with Trace[TraceLevel.OP, target=target](
         "swish_glu",
         Trace[TraceLevel.OP]._get_detail_str[description_fn](),
+        task_id=get_safe_task_id(ctx),
     ):
         dual_gemm[transpose_b=True](c, a, b0, b1, ctx=ctx.get_device_context())

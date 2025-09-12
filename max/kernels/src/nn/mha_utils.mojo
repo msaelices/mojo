@@ -44,6 +44,7 @@ from nn.mha_mask import (
     SlidingWindowCausalMask,
 )
 from nn.mha_score_mod import AlibiScoreMod, IdentityScoreMod, ScoreModTrait
+from gpu.host._nvidia_cuda import TensorMapSwizzle
 
 from utils.index import Index, IndexList
 from utils.numerics import min_or_neg_inf
@@ -62,7 +63,7 @@ alias is_sm90or100 = is_sm90 or is_sm100
 
 @register_passable("trivial")
 struct FlashAttentionAlgorithm(
-    Copyable, Defaultable, Movable, Stringable, Writable
+    Defaultable, ImplicitlyCopyable, Movable, Stringable, Writable
 ):
     var _value: Int32
 
@@ -94,12 +95,12 @@ struct FlashAttentionAlgorithm(
         return String.write(self)
 
     @always_inline
-    fn init(self, type: DType) -> Self:
+    fn init(self, dtype: DType) -> Self:
         if self._value == -1:
 
             @parameter
             if is_sm90or100:
-                return FlashAttentionAlgorithm(2 + type.is_half_float())
+                return FlashAttentionAlgorithm(2 + dtype.is_half_float())
             else:
                 return FlashAttentionAlgorithm(2)
         else:
@@ -121,12 +122,13 @@ struct FlashAttentionAlgorithm(
 
 @fieldwise_init
 @register_passable("trivial")
-struct MHAConfig(Copyable, Movable, Writable):
-    var type: DType
+struct MHAConfig(ImplicitlyCopyable, Movable, Writable):
+    var dtype: DType
 
     # Q, K, V, output should have the same type.
     var num_heads: UInt
     var depth: UInt
+    var padded_depth: UInt
     var num_queries_per_block: UInt
     var num_keys_per_block: UInt
     var BK: UInt  # tile size in depth dimension
@@ -158,12 +160,14 @@ struct MHAConfig(Copyable, Movable, Writable):
         return self.block_n() // self.warp_n()
 
     fn num_consumer_threads(self) -> UInt:
-        return self.num_warps_m() * self.num_warps_n() * WARP_SIZE
+        return self.num_warps_m() * self.num_warps_n() * UInt(WARP_SIZE)
 
     fn num_producer_threads[
         producer_consumer_kernel: Bool = False
     ](self) -> UInt:
-        return 128 if (producer_consumer_kernel and self.algorithm == 3) else 0
+        return UInt(128) if (
+            producer_consumer_kernel and self.algorithm == 3
+        ) else UInt(0)
 
     fn num_threads[producer_consumer_kernel: Bool = False](self) -> UInt:
         return (
@@ -172,21 +176,21 @@ struct MHAConfig(Copyable, Movable, Writable):
         )
 
     fn q_smem_size(self, fa3: Bool = False, persistent: Bool = False) -> UInt:
-        q_size = self.block_m() * self.depth
+        q_size = self.block_m() * self.padded_depth
         num_q = 2 if fa3 and persistent else 1
-        return num_q * q_size
+        return UInt(num_q * q_size)
 
     fn kv_smem_size(self, fa3: Bool = False) -> UInt:
         if fa3:
-            return self.num_pipeline_stages * self.block_n() * self.depth
+            return self.num_pipeline_stages * self.block_n() * self.padded_depth
         else:
-            return self.block_n() * self.depth
+            return self.block_n() * self.padded_depth
 
     fn k_smem_size(self, fa3: Bool = False) -> UInt:
         if fa3:
             return self.kv_smem_size(True)
         else:
-            return self.block_n() * self.depth
+            return self.block_n() * self.padded_depth
 
     fn v_smem_size(self, fa3: Bool = False) -> UInt:
         if fa3:
@@ -200,7 +204,7 @@ struct MHAConfig(Copyable, Movable, Writable):
 
     fn warp_scratch_smem_size(self) -> UInt:
         n_warps_n = self.num_warps_n()
-        return 2 * n_warps_n * self.block_m() if n_warps_n > 1 else 0
+        return UInt(2 * n_warps_n * self.block_m() if n_warps_n > 1 else 0)
 
     fn shared_mem_bytes[
         shared_kv: Bool = False, sm_90: Bool = False
@@ -231,18 +235,18 @@ struct MHAConfig(Copyable, Movable, Writable):
         if self.num_warps_n() > 1 or has_amd_gpu_accelerator():
             num_smem_elements += self.p_smem_size()
 
-        num_smem_bytes = self.type.size_of() * num_smem_elements
+        num_smem_bytes = self.dtype.size_of() * num_smem_elements
         if sm_90_fa3:
             alias i64_size = size_of[DType.int64]()
             num_smem_bytes += (2 * self.num_pipeline_stages) * i64_size + (
                 4 * i64_size + 2 * size_of[DType.uint32]() if persistent
                 != 0 else 0
             )
-        return num_smem_bytes
+        return UInt(num_smem_bytes)
 
     fn __init__(
         out self,
-        type: DType,
+        dtype: DType,
         num_heads: UInt,
         depth: UInt,
         num_queries_per_block: OptionalReg[UInt] = None,
@@ -253,19 +257,26 @@ struct MHAConfig(Copyable, Movable, Writable):
         num_pipeline_stages: UInt = 4,
         k_group_size: UInt = 1,
         algorithm: FlashAttentionAlgorithm = FlashAttentionAlgorithm(-1),
+        padded_depth: OptionalReg[UInt] = None,
+        swizzle_mode: TensorMapSwizzle = TensorMapSwizzle.SWIZZLE_128B,
     ):
-        self.type = type
+        self.dtype = dtype
         self.num_heads = num_heads
         self.depth = depth
+        swizzle_granularity = swizzle_mode.bytes() // size_of[DType.bfloat16]()
+        padded_depth_default = UInt(
+            ceildiv(depth, UInt(swizzle_granularity)) * swizzle_granularity
+        )
+        self.padded_depth = padded_depth.or_else(padded_depth_default)
         self.num_pipeline_stages = num_pipeline_stages
         self.k_group_size = k_group_size
-        self.algorithm = algorithm.init(type)
+        self.algorithm = algorithm.init(dtype)
         # Not all of these have to be `OptionalReg`, only
         # those that depend on `depth`.
         # Currently, all are `OptionalReg` for consistency.
         if (
             is_sm90or100
-            and type.is_half_float()
+            and dtype.is_half_float()
             and self.algorithm == FlashAttentionAlgorithm(3)
         ):
             # BM
@@ -304,8 +315,8 @@ struct MHAConfig(Copyable, Movable, Writable):
                     min(reg_upper_bound, smem_upper_bound) // 16
                 )
                 # FIXME: add support for non-power-of-twos?
-                self.num_keys_per_block = max(
-                    prev_power_of_two(min_upper_bound), 64
+                self.num_keys_per_block = UInt(
+                    max(prev_power_of_two(min_upper_bound), 64)
                 )
             self.BK = BK.or_else(64)
             self.WN = WN.or_else(min(self.num_keys_per_block, 256))
@@ -314,18 +325,24 @@ struct MHAConfig(Copyable, Movable, Writable):
             self.num_keys_per_block = num_keys_per_block.or_else(depth)
             # BM
             self.num_queries_per_block = num_queries_per_block.or_else(
-                32 if type
-                is DType.float32 else (128 if has_amd_gpu_accelerator() else 64)
+                UInt(
+                    32 if dtype
+                    is DType.float32 else (
+                        128 if has_amd_gpu_accelerator() else 64
+                    )
+                )
             )
             var bk_arch_factor = 2 if num_pipeline_stages <= 2 else 1
-            var bk_type_factor = 1 if type is DType.float32 else 2
+            var bk_type_factor = 1 if dtype is DType.float32 else 2
             self.BK = BK.or_else(
-                16 * bk_arch_factor * bk_type_factor
+                UInt(16 * bk_arch_factor * bk_type_factor)
             ) if has_nvidia_gpu_accelerator() else 32
-            self.WN = WN.or_else(32 if type is DType.float32 else depth)
+            self.WN = WN.or_else(32 if dtype is DType.float32 else depth)
         self.WM = WM.or_else(
-            32 if type
-            is DType.float32 else (32 if has_amd_gpu_accelerator() else 16)
+            UInt(
+                32 if dtype
+                is DType.float32 else (32 if has_amd_gpu_accelerator() else 16)
+            )
         )
 
     fn __str__(self) -> String:
@@ -336,29 +353,30 @@ struct MHAConfig(Copyable, Movable, Writable):
             writer.write("ampere_")
         else:
             writer.write("fa3_")
-        writer.write(self.type, "_")
+        writer.write(self.dtype, "_")
         # Use BNxBM to match MatmulConfig, which matches cublas
         writer.write(self.block_n(), "x", self.block_m(), "_")
         writer.write(self.block_k(), "x")
         writer.write(self.num_pipeline_stages)
         writer.write(",depth = ", self.depth)
+        writer.write(",padded_depth = ", self.padded_depth)
         writer.write(",num_attention_heads = ", self.num_heads)
 
 
 @always_inline
 fn _kernel_mask[
-    type: DType, width: Int
+    dtype: DType, width: Int
 ](
-    coord: IndexList[2, **_], bound: IndexList[2, **_], vec: SIMD[type, width]
-) -> SIMD[type, width]:
-    var masked_vec = SIMD[type, width]()
+    coord: IndexList[2, **_], bound: IndexList[2, **_], vec: SIMD[dtype, width]
+) -> SIMD[dtype, width]:
+    var masked_vec = SIMD[dtype, width]()
 
     # TODO: use `select` to see if it generates the same code.
     @parameter
     for i in range(width):
         masked_vec[i] = (
             vec[i] if coord[0] < bound[0]
-            and coord[1] + UInt32(i) < bound[1] else min_or_neg_inf[type]()
+            and coord[1] + UInt32(i) < bound[1] else min_or_neg_inf[dtype]()
         )
 
     return masked_vec
@@ -705,7 +723,8 @@ fn _dispatch_score_mod[
 # when passing as a function argument.
 # That is, we want different specializations of a function to have
 # different numbers of arguments post-compilation.
-trait OptionallyStaticInt(Intable):
+@register_passable("trivial")
+trait OptionallyStaticInt(Copyable, Intable):
     alias static_value: OptionalReg[Int]
 
     fn as_uint32(self) -> UInt32:
@@ -755,7 +774,7 @@ fn _is_decoding[int_t: OptionallyStaticInt]() -> Bool:
 
 
 @register_passable("trivial")
-trait MHAPartitionScheme:
+trait MHAPartitionScheme(Copyable):
     alias do_partition: Bool
     alias accum_dtype: DType
 
@@ -772,7 +791,7 @@ trait MHAPartitionScheme:
 
 @register_passable("trivial")
 struct NoPartition[dtype: DType](
-    Copyable, Defaultable, MHAPartitionScheme, Movable
+    Defaultable, ImplicitlyCopyable, MHAPartitionScheme, Movable
 ):
     alias do_partition: Bool = False
     alias accum_dtype: DType = dtype
@@ -793,7 +812,9 @@ struct NoPartition[dtype: DType](
 
 
 @register_passable("trivial")
-struct SplitKPartition[dtype: DType](Copyable, MHAPartitionScheme, Movable):
+struct SplitKPartition[dtype: DType](
+    ImplicitlyCopyable, MHAPartitionScheme, Movable
+):
     alias do_partition: Bool = True
     alias accum_dtype: DType = Self.dtype
     var ptr: UnsafePointer[Scalar[Self.accum_dtype]]

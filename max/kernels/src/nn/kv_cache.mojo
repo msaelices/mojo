@@ -25,6 +25,7 @@ from kv_cache.types import (
     KVCollectionT,
     PagedKVCacheCollection,
 )
+from layout import Layout, LayoutTensor, RuntimeLayout, UNKNOWN_VALUE
 from linalg.matmul import elementwise_epilogue_type, matmul
 from nn._ragged_utils import get_batch_from_row_offsets
 from nn.flash_attention import (
@@ -40,10 +41,11 @@ from nn.mha_utils import (
 )
 from nn.normalization import _rms_norm_impl
 from runtime.asyncrt import DeviceContextPtr
-from runtime.tracing import Trace, TraceLevel, trace_arg
+from runtime.tracing import Trace, TraceLevel, get_safe_task_id, trace_arg
 from tensor_internal import ManagedTensorSlice, trace_slice_arg
 
 from utils import Index, IndexList
+
 
 # ===-----------------------------------------------------------------------===#
 # Fused QKV matmul (padded)
@@ -95,6 +97,7 @@ fn generic_fused_qkv_matmul_kv_cache_bshd_continuous_batch[
         + ".hdim_"
         + String(kv_collection.kv_params.head_size),
         Trace[TraceLevel.OP]._get_detail_str[description_fn](),
+        task_id=get_safe_task_id(ctx),
     ):
         return _fused_qkv_matmul_kv_cache[
             kv_collection.CacheType, target=target
@@ -194,7 +197,7 @@ fn _fused_qkv_matmul_kv_cache_impl[
     alias N = weight_shape.get[0]()
     alias K = weight_shape.get[1]()
 
-    var SEQ_LEN: UInt = hidden_state.dim[1]()
+    var SEQ_LEN: UInt = UInt(hidden_state.dim[1]())
 
     var q_dim = output.dim[2]()
     var k_dim = kv_params.head_size * kv_params.num_heads
@@ -223,12 +226,14 @@ fn _fused_qkv_matmul_kv_cache_impl[
         var output_val = val
         if idx[1] < qk_offset:
             cache = k_cache
-            h_idx, hd_idx = divmod(UInt(idx[1]) - q_dim, kv_params.head_size)
+            h_idx, hd_idx = divmod(
+                UInt(idx[1]) - UInt(q_dim), kv_params.head_size
+            )
 
         else:
             cache = v_cache
             h_idx, hd_idx = divmod(
-                UInt(idx[1]) - qk_offset, kv_params.head_size
+                UInt(idx[1]) - UInt(qk_offset), kv_params.head_size
             )
 
         var valid_len = cache.cache_length(b_idx)
@@ -350,6 +355,7 @@ fn generic_fused_qk_rope_bshd_continuous_batch[
         + ".hdim_"
         + String(kv_collection.kv_params.head_size),
         Trace[TraceLevel.OP]._get_detail_str[description_fn](),
+        task_id=get_safe_task_id(context),
     ):
         fused_qk_rope[
             kv_collection.CacheType, interleaved=interleaved, target=target
@@ -412,6 +418,7 @@ fn generic_flash_attention_kv_cache_padded[
         + ".hdim_"
         + String(collection_t.kv_params.head_size),
         Trace[TraceLevel.OP]._get_detail_str[description_fn](),
+        task_id=get_safe_task_id(context),
     ):
         return _flash_attention_dispatch[
             target=target,
@@ -615,7 +622,9 @@ def rms_norm_kv_cache_ragged_continuous_batching[
 ](
     kv_collection: ContinuousBatchingKVCacheCollection[
         dtype,
-        KVCacheStaticParams(num_heads=num_heads, head_size=head_dim),
+        KVCacheStaticParams(
+            num_heads=UInt(num_heads), head_size=UInt(head_dim)
+        ),
     ],
     gamma: NDBuffer[dtype, 1, *_],
     epsilon: Scalar[dtype],
@@ -743,11 +752,12 @@ def rms_norm_kv_cache_ragged_continuous_batching[
             val=val,
         )
 
-    with Trace[TraceLevel.OP](
+    with Trace[TraceLevel.OP, target=target](
         "rms_norm_kv_cache_ragged_continuous_batching_nhead_"
         + String(kv_collection.kv_params.num_heads)
         + ".hdim_"
         + String(kv_collection.kv_params.head_size),
+        task_id=get_safe_task_id(context),
     ):
         _rms_norm_impl[
             dtype,
@@ -756,7 +766,22 @@ def rms_norm_kv_cache_ragged_continuous_batching[
             key_cache_output_fn,
             target=target,
             multiply_before_cast=multiply_before_cast,
-        ](shape, gamma, epsilon, weight_offset, context)
+        ](
+            shape,
+            LayoutTensor[
+                gamma.type,
+                Layout.row_major(UNKNOWN_VALUE),
+                address_space = gamma.address_space,
+            ](
+                gamma.data,
+                RuntimeLayout[Layout.row_major(UNKNOWN_VALUE)].row_major(
+                    gamma.dynamic_shape.canonicalize()
+                ),
+            ),
+            epsilon,
+            weight_offset,
+            context,
+        )
 
 
 def rms_norm_kv_cache_ragged_paged[
@@ -769,7 +794,9 @@ def rms_norm_kv_cache_ragged_paged[
 ](
     kv_collection: PagedKVCacheCollection[
         dtype,
-        KVCacheStaticParams(num_heads=num_heads, head_size=head_dim),
+        KVCacheStaticParams(
+            num_heads=UInt(num_heads), head_size=UInt(head_dim)
+        ),
     ],
     gamma: NDBuffer[dtype, 1, *_],
     epsilon: Scalar[dtype],
@@ -896,11 +923,12 @@ def rms_norm_kv_cache_ragged_paged[
             val=val,
         )
 
-    with Trace[TraceLevel.OP](
+    with Trace[TraceLevel.OP, target=target](
         "rms_norm_kv_cache_ragged_paged_nhead_"
         + String(kv_collection.kv_params.num_heads)
         + ".hdim_"
         + String(kv_collection.kv_params.head_size),
+        task_id=get_safe_task_id(context),
     ):
         _rms_norm_impl[
             dtype,
@@ -909,7 +937,22 @@ def rms_norm_kv_cache_ragged_paged[
             key_cache_output_fn,
             target=target,
             multiply_before_cast=multiply_before_cast,
-        ](shape, gamma, epsilon, weight_offset, context)
+        ](
+            shape,
+            LayoutTensor[
+                gamma.type,
+                Layout.row_major(UNKNOWN_VALUE),
+                address_space = gamma.address_space,
+            ](
+                gamma.data,
+                RuntimeLayout[Layout.row_major(UNKNOWN_VALUE)].row_major(
+                    gamma.dynamic_shape.canonicalize()
+                ),
+            ),
+            epsilon,
+            weight_offset,
+            context,
+        )
 
 
 # ===-----------------------------------------------------------------------===#
@@ -952,7 +995,7 @@ def _print_cache[
                         ),
                         end=", ",
                     )
-                if kv_params.head_size > num_to_print:
+                if kv_params.head_size > UInt(num_to_print):
                     print("...", end=", ")
             if total_cache_length > num_to_print:
                 print("\n...", end=",")
@@ -1223,13 +1266,13 @@ fn _continuous_batch_kv_cache_collection[
 ):
     # Marshal NDBuffers into arguments expected by the
     # ContinuousKVCacheCollection constructor.
-    return __type_of(result)(
-        blocks=blocks,
-        cache_lengths=cache_lengths,
-        lookup_table=lookup_table,
-        max_seq_length=max_lengths[Index(0, 0)],
-        max_cache_length=max_lengths[Index(0, 1)],
-    )
+    return {
+        blocks = blocks,
+        cache_lengths = cache_lengths,
+        lookup_table = lookup_table,
+        max_seq_length = max_lengths[Index(0, 0)],
+        max_cache_length = max_lengths[Index(0, 1)],
+    }
 
 
 @always_inline
@@ -1255,13 +1298,13 @@ fn generic_get_paged_cache[
     max_lengths: NDBuffer[DType.uint32, 2],
     out result: PagedKVCacheCollection[dtype, kv_params, page_size],
 ):
-    return __type_of(result)(
-        blocks=blocks,
-        cache_lengths=cache_lengths,
-        lookup_table=lookup_table,
-        max_seq_length=max_lengths[Index(0, 0)],
-        max_cache_length=max_lengths[Index(0, 1)],
-    )
+    return {
+        blocks = blocks,
+        cache_lengths = cache_lengths,
+        lookup_table = lookup_table,
+        max_seq_length = max_lengths[Index(0, 0)],
+        max_cache_length = max_lengths[Index(0, 1)],
+    }
 
 
 @always_inline
@@ -1273,18 +1316,9 @@ fn managed_tensor_slice_to_ndbuffer[
     MutableAnyOrigin,
     spec.shape,
     spec.strides,
-    alignment = spec.alignment,
+    alignment2 = spec.alignment,
     address_space = spec.address_space,
     exclusive = spec.exclusive,
 ]:
     var ptr = tensor._ptr.address_space_cast[spec.address_space]()
-    return NDBuffer[
-        spec.dtype,
-        spec.rank,
-        _,
-        spec.shape,
-        spec.strides,
-        alignment = spec.alignment,
-        address_space = spec.address_space,
-        exclusive = spec.exclusive,
-    ](ptr, tensor.shape(), tensor._runtime_strides)
+    return {ptr, tensor.shape(), tensor._runtime_strides}

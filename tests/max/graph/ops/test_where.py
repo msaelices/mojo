@@ -18,7 +18,12 @@ from typing import Optional
 
 import numpy as np
 import pytest
-from conftest import broadcast_shapes, broadcastable_tensor_types, tensor_types
+from conftest import (
+    GraphBuilder,
+    broadcast_shapes,
+    broadcastable_tensor_types,
+    tensor_types,
+)
 from hypothesis import assume, given
 from hypothesis import strategies as st
 from max.dtype import DType
@@ -30,10 +35,10 @@ def test_where(input_types: list[TensorType]) -> None:
     input_types[0].dtype = DType.bool
 
     with Graph("where", input_types=input_types) as graph:
-        cond, x, y = graph.inputs
+        cond, x, y = (v.tensor for v in graph.inputs)
         out = ops.where(cond, x, y)
 
-        expected = reduce(broadcast_shapes, (t.shape for t in input_types))
+        expected = reduce(broadcast_shapes, (t.shape for t in input_types))  # type: ignore
         assert out.shape == expected
         assert out.dtype in (t.dtype for t in input_types)
 
@@ -76,14 +81,14 @@ shared_dtypes = st.shared(st.from_type(DType))
     y=tensor_types(dtypes=shared_dtypes),
 )
 def test_where_with_non_broadcastable_shapes(
-    graph_builder,  # noqa: ANN001
+    graph_builder: GraphBuilder,
     condition,  # noqa: ANN001
     x,  # noqa: ANN001
     y,  # noqa: ANN001
 ) -> None:
     assume(not_broadcastable(condition.shape, x.shape, y.shape))
     with Graph("where", input_types=[condition, x, y]) as graph:
-        cond, x, y = graph.inputs
+        cond, x, y = (v.tensor for v in graph.inputs)
         with pytest.raises(ValueError):
             ops.where(cond, x, y)
 
@@ -102,7 +107,7 @@ def test_where_error_message_with_non_bool_condition() -> None:
             ValueError,
             match="Expected condition to be a boolean tensor, but got a tensor with dtype DType.float32",
         ):
-            ops.where(cond, x, y)
+            ops.where(cond, x, y)  # type: ignore
 
 
 def test_where_error_message_with_mismatched_condition_shape() -> None:
@@ -119,7 +124,7 @@ def test_where_error_message_with_mismatched_condition_shape() -> None:
             ValueError,
             match="are neither equivalent nor broadcastable",
         ):
-            ops.where(cond, x, y)
+            ops.where(cond, x, y)  # type: ignore
 
 
 def test_where_error_message_with_mismatched_devices() -> None:
@@ -138,7 +143,7 @@ def test_where_error_message_with_mismatched_devices() -> None:
                 "All tensors must be on the same device, but got devices: cpu:0, cpu:0, gpu:0"
             ),
         ):
-            ops.where(cond, x, y)
+            ops.where(cond, x, y)  # type: ignore
 
 
 # The next two tests for dtype promotion rules are pretty non-trivial. Using Cursor AI,
@@ -191,7 +196,7 @@ def test_where_error_message_with_mismatched_devices() -> None:
     ),
 )
 def test_where_with_promotable_dtypes(
-    graph_builder,  # noqa: ANN001
+    graph_builder: GraphBuilder,
     condition,  # noqa: ANN001
     x_dtype,  # noqa: ANN001
     y_dtype,  # noqa: ANN001
@@ -338,8 +343,8 @@ def test_where_with_promotable_dtypes(
     y = TensorType(y_dtype, condition.shape, condition.device)
 
     with graph_builder(input_types=[condition, x, y]) as graph:
-        cond, x, y = graph.inputs
-        out = ops.where(cond, x, y)
+        cond, x, y = graph.inputs  # type: ignore
+        out = ops.where(cond, x, y)  # type: ignore
 
         # Bool always promotes to other type
         if x_dtype == DType.bool:
@@ -421,7 +426,7 @@ def test_where_with_promotable_dtypes(
     ),
 )
 def test_where_with_incompatible_dtypes(
-    graph_builder,  # noqa: ANN001
+    graph_builder: GraphBuilder,
     condition,  # noqa: ANN001
     x_dtype,  # noqa: ANN001
     y_dtype,  # noqa: ANN001
@@ -500,11 +505,11 @@ def test_where_with_incompatible_dtypes(
     y = TensorType(y_dtype, condition.shape, condition.device)
 
     with graph_builder(input_types=[condition, x, y]) as graph:
-        cond, x, y = graph.inputs
+        cond, x, y = graph.inputs  # type: ignore
         with pytest.raises(
             ValueError, match="Failed to resolve valid dtype: Unsafe cast from"
         ):
-            ops.where(cond, x, y)
+            ops.where(cond, x, y)  # type: ignore
 
 
 # Like the Dtype promotion tests above, these two tests validate the behavior of
@@ -554,7 +559,7 @@ def test_where_with_python_scalars(
             int32_tensor,
             float16_tensor,
             float32_tensor3,
-        ) = graph.inputs
+        ) = (v.tensor for v in graph.inputs)
 
         # Test successful promotions
         # Python int -> float32 (safe case)
@@ -639,7 +644,7 @@ def test_where_with_numpy_arrays(
             int64_tensor,
             float32_tensor3,
             float32_tensor4,
-        ) = graph.inputs
+        ) = (v.tensor for v in graph.inputs)
 
         # Test successful promotions
         # NumPy int32 -> float32

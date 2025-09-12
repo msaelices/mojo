@@ -58,7 +58,7 @@ fn _check_scheduler_constraints[
 
 @fieldwise_init
 @register_passable("trivial")
-struct ReductionMode(Copyable, Movable):
+struct ReductionMode(ImplicitlyCopyable, Movable):
     var _value: Int32
 
     # CTAs perform reduction in a serialized fashion so we will have deterministic numeric behavior
@@ -803,7 +803,7 @@ struct SplitKTileScheduler[
         alias BM = workspace_layout.shape[1].value()
         alias BN = workspace_layout.shape[2].value()
 
-        return __type_of(reshaped_workspace)(
+        return {
             reduction_workspace.ptr + reduction_tile_idx * BM * BN,
             RuntimeLayout[reshaped_workspace.layout].row_major(Index(BM, BN)),
-        )
+        }

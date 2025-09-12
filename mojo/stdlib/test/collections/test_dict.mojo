@@ -39,7 +39,7 @@ def test_dict_fromkeys():
     var expected_dict = Dict[String, Int]()
     expected_dict["a"] = 1
     expected_dict["b"] = 1
-    var dict = Dict.fromkeys(keys, 1)
+    var dict = Dict.fromkeys(materialize[keys](), 1)
 
     assert_equal(len(dict), len(expected_dict))
 
@@ -57,7 +57,7 @@ def test_dict_fromkeys_optional():
         "b": None,
         "c": None,
     }
-    var dict = Dict[_, Int].fromkeys(keys)
+    var dict = Dict[_, Int].fromkeys(materialize[keys]())
 
     assert_equal(len(dict), len(expected_dict))
 
@@ -631,7 +631,7 @@ def test_compile_time_dict():
         var res = Dict[String, Int32, default_comp_time_hasher]()
         for i in range(N):
             res[String(i)] = i
-        return res
+        return res^
 
     alias my_dict = _get_dict()
 

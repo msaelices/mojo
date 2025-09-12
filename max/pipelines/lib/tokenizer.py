@@ -151,7 +151,19 @@ class TextTokenizer(
         TextContext, npt.NDArray[np.integer[Any]], TextGenerationRequest
     ]
 ):
-    """Encapsulates creation of TextContext and specific token encode/decode logic."""
+    """Encapsulates creation of TextContext and specific token encode/decode logic.
+
+    Args:
+        model_path: Path to the model/tokenizer
+        revision: Git revision/branch to use
+        max_length: Maximum sequence length
+        trust_remote_code: Whether to trust remote code from the model
+        enable_llama_whitespace_fix: Enable whitespace fix for Llama tokenizers
+        pipeline_config: Optional pipeline configuration
+        chat_template: Optional custom chat template string to override the one
+                        shipped with the HuggingFace model config. This allows
+                        customizing the prompt formatting for different use cases.
+    """
 
     def __init__(
         self,
@@ -159,14 +171,13 @@ class TextTokenizer(
         *,
         revision: str | None = None,
         max_length: int | None = None,
-        max_new_tokens: int | None = None,
         trust_remote_code: bool = False,
         enable_llama_whitespace_fix: bool = False,
         pipeline_config: PipelineConfig | None = None,
+        chat_template: str | None = None,
         **unused_kwargs,
     ) -> None:
         self.model_path = model_path
-        self.max_new_tokens = max_new_tokens
 
         try:
             self.delegate = AutoTokenizer.from_pretrained(
@@ -187,6 +198,15 @@ class TextTokenizer(
                 "- '--trust_remote_code=True' is needed but not set\n"
             )
             raise ValueError(msg) from e
+
+        # Override chat template if provided
+        # This will be used by the delegate's apply_chat_template method automatically
+        self._custom_template_provided = chat_template is not None
+        if chat_template is not None:
+            self.delegate.chat_template = chat_template
+            logger.info(
+                f"Set custom chat template on tokenizer for {model_path}"
+            )
 
         # As we are adding special tokens during chat templating prior to tokenization,
         # when add_special_tokens=True, we duplicate BOS tokens specifically.
@@ -275,12 +295,31 @@ class TextTokenizer(
             messages
         )
 
-        templated_message = self.delegate.apply_chat_template(
-            flattened_messages,
-            tokenize=False,
-            tools=tools,
-            **chat_template_options,
-        )
+        try:
+            templated_message = self.delegate.apply_chat_template(
+                flattened_messages,
+                tokenize=False,
+                tools=tools,
+                **chat_template_options,
+            )
+        except Exception as e:
+            if self._custom_template_provided:
+                # Provide additional context when a custom template is used
+                error_msg = (
+                    f"Failed to apply custom chat template. This may indicate an issue "
+                    f"with your custom prompt template. Please check your template syntax "
+                    f"and ensure it properly handles the provided messages and tools.\n\n"
+                    f"Template variables available:\n"
+                    f"- messages: List of conversation messages with 'role' and 'content' fields\n"
+                    f"- tools: List of available tools (if provided)\n"
+                    f"- add_generation_prompt: Boolean for adding generation prompt\n\n"
+                    f"Original error: {type(e).__name__}: {str(e)}"
+                )
+                raise ValueError(error_msg) from e
+            else:
+                # Re-raise the original error for default templates
+                raise
+
         assert isinstance(templated_message, str)
         return templated_message
 
@@ -408,8 +447,6 @@ class TextTokenizer(
         max_new_tokens = None
         if request.sampling_params.max_new_tokens is not None:
             max_new_tokens = request.sampling_params.max_new_tokens
-        elif self.max_new_tokens != -1:
-            max_new_tokens = self.max_new_tokens
 
         max_gen_tokens = max_tokens_to_generate(
             len(token_ids), self.max_length, max_new_tokens
@@ -489,12 +526,10 @@ class TextAndVisionTokenizer(
         *,
         revision: str | None = None,
         max_length: int | None = None,
-        max_new_tokens: int | None = None,
         trust_remote_code: bool = False,
         **unused_kwargs,
     ) -> None:
         self.model_path = model_path
-        self.max_new_tokens = max_new_tokens
 
         self.delegate = AutoTokenizer.from_pretrained(
             model_path,
@@ -639,8 +674,6 @@ class TextAndVisionTokenizer(
         max_new_tokens = None
         if request.sampling_params.max_new_tokens is not None:
             max_new_tokens = request.sampling_params.max_new_tokens
-        elif self.max_new_tokens != -1:
-            max_new_tokens = self.max_new_tokens
 
         max_gen_tokens = max_tokens_to_generate(
             encoded_prompt.shape[0], self.max_length, max_new_tokens
@@ -700,6 +733,7 @@ class TextAndVisionTokenizer(
             if max_gen_tokens is not None
             else self.max_length,
             json_schema=json_schema,
+            sampling_params=request.sampling_params,
         )
         return context
 

@@ -63,19 +63,22 @@ struct ConditionalTriviality[O: MutableOrigin, //, T: Movable & Copyable](
             self.add_event(EVENT_MOVE)
 
 
+struct StructInheritTriviality[T: Movable & Copyable](Movable & Copyable):
+    alias __moveinit__is_trivial = T.__moveinit__is_trivial
+    alias __copyinit__is_trivial = T.__copyinit__is_trivial
+    alias __del__is_trivial = T.__del__is_trivial
+
+
 # ===-----------------------------------------------------------------------===#
 # Individual tests
 # ===-----------------------------------------------------------------------===#
 
 
-def test_type_trivial():
+def test_type_trivial[T: Movable & Copyable]():
     var events = List[Int]()
-    var value = ConditionalTriviality[Int](events)
-    var value_copy = value
-    # ^ optimized copy->move
-    # keep it:
-    value^.__del__()
-    var value_move = value_copy^
+    var value = ConditionalTriviality[T](events)
+    var value_copy = value.copy()
+    var _value_move = value_copy^
     assert_equal(
         events,
         [
@@ -88,14 +91,38 @@ def test_type_trivial():
     )
 
 
-def test_type_not_trivial():
+def test_type_not_trivial[T: Movable & Copyable]():
     var events = List[Int]()
-    var value = ConditionalTriviality[String](events)
-    var value_copy = value
-    # ^ optimized copy->move
-    # keep it:
-    value^.__del__()
-    var value_move = value_copy^
+    var value = ConditionalTriviality[T](events)
+    var value_copy = value.copy()
+    var _value_move = value_copy^
+    assert_equal(
+        events, [EVENT_INIT, EVENT_COPY, EVENT_DEL, EVENT_MOVE, EVENT_DEL]
+    )
+
+
+def test_type_inherit_triviality[T: Movable & Copyable]():
+    var events = List[Int]()
+    var value = ConditionalTriviality[StructInheritTriviality[T]](events)
+    var value_copy = value.copy()
+    var _value_move = value_copy^
+    assert_equal(
+        events,
+        [
+            EVENT_INIT,
+            EVENT_COPY | EVENT_TRIVIAL,
+            EVENT_DEL | EVENT_TRIVIAL,
+            EVENT_MOVE | EVENT_TRIVIAL,
+            EVENT_DEL | EVENT_TRIVIAL,
+        ],
+    )
+
+
+def test_type_inherit_non_triviality[T: Movable & Copyable]():
+    var events = List[Int]()
+    var value = ConditionalTriviality[StructInheritTriviality[T]](events)
+    var value_copy = value.copy()
+    var _value_move = value_copy^
     assert_equal(
         events, [EVENT_INIT, EVENT_COPY, EVENT_DEL, EVENT_MOVE, EVENT_DEL]
     )
@@ -107,5 +134,9 @@ def test_type_not_trivial():
 
 
 def main():
-    test_type_trivial()
-    test_type_not_trivial()
+    test_type_trivial[Int]()
+    test_type_not_trivial[String]()
+    test_type_inherit_triviality[Float64]()
+    test_type_inherit_non_triviality[String]()
+    # test_type_inherit_triviality[InlineArray[InlineArray[Int, 4], 4]]()
+    # test_type_inherit_non_triviality[InlineArray[InlineArray[String, 4], 4]]()

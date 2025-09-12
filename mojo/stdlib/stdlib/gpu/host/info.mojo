@@ -30,8 +30,8 @@ alias _KB = 1024
 
 
 @fieldwise_init
-@register_passable
-struct Vendor(Writable):
+@register_passable("trivial")
+struct Vendor(Identifiable, Writable):
     """Represents GPU vendors.
 
     This struct provides identifiers for different GPU vendors and utility
@@ -89,17 +89,6 @@ struct Vendor(Writable):
             True if vendors are identical, False otherwise.
         """
         return self == other
-
-    fn __isnot__(self, other: Self) -> Bool:
-        """Negative identity comparison for vendors.
-
-        Args:
-            other: The Vendor to compare with.
-
-        Returns:
-            True if vendors are not identical, False otherwise.
-        """
-        return self != other
 
     @no_inline
     fn write_to(self, mut writer: Some[Writer]):
@@ -610,7 +599,7 @@ fn _get_b100_target() -> _TargetType:
     return __mlir_attr[
         `#kgen.target<triple = "nvptx64-nvidia-cuda", `,
         `arch = "sm_100a", `,
-        `features = "+ptx86,+sm_100a", `,
+        `features = "+ptx88,+sm_100a", `,
         `tune_cpu = "sm_100a", `,
         `data_layout = "e-p3:32:32-p4:32:32-p5:32:32-p6:32:32-p7:32:32-i64:64-i128:128-i256:256-v16:16-v32:32-n16:32:64",`,
         `index_bit_width = 64,`,
@@ -730,6 +719,83 @@ alias RTX3090 = GPUInfo(
     warp_size=32,
     threads_per_sm=-1,
     shared_memory_per_multiprocessor=102400,
+    max_registers_per_block=65536,
+    max_thread_block_size=1024,
+)
+
+
+# ===-----------------------------------------------------------------------===#
+# GTX1080Ti
+# ===-----------------------------------------------------------------------===#
+
+
+fn _get_gtx1080ti_target() -> _TargetType:
+    """
+    Creates an MLIR target configuration for NVIDIA GTX 1080 Ti GPU.
+    Returns:
+        MLIR target configuration for GTX 1080 Ti.
+    """
+    return __mlir_attr[
+        `#kgen.target<triple = "nvptx64-nvidia-cuda", `,
+        `arch = "sm_61", `,
+        `features = "+ptx50,+sm_61", `,
+        `simd_bit_width = 128`,
+        `> : !kgen.target`,
+    ]
+
+
+alias GTX1080Ti = GPUInfo(
+    name="NVIDIA GeForce GTX 1080 Ti",
+    vendor=Vendor.NVIDIA_GPU,
+    api="cuda",
+    arch_name="pascal",
+    compute=6.1,
+    version="sm_61",
+    sm_count=28,
+    warp_size=32,
+    threads_per_sm=2048,
+    shared_memory_per_multiprocessor=98304,
+    max_registers_per_block=65536,
+    max_thread_block_size=1024,
+)
+
+
+# ===-----------------------------------------------------------------------===#
+# Tesla P100
+# ===-----------------------------------------------------------------------===#
+
+
+fn _get_teslap100_target() -> _TargetType:
+    """
+    Creates an MLIR target configuration for NVIDIA Tesla P100 GPU.
+
+    Returns:
+        MLIR target configuration for Tesla P100.
+    """
+
+    return __mlir_attr[
+        `#kgen.target<triple = "nvptx64-nvidia-cuda", `,
+        `arch = "sm_60", `,
+        `features = "+ptx50,+sm_60", `,
+        `tune_cpu = "sm_60", `,
+        `data_layout = "e-p3:32:32-p4:32:32-p5:32:32-p6:32:32-i64:64-i128:128-i256:256-v16:16-v32:32-n16:32:64",`,
+        `index_bit_width = 64,`,
+        `simd_bit_width = 128`,
+        `> : !kgen.target`,
+    ]
+
+
+alias TeslaP100 = GPUInfo(
+    name="NVIDIA Tesla P100",
+    vendor=Vendor.NVIDIA_GPU,
+    api="cuda",
+    arch_name="pascal",
+    compute=6.0,
+    version="sm_60",
+    sm_count=56,
+    warp_size=32,
+    threads_per_sm=2048,
+    shared_memory_per_multiprocessor=64 * _KB,
     max_registers_per_block=65536,
     max_thread_block_size=1024,
 )
@@ -1210,7 +1276,7 @@ alias Radeon860m = GPUInfo(
 
 @fieldwise_init
 @register_passable
-struct GPUInfo(Stringable, Writable):
+struct GPUInfo(Identifiable, Stringable, Writable):
     """
     Comprehensive information about a GPU architecture.
 
@@ -1262,6 +1328,10 @@ struct GPUInfo(Stringable, Writable):
         Returns:
             MLIR target configuration for the GPU.
         """
+        if self.name == "NVIDIA Tesla P100":
+            return _get_teslap100_target()
+        if self.name == "NVIDIA GeForce GTX 1080 Ti":
+            return _get_gtx1080ti_target()
         if self.name == "RTX2060":
             return _get_rtx2060_target()
         if self.name == "NVIDIA GeForce RTX 3090":
@@ -1441,18 +1511,6 @@ struct GPUInfo(Stringable, Writable):
         """
         return self == other
 
-    fn __isnot__(self, other: Self) -> Bool:
-        """
-        Negative identity comparison operator for `GPUInfo` instances.
-
-        Args:
-            other: Another `GPUInfo` instance to compare against.
-
-        Returns:
-            True if instances represent different GPU models.
-        """
-        return self != other
-
     @no_inline
     fn write_to(self, mut writer: Some[Writer]):
         """
@@ -1526,6 +1584,8 @@ fn _get_info_from_target[target_arch0: StaticString]() -> GPUInfo:
         in (
             # NVIDIA
             StaticString("cuda"),
+            StaticString("60"),
+            StaticString("61"),
             StaticString("75"),
             StaticString("80"),
             StaticString("86"),
@@ -1564,58 +1624,60 @@ fn _get_info_from_target[target_arch0: StaticString]() -> GPUInfo:
     ]()
 
     @parameter
-    if target_arch == "75":
-        return RTX2060
+    if target_arch == "61":
+        return materialize[GTX1080Ti]()
+    elif target_arch == "75":
+        return materialize[RTX2060]()
     elif target_arch == "80":
-        return A100
+        return materialize[A100]()
     elif target_arch == "86":
-        return A10
+        return materialize[A10]()
     elif target_arch == "87":
-        return OrinNano
+        return materialize[OrinNano]()
     elif target_arch == "89":
-        return L4
+        return materialize[L4]()
     elif target_arch == "90" or target_arch == "90a":
-        return H100
+        return materialize[H100]()
     elif target_arch == "100" or target_arch == "100a":
         # FIXME (KERN-1814): Unlike H100 and H200, blackwell devices (B100 vs B200)
         # architecture wise are different. We need to differentiate between them here.
-        return B200
+        return materialize[B200]()
     elif target_arch == "120" or target_arch == "120a":
-        return RTX5090
+        return materialize[RTX5090]()
     elif target_arch == "gfx942" or target_arch == "mi300x":
-        return MI300X
+        return materialize[MI300X]()
     elif target_arch == "gfx950" or target_arch == "mi355x":
-        return MI355X
+        return materialize[MI355X]()
     elif target_arch == "gfx1030":
-        return Radeon6900
+        return materialize[Radeon6900]()
     elif target_arch == "gfx1100":
-        return Radeon7900
+        return materialize[Radeon7900]()
     elif target_arch == "gfx1101":
-        return Radeon7800
+        return materialize[Radeon7800]()
     elif target_arch == "gfx1102":
-        return Radeon7600
+        return materialize[Radeon7600]()
     elif target_arch == "gfx1103":
-        return Radeon780m
+        return materialize[Radeon780m]()
     elif target_arch == "gfx1150":
-        return Radeon880m
+        return materialize[Radeon880m]()
     elif target_arch == "gfx1151":
-        return Radeon8060s
+        return materialize[Radeon8060s]()
     elif target_arch == "gfx1152":
-        return Radeon860m
+        return materialize[Radeon860m]()
     elif target_arch == "gfx1200":
-        return Radeon9060
+        return materialize[Radeon9060]()
     elif target_arch == "gfx1201":
-        return Radeon9070
+        return materialize[Radeon9070]()
     elif target_arch == "apple-m1":
-        return MetalM1
+        return materialize[MetalM1]()
     elif target_arch == "apple-m2":
-        return MetalM2
+        return materialize[MetalM2]()
     elif target_arch == "apple-m3":
-        return MetalM3
+        return materialize[MetalM3]()
     elif target_arch == "apple-m4":
-        return MetalM4
+        return materialize[MetalM4]()
     elif _accelerator_arch() == "":
-        return NoGPU
+        return materialize[NoGPU]()
     else:
         return _get_info_from_target[_accelerator_arch()]()
 

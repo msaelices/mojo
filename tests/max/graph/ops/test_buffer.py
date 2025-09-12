@@ -90,20 +90,20 @@ def test_value_constructor(
         buffer = BufferValue(graph.inputs[1])
         assert isinstance(buffer, BufferValue)
         assert isinstance(buffer.type, BufferType)
-        tensor = TensorValue(graph.inputs[0])
+        tensor = TensorValue(graph.inputs[0].tensor)
         assert isinstance(tensor, TensorValue)
         assert isinstance(tensor.type, TensorType)
 
         with pytest.raises(TypeError):
             BufferValue(graph.inputs[0])
         with pytest.raises(TypeError):
-            TensorValue(graph.inputs[1])
+            TensorValue(graph.inputs[1].tensor)
 
         with pytest.raises(TypeError):
             TensorValue(0)
 
         with pytest.raises(TypeError):
-            BufferValue(0)
+            BufferValue(0)  # type: ignore
 
 
 # buffer and tensor inputs share dtype and shape
@@ -115,7 +115,7 @@ def test_load(buffer_type: BufferType) -> None:
             buffer_type,
         ],
     ) as graph:
-        buffer = graph.inputs[0]
+        buffer = graph.inputs[0].buffer
         chain_0 = graph._current_chain
         assert isinstance(chain_0, _ChainValue)
         assert isinstance(chain_0.type, _ChainType)
@@ -148,8 +148,8 @@ def test_store(tensor_type: TensorType, buffer_type: BufferType) -> None:
             buffer_type,
         ],
     ) as graph:
-        tensor = graph.inputs[0]
-        buffer = graph.inputs[1]
+        tensor = graph.inputs[0].tensor
+        buffer = graph.inputs[1].buffer
         chain_0 = graph._current_chain
         ops.buffer_store(buffer, tensor)
         chain_1 = graph._current_chain
@@ -174,7 +174,7 @@ def test_load_store(buffer_type: BufferType) -> None:
             buffer_type,
         ],
     ) as graph:
-        buffer = graph.inputs[0]
+        buffer = graph.inputs[0].buffer
         chain_0 = graph._current_chain
         tensor = ops.buffer_load(buffer)
         chain_1 = graph._current_chain
@@ -212,8 +212,8 @@ def test_load_store_ellipsis_slice(
             buffer_type,
         ],
     ) as graph:
-        tensor = graph.inputs[0]
-        buffer = graph.inputs[1]
+        tensor = graph.inputs[0].tensor
+        buffer = graph.inputs[1].buffer
         chain_0 = graph._current_chain
         buffer[...] = tensor + buffer[...]
         chain_1 = graph._current_chain
@@ -244,8 +244,8 @@ def test_load_store_slice(
             buffer_type,
         ],
     ) as graph:
-        tensor = graph.inputs[0]
-        buffer = graph.inputs[1]
+        tensor = graph.inputs[0].tensor
+        buffer = graph.inputs[1].buffer
         chain_0 = graph._current_chain
         buffer[0] = tensor[0] + buffer[0]
         chain_1 = graph._current_chain
@@ -280,10 +280,10 @@ def test_no_implicit_load(
         buffer = graph.inputs[1]
 
         with pytest.raises(TypeError):  # binary ops
-            y = tensor + buffer
+            y = tensor + buffer  # type: ignore
 
         with pytest.raises(TypeError):  # unary ops
-            y = abs(buffer)
+            y = abs(buffer)  # type: ignore
 
         assert "rmo.mo.mutable.load" not in str(graph)
         assert "rmo.mo.slice" not in str(graph)
@@ -297,8 +297,8 @@ def test_prints_with_buffer_ops(
         "debug_prints_and_mutable_ops",
         input_types=[buffer_type, tensor_type],
     ) as graph:
-        buffer: BufferValue = graph.inputs[0]
-        tensor: TensorValue = graph.inputs[1]
+        buffer: BufferValue = graph.inputs[0].buffer
+        tensor: TensorValue = graph.inputs[1].tensor
 
         chain_0 = graph._current_chain
 

@@ -19,7 +19,8 @@ from memory import ArcPointer
 ```
 """
 
-from os.atomic import Atomic
+from os.atomic import Atomic, Consistency, fence
+from sys.info import size_of
 
 
 struct _ArcPointerInner[T: Movable]:
@@ -33,18 +34,37 @@ struct _ArcPointerInner[T: Movable]:
 
     fn add_ref(mut self):
         """Atomically increment the refcount."""
-        _ = self.refcount.fetch_add(1)
+
+        # `MONOTONIC` is ok here since this ArcPointer is currently being copied
+        # from an existing ArcPointer inside of __copyinit__. This means any
+        # other ArcPointer in different threads running their destructors will
+        # not see a refcount of 0 and will not delete the shared data.
+        #
+        # This is further explained in the [boost documentation]
+        # (https://www.boost.org/doc/libs/1_55_0/doc/html/atomic/usage_examples.html)
+        _ = self.refcount.fetch_add[ordering = Consistency.MONOTONIC](1)
 
     fn drop_ref(mut self) -> Bool:
         """Atomically decrement the refcount and return true if the result
         hits zero."""
-        return self.refcount.fetch_sub(1) == 1
+
+        # `RELEASE` is needed to ensure that all data access happens before
+        # decreasing the refcount. `ACQUIRE_RELEASE` is not needed since we
+        # don't need the guarantees of `ACQUIRE` on the load portion of
+        # fetch_sub if the recount does not reach zero.
+        if self.refcount.fetch_sub[ordering = Consistency.RELEASE](1) != 1:
+            return False
+
+        # However, if the refcount results in zero, this `ACQUIRE` fence is
+        # needed to synchronize with the `fetch_sub[RELEASE]` above, ensuring
+        # that use of data happens before the fence and therefore before the
+        # deletion of the data.
+        fence[ordering = Consistency.ACQUIRE]()
+        return True
 
 
 @register_passable
-struct ArcPointer[T: Movable](
-    Copyable, ExplicitlyCopyable, Identifiable, Movable
-):
+struct ArcPointer[T: Movable](Identifiable, ImplicitlyCopyable, Movable):
     """Atomic reference-counted pointer.
 
     This smart pointer owns an instance of `T` indirectly managed on the heap.
@@ -99,6 +119,37 @@ struct ArcPointer[T: Movable](
         __get_address_as_uninit_lvalue(self._inner.address) = Self._inner_type(
             value^
         )
+
+    fn __init__(out self, *, unsafe_from_raw_pointer: UnsafePointer[T]):
+        """Constructs an `ArcPointer` from a raw pointer.
+
+        Args:
+            unsafe_from_raw_pointer: A raw pointer previously returned from `ArcPointer.steal_data`.
+
+        ### Safety
+
+        The `unsafe_from_raw_pointer` argument *must* have been previously returned by a call
+        to `ArcPointer.steal_data`. Any other pointer may result in undefined behaviour.
+
+        ### Example
+
+        ```mojo
+        from memory import ArcPointer
+
+        var initial_arc = ArcPointer[Int](42)
+        var raw_ptr = initial_arc^.steal_data()
+
+        # The following will ensure the data is properly destroyed and deallocated.
+        var restored_arc = ArcPointer(unsafe_from_raw_pointer=raw_ptr)
+        ```
+        """
+        var pointer_to_payload = unsafe_from_raw_pointer.bitcast[Byte]()
+
+        # Calculate the offset to the beginning of the `_ArcPointerInner` allocation.
+        var pointer_to_inner = (
+            pointer_to_payload - size_of[__type_of(self._inner[].refcount)]()
+        )
+        self._inner = pointer_to_inner.bitcast[Self._inner_type]()
 
     fn __copyinit__(out self, existing: Self):
         """Copy an existing reference. Increment the refcount to the object.
@@ -155,7 +206,31 @@ struct ArcPointer[T: Movable](
         Returns:
             The current amount of references to the pointee.
         """
-        return self._inner[].refcount.load()
+        # TODO: this should use `load[MONOTONIC]()` once load supports memory
+        # orderings.
+        #
+        # MONOTONIC is okay here - reading refcount simply needs to be atomic.
+        # No synchronization is needed as this is not attempting to free the
+        # shared data and it is not possible for the data to be freed until
+        # this ArcPointer is destroyed.
+        return self._inner[].refcount.fetch_sub[
+            ordering = Consistency.MONOTONIC
+        ](0)
+
+    fn steal_data(deinit self) -> UnsafePointer[T]:
+        """Consume this `ArcPointer`, returning a raw pointer to the underlying data.
+
+        Returns:
+            An `UnsafePointer` to the underlying `T` value.
+
+        ### Safety
+
+        To avoid leaking memory, this pointer must be converted back to an `ArcPointer`
+        using `ArcPointer(unsafe_from_raw_pointer=ptr)`.
+        The returned pointer is not guaranteed to point to the beginning of the backing allocation,
+        meaning calling `UnsafePointer.free` may result in undefined behavior.
+        """
+        return UnsafePointer(to=self._inner[].payload)
 
     fn __is__(self, rhs: Self) -> Bool:
         """Returns True if the two `ArcPointer` instances point at the same
@@ -169,16 +244,3 @@ struct ArcPointer[T: Movable](
             False otherwise.
         """
         return self._inner == rhs._inner
-
-    fn __isnot__(self, rhs: Self) -> Bool:
-        """Returns True if the two `ArcPointer` instances point at different
-        objects.
-
-        Args:
-            rhs: The other `ArcPointer`.
-
-        Returns:
-            True if the two `ArcPointer` instances point at different objects
-            and False otherwise.
-        """
-        return self._inner != rhs._inner

@@ -71,6 +71,7 @@ from runtime.tracing import Trace, TraceLevel, trace_arg
 
 from utils.index import Index, IndexList
 from utils.numerics import get_accum_type
+from os import abort
 
 from .conv_utils import (
     ConvInfoStatic,
@@ -96,7 +97,7 @@ struct Naive2dConvolution[
     output_type: DType,
     input_type: DType,
     filter_type: DType,
-](Copyable, Movable):
+](ImplicitlyCopyable, Movable):
     """Struct wrapper for naive 2d convolution implementation."""
 
     # Input params.
@@ -372,7 +373,7 @@ struct ConvDirectNHWC[
     filter_packed: Bool,
     conv_attr: ConvInfoStatic[input_rank - 2],
     elementwise_epilogue: OptionalReg[elementwise_epilogue_type] = None,
-](Copyable, Movable):
+](ImplicitlyCopyable, Movable):
     """Implement the outer loops for direct convolution.
     Collapse N, HO, WO into one dimension n_ho_wo. Tile n_ho_wo, C, and F.
     The tile factor for C and F are chosen by a heuristic prioritizing C.
@@ -1622,15 +1623,16 @@ struct ConvDirectNHWC[
 
         var input_curr_image = self.input.data.offset(n * W * H * C)
         var output_curr_image = self.output.data.offset(n * WO * HO * F)
+        var conv_attr_dyn = materialize[conv_attr]()
 
         for ho in range(
             self.partition.ho_or_howo_offset,
             self.partition.ho_or_howo_offset + self.partition.ho_or_howo_size,
         ):
-            var h = ho * conv_attr.strides()[0] - conv_attr.pad_bottom()
+            var h = ho * conv_attr_dyn.strides()[0] - conv_attr_dyn.pad_bottom()
             # Point to (n, 0, ho, c_tile_offset) mapped in input
             var input_base = input_curr_image.offset(
-                c_tile_offset + C * (-conv_attr.pad_left() + W * h)
+                c_tile_offset + C * (-conv_attr_dyn.pad_left() + W * h)
             )
             # Point to (n, 0, ho, f_tile_offset) mapped in input
             var output_base = output_curr_image.offset(
@@ -1691,7 +1693,7 @@ struct ConvDirectNHWC[
                     0,  # beginning of wo dimension
                 )
                 input_base = input_base.offset(
-                    micro_kernel_height_lbound * conv_attr.strides()[1] * C
+                    micro_kernel_height_lbound * conv_attr_dyn.strides()[1] * C
                 )
                 output_base = output_base.offset(micro_kernel_height_lbound * F)
 
@@ -1720,7 +1722,7 @@ struct ConvDirectNHWC[
                         wo,
                     )
                     input_base = input_base.offset(
-                        height * conv_attr.strides()[1] * C
+                        height * conv_attr_dyn.strides()[1] * C
                     )
                     output_base = output_base.offset(height * F)
 
@@ -1830,17 +1832,18 @@ struct ConvDirectNHWC[
         alias WO = output_shape.get[2]()  # NHWC
         # Shift in input H when shifting 1 in filter stencil' R dimension.
         var h_shift = 0
+        var conv_attr_dyn = materialize[conv_attr]()
         # h index in input image
-        var h = ho * conv_attr.strides()[0] - conv_attr.pad_bottom()
+        var h = ho * conv_attr_dyn.strides()[0] - conv_attr_dyn.pad_bottom()
         for r in range(R):
             # Skip if row falls in padding.
             if h + h_shift < 0 or h + h_shift >= H:
-                h_shift += conv_attr.dilations()[0]
+                h_shift += conv_attr_dyn.dilations()[0]
                 continue
 
             var input_ptr = input_base.offset(h_shift * C * W)
             var filter_ptr = filter_base.offset(r * S * filter_S_stride)
-            var w = wo * conv_attr.strides()[1] - conv_attr.pad_left()
+            var w = wo * conv_attr_dyn.strides()[1] - conv_attr_dyn.pad_left()
 
             @parameter
             for s in range(S):
@@ -1889,7 +1892,7 @@ struct ConvDirectNHWC[
                 filter_ptr = filter_ptr.offset(filter_S_stride)
                 input_ptr = input_ptr.offset(s_stride_in_input)
 
-            h_shift += conv_attr.dilations()[0]
+            h_shift += conv_attr_dyn.dilations()[0]
 
         acc.store(output_micro_tile.data, micro_kernel_width * simd_size)
         # Store the micro tile
@@ -3068,7 +3071,7 @@ fn conv2d_gpu_naive_nhwc_rscf[
     var h = block_idx.y * block_dim.y + thread_idx.y
     var w = block_idx.x * block_dim.x + thread_idx.x
 
-    if h >= H_out or w >= W_out:
+    if h >= UInt(H_out) or w >= UInt(W_out):
         return
 
     for co in range(C_out):
@@ -3109,14 +3112,14 @@ fn check_cudnn_error(stat: cudnnStatus_t):
 
 
 @register_passable
-struct CuDNNConvMeta(Copyable, Defaultable, Movable):
+struct CuDNNConvMeta(ImplicitlyCopyable, Movable):
     var ptr_handle: UnsafePointer[cudnnContext]
     var ptr_input_desc: UnsafePointer[cudnnTensorStruct]
     var ptr_filter_desc: UnsafePointer[cudnnFilterStruct]
     var ptr_conv_desc: UnsafePointer[cudnnConvolutionStruct]
     var ptr_output_desc: UnsafePointer[cudnnTensorStruct]
 
-    fn __init__(out self):
+    fn __init__(out self) raises:
         self.ptr_handle = UnsafePointer[cudnnContext]()
         check_cudnn_error(cudnnCreate(UnsafePointer(to=self.ptr_handle)))
 
@@ -3143,11 +3146,20 @@ struct CuDNNConvMeta(Copyable, Defaultable, Movable):
         )
 
     fn __del__(deinit self):
-        check_cudnn_error(cudnnDestroyTensorDescriptor(self.ptr_output_desc))
-        check_cudnn_error(cudnnDestroyConvolutionDescriptor(self.ptr_conv_desc))
-        check_cudnn_error(cudnnDestroyFilterDescriptor(self.ptr_filter_desc))
-        check_cudnn_error(cudnnDestroyTensorDescriptor(self.ptr_input_desc))
-        check_cudnn_error(cudnnDestroy(self.ptr_handle))
+        try:
+            check_cudnn_error(
+                cudnnDestroyTensorDescriptor(self.ptr_output_desc)
+            )
+            check_cudnn_error(
+                cudnnDestroyConvolutionDescriptor(self.ptr_conv_desc)
+            )
+            check_cudnn_error(
+                cudnnDestroyFilterDescriptor(self.ptr_filter_desc)
+            )
+            check_cudnn_error(cudnnDestroyTensorDescriptor(self.ptr_input_desc))
+            check_cudnn_error(cudnnDestroy(self.ptr_handle))
+        except e:
+            abort(String(e))
 
 
 fn _get_cudnn_meta(ctx: DeviceContext) raises -> UnsafePointer[CuDNNConvMeta]:
@@ -3433,7 +3445,7 @@ fn conv_gpu[
             var grid_dim_x = ceildiv(
                 output.dim[2](), block_size
             )  # w / block size for 2d
-            ctx.enqueue_function[conv_gpu_n](
+            ctx.enqueue_function_checked[conv_gpu_n, conv_gpu_n](
                 input,
                 filter,
                 output,
@@ -3448,7 +3460,7 @@ fn conv_gpu[
         var grid_dim_x = ceildiv(
             output.dim[2]() * output.dim[3](), block_size
         )  # h * w / block size for 3d
-        ctx.enqueue_function[conv_gpu_3d](
+        ctx.enqueue_function_checked[conv_gpu_3d, conv_gpu_3d](
             input,
             filter,
             output,
@@ -3516,7 +3528,12 @@ fn conv3d_gpu_naive_ndhwc_qrscf[
     var d_out_idx = block_idx.y * block_dim.y + thread_idx.y
 
     # bounds check
-    if n >= N or d_out_idx >= D_out or h_out_idx >= H_out or w_out_idx >= W_out:
+    if (
+        n >= UInt(N)
+        or d_out_idx >= UInt(D_out)
+        or h_out_idx >= H_out
+        or w_out_idx >= W_out
+    ):
         return
 
     # ============= convolution =============

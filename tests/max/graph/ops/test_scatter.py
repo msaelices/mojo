@@ -42,7 +42,7 @@ def test_scatter(
     with Graph(
         "scatter", input_types=[input_type, updates_type, indices_type]
     ) as graph:
-        input_tensor, updates, indices = graph.inputs
+        input_tensor, updates, indices = (v.tensor for v in graph.inputs)
         scatter_result = ops.scatter(input_tensor, updates, indices, axis=axis)
         graph.output(scatter_result)
 
@@ -75,7 +75,7 @@ def test_scatter_input_and_updates_different_dtypes(
         "scatter_input_and_updates_different_dtypes",
         input_types=[input_type, updates_type, indices_type],
     ) as graph:
-        input_tensor, updates, indices = graph.inputs
+        input_tensor, updates, indices = (v.tensor for v in graph.inputs)
         with pytest.raises(ValueError):
             ops.scatter(input_tensor, updates, indices, axis=axis)
 
@@ -98,7 +98,11 @@ def test_scatter_input_and_updates_different_dtypes_specific_error_message() -> 
                 "The input dtype 'DType.float32' and updates dtype 'DType.float64' must match."
             ),
         ):
-            ops.scatter(graph.inputs[0], graph.inputs[1], graph.inputs[2])
+            ops.scatter(
+                graph.inputs[0].tensor,
+                graph.inputs[1].tensor,
+                graph.inputs[2].tensor,
+            )
 
 
 @given(
@@ -120,7 +124,7 @@ def test_scatter_invalid_indices_type(
         "scatter_with_invalid_indices_type",
         input_types=[input_type, updates_type, indices_type],
     ) as graph:
-        input_tensor, updates, indices = graph.inputs
+        input_tensor, updates, indices = (v.tensor for v in graph.inputs)
         with pytest.raises(ValueError):
             ops.scatter(input_tensor, updates, indices, axis=axis)
 
@@ -141,7 +145,11 @@ def test_scatter_invalid_indices_type_specific_error_message() -> None:
                 "Invalid indices dtype: 'DType.float32'. Indices must be of type int32 or int64."
             ),
         ):
-            ops.scatter(graph.inputs[0], graph.inputs[1], graph.inputs[2])
+            ops.scatter(
+                graph.inputs[0].tensor,
+                graph.inputs[1].tensor,
+                graph.inputs[2].tensor,
+            )
 
 
 @given(
@@ -165,7 +173,7 @@ def test_scatter_invalid_axis(
         "scatter_with_invalid_axis",
         input_types=[input_type, updates_type, indices_type],
     ) as graph:
-        input_tensor, updates, indices = graph.inputs
+        input_tensor, updates, indices = (v.tensor for v in graph.inputs)
         with pytest.raises(ValueError):
             ops.scatter(input_tensor, updates, indices, axis=axis)
 
@@ -187,7 +195,10 @@ def test_scatter_invalid_axis_specific_error_message() -> None:
             ),
         ):
             ops.scatter(
-                graph.inputs[0], graph.inputs[1], graph.inputs[2], axis=100
+                graph.inputs[0].tensor,
+                graph.inputs[1].tensor,
+                graph.inputs[2].tensor,
+                axis=100,
             )
 
 

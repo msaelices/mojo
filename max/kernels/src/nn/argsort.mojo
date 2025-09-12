@@ -12,6 +12,7 @@
 # ===----------------------------------------------------------------------=== #
 
 
+from collections import OptionalReg
 from math import ceildiv, iota
 from sys.info import simd_width_of
 
@@ -22,7 +23,7 @@ from gpu.host import DeviceContext
 from gpu.host import get_gpu_target
 from gpu.host.info import is_cpu
 from layout import UNKNOWN_VALUE, Layout, LayoutTensor, RuntimeLayout
-from runtime.tracing import Trace, TraceLevel
+from runtime.tracing import Trace, TraceLevel, get_safe_task_id
 
 from utils.index import IndexList, StaticTuple
 
@@ -67,7 +68,7 @@ fn _argsort_cpu[
         Span[
             Scalar[indices.dtype],
             indices.origin,
-        ](ptr=indices.ptr, length=indices.size())
+        ](ptr=indices.ptr, length=UInt(indices.size()))
     )
 
 
@@ -141,7 +142,7 @@ fn _argsort_gpu_impl[
         """
         var i = global_idx.x
 
-        if i >= n:
+        if i >= UInt(n):
             return
 
         var partner = i ^ step
@@ -353,7 +354,10 @@ fn argsort[
         input: Buffer containing values to sort.
         ctx: Device context for execution.
     """
-    with Trace[TraceLevel.OP, target=target]("argsort"):
+    with Trace[TraceLevel.OP, target=target](
+        "argsort",
+        task_id=get_safe_task_id(ctx),
+    ):
         _validate_argsort(input, output)
 
         @parameter

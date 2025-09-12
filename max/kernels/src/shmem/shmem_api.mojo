@@ -66,11 +66,13 @@ from ._nvshmem import (
     nvshmem_free,
     nvshmem_g,
     nvshmem_get,
+    nvshmem_get_nbi,
     nvshmem_malloc,
     nvshmem_my_pe,
     nvshmem_n_pes,
     nvshmem_p,
     nvshmem_put,
+    nvshmem_put_nbi,
     nvshmem_put_signal_nbi,
     nvshmem_signal_wait_until,
     nvshmem_team_my_pe,
@@ -104,7 +106,7 @@ from ._nvshmem import (
 alias shmem_team_t = c_int
 
 
-struct SHMEMScope(Copyable, EqualityComparable, Movable):
+struct SHMEMScope(EqualityComparable, ImplicitlyCopyable, Movable):
     """Enables following the OpenSHMEM spec by default for put/get/iput/iget
     etc. While allowing NVIDIA extensions for block and warp scopes by passing a
     parameter."""
@@ -213,7 +215,10 @@ fn shmem_finalize():
     @parameter
     if has_nvidia_gpu_accelerator():
         nvshmemx_hostlib_finalize()
-        _ = MPI_Finalize()
+        try:
+            _ = MPI_Finalize()
+        except e:
+            pass
     else:
         return CompilationTarget.unsupported_target_error[
             operation="shmem_finalize",
@@ -287,7 +292,7 @@ fn shmem_malloc[dtype: DType](size: UInt) -> UnsafePointer[Scalar[dtype]]:
 
     @parameter
     if has_nvidia_gpu_accelerator():
-        return nvshmem_malloc[dtype](size_of[dtype]() * size)
+        return nvshmem_malloc[dtype](UInt(size_of[dtype]() * size))
     else:
         CompilationTarget.unsupported_target_error[operation="shmem_malloc"]()
         return UnsafePointer[Scalar[dtype]]()
@@ -295,7 +300,9 @@ fn shmem_malloc[dtype: DType](size: UInt) -> UnsafePointer[Scalar[dtype]]:
 
 fn shmem_calloc[
     dtype: DType
-](count: UInt, size: UInt = size_of[dtype]()) -> UnsafePointer[Scalar[dtype]]:
+](count: UInt, size: UInt = UInt(size_of[dtype]())) -> UnsafePointer[
+    Scalar[dtype]
+]:
     """Collectively allocate a zeroed block of symmetric memory.
 
     Parameters:
@@ -430,6 +437,38 @@ fn shmem_get[
         CompilationTarget.unsupported_target_error[operation="shmem_get"]()
 
 
+fn shmem_get_nbi[
+    dtype: DType,
+    scope: SHMEMScope = SHMEMScope.default,
+](
+    dest: UnsafePointer[Scalar[dtype]],
+    source: UnsafePointer[Scalar[dtype]],
+    nelems: c_size_t,
+    pe: c_int,
+):
+    """Initiate a non-blocking copy of data from a specified PE.
+
+    Args:
+        dest: Local address of the data object to be updated.
+        source: Symmetric address of the source data object.
+        nelems: Number of elements in the dest and source arrays.
+        pe: PE number of the remote PE relative to the team associated with the
+            device.
+
+    The get routines provide a method for copying a contiguous symmetric data
+    object from a remote PE to a contiguous data object on the local PE. The
+    routines return after initiating the operation. The operation is considered
+    complete after a subsequent call to shmem_quiet. At the completion of
+    shmem_quiet, the data has been delivered to the dest array on the local PE.
+    """
+
+    @parameter
+    if is_nvidia_gpu():
+        nvshmem_get_nbi[scope](dest, source, nelems, pe)
+    else:
+        CompilationTarget.unsupported_target_error[operation="shmem_get_nbi"]()
+
+
 fn shmem_g[
     dtype: DType
 ](source: UnsafePointer[Scalar[dtype]], pe: c_int) -> Scalar[dtype]:
@@ -485,6 +524,41 @@ fn shmem_put[
         nvshmem_put[kind](dest, source, nelems, pe)
     else:
         CompilationTarget.unsupported_target_error[operation="shmem_put"]()
+
+
+fn shmem_put_nbi[
+    dtype: DType, //,
+    kind: SHMEMScope = SHMEMScope.default,
+](
+    dest: UnsafePointer[Scalar[dtype]],
+    source: UnsafePointer[Scalar[dtype]],
+    nelems: c_size_t,
+    pe: c_int,
+):
+    """Initiate a non-blocking copy of data from a contiguous local data object
+    to a data object on a specified PE.
+
+    Args:
+        dest: Symmetric address of the destination data object.
+        source: Local address of the data object containing the data to be copied.
+        nelems: Number of elements in the dest and source arrays.
+        pe: PE number of the remote PE relative to the team associated
+            with the device.
+
+    The routines return after initiating the operation. The operation is
+    considered complete after a subsequent call to shmem_quiet. At the
+    completion of shmem_quiet, the data has been copied into the dest array on
+    the destination PE. The delivery of data words into the data object on the
+    destination PE may occur in any order. Furthermore, two successive put
+    routines may deliver data out of order unless a call to shmem_fence is
+    introduced between the two calls.
+    """
+
+    @parameter
+    if is_nvidia_gpu():
+        nvshmem_put_nbi[kind](dest, source, nelems, pe)
+    else:
+        CompilationTarget.unsupported_target_error[operation="shmem_put_nbi"]()
 
 
 fn shmem_p[

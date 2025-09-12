@@ -11,7 +11,7 @@
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
 
-from math import align_up
+from math import align_up, ceildiv
 from sys import size_of, argv
 from hashlib import default_comp_time_hasher
 from buffer.buffer import NDBuffer
@@ -99,7 +99,7 @@ fn is_benchmark() -> Bool:
 
 @fieldwise_init
 @register_passable("trivial")
-struct WarpRole(Copyable, Movable):
+struct WarpRole(ImplicitlyCopyable, Movable):
     var _role: Int32
 
     alias Mma = Self(6)
@@ -238,14 +238,14 @@ fn load_AB[
         a_tma_op.async_multicast_load[cta_group](
             a_smem_slice,
             tma_mbar[stage],
-            (UInt(iter_idx) * BK, a_gmem_slice_coord),
+            (UInt(iter_idx * BK), UInt(a_gmem_slice_coord)),
             a_multicast_mask,
         )
 
         b_tma_op.async_multicast_load[cta_group](
             b_smem_slice,
             tma_mbar[stage],
-            (UInt(iter_idx) * BK, b_gmem_slice_coord),
+            (UInt(iter_idx * BK), UInt(b_gmem_slice_coord)),
             b_multicast_mask,
         )
 
@@ -306,8 +306,6 @@ fn consumer_main_loop[
     ],
     elect_one_warp: Bool,
     iter_idx: UInt,
-    accum_index: UInt,
-    stage_stride_cols: UInt,
 ):
     var stage = consumer_phase.index()
     var phase = consumer_phase.phase()
@@ -318,11 +316,10 @@ fn consumer_main_loop[
     var b_smem_tile = b_smem_iter.next(stage)[]
     # Compose TMEM address: accum stage encoded in column field with stride in columns.
     if elect_one_sync():
-        var tmem_offset = accum_index * stage_stride_cols
         mma_op.mma(
             a_smem_tile,
             b_smem_tile,
-            tmem_addr | tmem_offset,
+            tmem_addr,
             init_c=(iter_idx == 0),  # Initialize C on first iteration
         )
 
@@ -373,6 +370,7 @@ fn multi_stage_store_C[
     accum_type: DType,
     block_tile_shape: IndexList[3],
     mma_shape: IndexList[3],
+    stage_stride_cols: UInt,
     c_swizzle: TensorMapSwizzle = TensorMapSwizzle.SWIZZLE_128B,
     cta_group: Int = 1,
     num_output_warps: UInt = 4,
@@ -396,7 +394,6 @@ fn multi_stage_store_C[
     tmem_addr: UInt32,
     work_tile_coord: Tuple[UInt, UInt],
     elect_one_warp: Bool,
-    stage_stride_cols: UInt,
 ):
     # WAIT FOR MMA TO FINISH AND STORE RESULT
     # scheduler fetch next work
@@ -439,16 +436,14 @@ fn multi_stage_store_C[
     var phase = accum_pipeline_consumer_state.phase()
     accum_full_mbar[index].wait(phase)
     # this is the column offset for all the stages of THIS load, where one load takes (num_stages iterations)
-    var tmem_offset = index * stage_stride_cols
+    var tmem_offset = index * stage_stride_cols + tmem_addr
 
     @parameter
     for stage in range(num_stages):
         # column offset, moving right by 32 columns each time, since each num_stage stores two, 16 column submatrices
         # MMA has result in 32 rows per warp's data paths.
         # upper_frag is for rows 0-15, lower is for 16-31.
-        var stage_tmem_addr = (
-            (tmem_addr | (warp_id * 32 << 16)) + (stage * stageN) + tmem_offset
-        )
+        var stage_tmem_addr = tmem_offset + (stage * stageN)
         var upper_frag = tcgen05_ld[
             datapaths=data_paths,
             bits=bits,
@@ -463,7 +458,7 @@ fn multi_stage_store_C[
             repeat=rep,
             dtype=accum_type,
             pack=False,
-        ](stage_tmem_addr | (16 << 16))
+        ](stage_tmem_addr + (16 << 16))
 
         tcgen05_load_wait()
 
@@ -491,8 +486,8 @@ fn multi_stage_store_C[
             c_tma_op.async_store(
                 c_smem_tile,
                 (
-                    work_tile_coord[1] * MMA_N + stage * stageN,
-                    work_tile_coord[0] * BM,
+                    UInt(work_tile_coord[1] * MMA_N + stage * stageN),
+                    UInt(work_tile_coord[0] * BM),
                 ),
             )
             c_tma_op.commit_group()
@@ -561,7 +556,7 @@ fn kernel_8[
 
     # For ld from TMEM, use same per-stage stride in column field.
     alias TMEM_N = 512
-    var stage_stride_cols = TMEM_N // num_accum_pipeline_stages
+    alias stage_stride_cols = TMEM_N // num_accum_pipeline_stages
 
     alias clc_throttle_producer_arv_count = TMA_LOAD_THREADS
     alias clc_throttle_consumer_arv_count = SCHEDULER_THREADS
@@ -701,6 +696,9 @@ fn kernel_8[
     alias max_tmem_cols = 512
 
     if elect_one_warp and elect_one_thread:
+        a_tma_op.prefetch_descriptor()
+        b_tma_op.prefetch_descriptor()
+        c_tma_op.prefetch_descriptor()
 
         @parameter
         for i in range(num_pipeline_stages):
@@ -768,7 +766,7 @@ fn kernel_8[
         cluster_shape = Index[dtype = DType.uint32](
             cluster_shape[0], cluster_shape[1], cluster_shape[2]
         ),
-        swizzle_size=1,
+        block_swizzle_size=1,
     ](cluster_dim, clc_response, clc_full_mbar, clc_empty_mbar)
 
     var work_info = scheduler.initial_work_info()
@@ -778,9 +776,9 @@ fn kernel_8[
 
     # (peer_id, mma_coord_m, mma_coord_n)
     var peer_cta_coord = (
-        rank_m % cta_group,
-        rank_m // cta_group,
-        rank_n,
+        UInt(rank_m % cta_group),
+        UInt(rank_m // cta_group),
+        UInt(rank_n),
     )  # v,m,n
 
     var a_multicast_mask: UInt16 = 0x0
@@ -904,9 +902,9 @@ fn kernel_8[
             if elect_one_cta:
                 var accum_index = accum_pipeline_producer_state.index()
                 var accum_phase = accum_pipeline_producer_state.phase()
-
                 accum_empty_mbar[accum_index].wait(accum_phase)
 
+                var tmem_offset = tmem_addr + (accum_index * stage_stride_cols)
                 for i in range(num_iters):
                     consumer_main_loop[
                         block_tile_shape=block_tile_shape,
@@ -916,7 +914,7 @@ fn kernel_8[
                             cluster_shape[0], cluster_shape[1], cluster_shape[2]
                         ),
                     ](
-                        tmem_addr,
+                        tmem_offset,
                         a_smem,
                         b_smem,
                         mma_mbar,
@@ -925,8 +923,6 @@ fn kernel_8[
                         mma_op,
                         elect_one_warp,
                         i,
-                        accum_index,
-                        stage_stride_cols,
                     )
                     consumer_phase.step()
 
@@ -957,6 +953,7 @@ fn kernel_8[
                 accum_type=accum_type,
                 block_tile_shape=block_tile_shape,
                 mma_shape=mma_shape,
+                stage_stride_cols = UInt(stage_stride_cols),
                 c_swizzle=c_swizzle,
                 cta_group=cta_group,
                 num_output_warps=num_output_warps,
@@ -970,7 +967,6 @@ fn kernel_8[
                 tmem_addr,
                 work_tile_coord=(UInt(work_info.m), UInt(work_info.n)),
                 elect_one_warp=elect_one_warp,
-                stage_stride_cols=stage_stride_cols,
             )
             accum_pipeline_consumer_state.step()
 
@@ -998,21 +994,20 @@ fn blackwell_kernel_8[
     cluster_shape: StaticTuple[Int32, 3],
     a_swizzle: TensorMapSwizzle = TensorMapSwizzle.SWIZZLE_128B,
     b_swizzle: TensorMapSwizzle = TensorMapSwizzle.SWIZZLE_128B,
-    c_swizzle: TensorMapSwizzle = TensorMapSwizzle.SWIZZLE_128B,
     cta_group: Int = 1,
     num_clc_pipeline_stages: UInt = 2,
 ](
     c_device: NDBuffer[c_type, 2, _, c_shape],
     a_device: NDBuffer[a_type, 2, _, a_shape],
     b_device: NDBuffer[b_type, 2, _, b_shape],
-    M: Int,
-    N: Int,
-    K: Int,
     ctx: DeviceContext,
 ) raises:
     var a = from_ndbuffer_row_major(a_device)
     var b = from_ndbuffer_row_major(b_device)
     var c = from_ndbuffer_row_major(c_device)
+    var M = c.dim[0]()
+    var N = c.dim[1]()
+    var K = a.dim[1]()
 
     constrained[
         transpose_b,
@@ -1042,12 +1037,12 @@ fn blackwell_kernel_8[
     ](ctx, b)
 
     alias output_tile_shape = Index(BM, 32)
-    alias c_swizzle_mode = TensorMapSwizzle.SWIZZLE_64B
+    alias c_swizzle = TensorMapSwizzle.SWIZZLE_64B
     var c_tma_op = create_tma_tile[
         c_type,
         2,
         output_tile_shape,
-        swizzle_mode=c_swizzle_mode,
+        swizzle_mode=c_swizzle,
     ](ctx, c)
 
     # ctx.default_device_info.shared_memory_per_multiprocessor gives this magic number on B200
@@ -1131,16 +1126,16 @@ fn blackwell_kernel_8[
         b_swizzle=b_swizzle,
         c_swizzle=c_swizzle,
         cta_group=cta_group,
-        num_pipeline_stages=max_pipeline_stages,
+        num_pipeline_stages = UInt(max_pipeline_stages),
         num_clc_pipeline_stages=num_clc_pipeline_stages,
-        num_accum_pipeline_stages=max_accum_pipeline_stages,
+        num_accum_pipeline_stages = UInt(max_accum_pipeline_stages),
         num_output_stages=num_output_stages,
         output_tile_shape=output_tile_shape,
     ]
 
     var grid_dim = (
-        align_up(M // BM, Int(cluster_shape[0])),
-        align_up(N // BN // cta_group, Int(cluster_shape[1])),
+        align_up(ceildiv(M, BM), Int(cluster_shape[0])),
+        align_up(ceildiv(N, MMA_N), Int(cluster_shape[1])),
         1,
     )
 
@@ -1260,14 +1255,12 @@ def test_blackwell_kernel_8[
         c_device.tensor,
         a_device.tensor,
         b_device.tensor,
-        M,
-        N,
-        K,
         ctx,
     )
 
+    @parameter
     if benchmark:
-        alias num_runs = 100
+        alias num_runs = 10000
         alias num_warmup = 100
 
         @always_inline
@@ -1285,9 +1278,6 @@ def test_blackwell_kernel_8[
                 c_device.tensor,
                 a_device.tensor,
                 b_device.tensor,
-                M,
-                N,
-                K,
                 ctx,
             )
 
@@ -1366,7 +1356,7 @@ fn make_dic_of_shapes() -> (
 ):
     var dic = Dict[Int, Tuple[Int, Int, Int], default_comp_time_hasher]()
     dic[0] = (4096, 4096, 4096)
-    return dic
+    return dic^
 
 
 fn benchmark_blackwell_matmul(ctx: DeviceContext) raises:

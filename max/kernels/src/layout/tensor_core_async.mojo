@@ -60,6 +60,7 @@ from layout.layout import (
 
 from utils import IndexList, StaticTuple
 from sys._assembly import inlined_assembly
+from collections import OptionalReg
 
 # ===-----------------------------------------------------------------------===#
 # WGMMA shared memory layout                                                   #
@@ -252,7 +253,7 @@ fn _select_k_atom_bits[
 
 
 fn select_k_atom[
-    type: DType,
+    dtype: DType,
     swizzle_mode: TensorMapSwizzle,
 ]() -> Layout:
     """Creates a core matrix layout for tensor core operations.
@@ -262,25 +263,25 @@ fn select_k_atom[
     matrix structure that can be efficiently processed by tensor cores.
 
     Parameters:
-        type: Element data type of the tensor.
+        dtype: Element data type of the tensor.
         swizzle_mode: Memory access pattern swizzling mode.
 
     Returns:
         `Layout` - A core matrix layout optimized for tensor core operations.
     """
     alias a = _select_k_atom_bits[swizzle_mode]()
-    return upcast(a, size_of[type]() * 8)
+    return upcast(a, dtype.bit_width())
 
 
 fn _checked_tile_shape[
-    type: DType,
+    dtype: DType,
     swizzle_mode: TensorMapSwizzle,
     BM: Int,
     BK: Int,
 ]() -> IntTuple:
     @parameter
     if swizzle_mode != TensorMapSwizzle.SWIZZLE_NONE:
-        alias k_bytes = BK * size_of[type]()
+        alias k_bytes = BK * dtype.size_of()
         constrained[
             (k_bytes % swizzle_mode.bytes()) == 0,
             "K dim "
@@ -294,7 +295,7 @@ fn _checked_tile_shape[
 
 
 fn tile_layout_k_major[
-    type: DType,
+    dtype: DType,
     BM: Int,
     BK: Int,
     swizzle_mode: TensorMapSwizzle = TensorMapSwizzle.SWIZZLE_NONE,
@@ -305,7 +306,7 @@ fn tile_layout_k_major[
     with optional swizzling for improved memory access patterns.
 
     Parameters:
-        type: Element data type of the tensor.
+        dtype: Element data type of the tensor.
         BM: Size of the M dimension in the tile.
         BK: Size of the K dimension in the tile.
         swizzle_mode: Memory access pattern swizzling mode (default: SWIZZLE_NONE).
@@ -313,13 +314,13 @@ fn tile_layout_k_major[
     Returns:
         `Layout` - A K-major layout configured for the specified dimensions and swizzle mode.
     """
-    alias atom = select_k_atom[type, swizzle_mode]()
-    alias new_shape = _checked_tile_shape[type, swizzle_mode, BM, BK]()
+    alias atom = select_k_atom[dtype, swizzle_mode]()
+    alias new_shape = _checked_tile_shape[dtype, swizzle_mode, BM, BK]()
     return tile_to_shape(atom, new_shape)
 
 
 fn tile_to_descriptor[
-    type: DType,
+    dtype: DType,
     layout: Layout,
     is_k_major: Bool = True,
 ]() -> Layout:
@@ -329,7 +330,7 @@ fn tile_to_descriptor[
     handling both K-major and MN-major layouts differently.
 
     Parameters:
-        type: Element data type of the tensor.
+        dtype: Element data type of the tensor.
         layout: Input layout to transform.
         is_k_major: Whether the layout is K-major (True) or MN-major (False).
 
@@ -340,16 +341,16 @@ fn tile_to_descriptor[
     @parameter
     if is_k_major:
         # Tile a layout to ((8,m),(T,2)) shape to match the K-major wgmma descriptor
-        alias T = _CM_ROW_BYTES // size_of[type]()
+        alias T = _CM_ROW_BYTES // dtype.size_of()
         alias tiler = MakeLayoutList(Layout(_CM_NUM_ROWS), Layout(T))
-        return logical_divide(layout, tiler)
+        return logical_divide(layout, materialize[tiler]())
     else:
         # We are not using atom layout for MN-major layouts.
         return layout
 
 
 fn tile_layout_mn_major[
-    type: DType,
+    dtype: DType,
     mn_dim: Int,
     k_dim: Int,
     swizzle_mode: TensorMapSwizzle = TensorMapSwizzle.SWIZZLE_NONE,
@@ -360,7 +361,7 @@ fn tile_layout_mn_major[
     with optional swizzling for improved memory access patterns.
 
     Parameters:
-        type: Element data type of the tensor.
+        dtype: Element data type of the tensor.
         mn_dim: Size of the MN dimension.
         k_dim: Size of the K dimension.
         swizzle_mode: Memory access pattern swizzling mode (default: SWIZZLE_NONE).
@@ -381,7 +382,7 @@ fn tile_layout_mn_major[
     @parameter
     if swizzle_mode == TensorMapSwizzle.SWIZZLE_128B:
         # See comments in file header.
-        alias row_len = swizzle_mode.bytes() // size_of[type]()
+        alias row_len = swizzle_mode.bytes() // dtype.size_of()
         return Layout(
             [
                 [row_len, mn_dim // row_len],
@@ -395,7 +396,7 @@ fn tile_layout_mn_major[
 
     # No swizzle
     # Number of elements per row in core matrix
-    alias _CM_ROW_LEN = _CM_ROW_BYTES // size_of[type]()
+    alias _CM_ROW_LEN = _CM_ROW_BYTES // dtype.size_of()
     return Layout(
         [
             [_CM_ROW_LEN, mn_dim // _CM_ROW_LEN],
@@ -555,13 +556,13 @@ fn st_matrix_n_layout[
 
 
 fn _wgmma_descriptor[
-    type: DType, //,
+    dtype: DType, //,
     layout: Layout,
     is_k_major: Bool = True,
     swizzle: TensorMapSwizzle = TensorMapSwizzle.SWIZZLE_NONE,
 ](
-    addr: UnsafePointer[Scalar[type], address_space = AddressSpace.SHARED]
-) -> WGMMADescriptor[type]:
+    addr: UnsafePointer[Scalar[dtype], address_space = AddressSpace.SHARED]
+) -> WGMMADescriptor[dtype]:
     # Conform to canonical layout.
     constrained[
         layout.rank() == 2 and layout[0].rank() == 2 and layout[1].rank() == 2,
@@ -582,8 +583,8 @@ fn _wgmma_descriptor[
         ]()
 
         # Ignore 4 LSB.
-        alias SBO = (stride01 * size_of[type]()) >> 4
-        alias LBO = (stride11 * size_of[type]()) >> 4
+        alias SBO = (stride01 * dtype.size_of()) >> 4
+        alias LBO = (stride11 * dtype.size_of()) >> 4
 
         return WGMMADescriptor.create[SBO, LBO, swizzle](addr)
 
@@ -591,8 +592,8 @@ fn _wgmma_descriptor[
 
     # Swizzle and non-swizzle modes switch SBO and LBO based on
     # https://docs.nvidia.com/cuda/parallel-thread-execution/index.html?highlight=bar%2520sync#asynchronous-warpgroup-level-majorness-supported-by-strides
-    alias SBO = ((stride01 if no_swizzle else stride11) * size_of[type]()) >> 4
-    alias LBO = ((stride11 if no_swizzle else stride01) * size_of[type]()) >> 4
+    alias SBO = ((stride01 if no_swizzle else stride11) * dtype.size_of()) >> 4
+    alias LBO = ((stride11 if no_swizzle else stride01) * dtype.size_of()) >> 4
 
     return WGMMADescriptor.create[SBO, LBO, swizzle](addr)
 
@@ -739,6 +740,7 @@ struct TensorCoreAsync[
         scale_c: Int = 1,
         scale_a: Int = 1,
         scale_b: Int = 1,
+        num_k_iters: OptionalReg[Int] = None,
     ](
         a_smem_tile: LayoutTensor[
             a_type, _, _, address_space = AddressSpace.SHARED, *_, **_
@@ -760,6 +762,7 @@ struct TensorCoreAsync[
             scale_c: Scale factor for matrix C. Valid values are 1 or 0 (default: 1).
             scale_a: Scale factor for matrix A. Valid values are 1 or -1 (default: 1).
             scale_b: Scale factor for matrix B. Valid values are 1 or -1 (default: 1).
+            num_k_iters: Number of iterations for the K dimension. This is useful to save computation when we pad shared memory. (default: None which is just `a_smem_layout[1].size() // mma_shape[2]`).
 
         Args:
             a_smem_tile: Matrix A in shared memory.
@@ -821,7 +824,7 @@ struct TensorCoreAsync[
 
         alias num_m_mmas = a_canonical_layout[0].size() // mma_shape[0] // num_warp_groups
         alias num_n_mmas = b_canonical_layout[0].size() // mma_shape[1]
-        alias num_k_mmas = a_smem_layout[1].size() // mma_shape[2]
+        alias num_k_mmas = num_k_iters.or_else(a_smem_layout[1].size() // mma_shape[2])
 
         # Number of wgmma per canonical layout. There can be multiple canonical layouts
         # per K dim e.g. BF16 128B swizzle has BK = 64 while input K = 128.
@@ -937,7 +940,13 @@ struct TensorCoreAsync[
         alias b_stride01 = b_canonical_layout[0].stride[1].value()
         alias b_stride11 = b_canonical_layout[1].stride[1].value()
         # Strides between WGMMA tiles
-        constrained[mma_shape[1] % b_shape00 == 0]()
+        constrained[
+            mma_shape[1] % b_shape00 == 0,
+            "b_shape00 = ",
+            String(b_shape00),
+            ", mma_shape[1] = ",
+            String(mma_shape[1]),
+        ]()
         # fmt: off
         alias b_n_stride = b_stride01 * (mma_shape[1] // b_shape00) * size_of[b_type]()
         # K dim is stepped by 2 core matrices.

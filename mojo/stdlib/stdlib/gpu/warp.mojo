@@ -104,7 +104,7 @@ fn _shuffle[
         @parameter
         if simd_width == 1:
             # splat and recurse to meet 32 bitwidth requirements
-            var splatted_val = SIMD[dtype, 2](val._refine[size=1]())
+            var splatted_val = SIMD[dtype, 2](val._refine[new_size=1]())
             return _shuffle[mnemonic, WIDTH_MASK=WIDTH_MASK](
                 mask, splatted_val, offset
             )[0]
@@ -146,10 +146,10 @@ fn _shuffle_amd_helper[
         return _shuffle_amd_helper(dst_lane, val.cast[DType.int32]()).cast[
             dtype
         ]()
-    elif bit_width_of[dtype]() == 16:
-        var val_splatted = SIMD[dtype, 2](val._refine[size=1]())
+    elif dtype.bit_width() == 16:
+        var val_splatted = SIMD[dtype, 2](val._refine[new_size=1]())
         return _shuffle_amd_helper(dst_lane, val_splatted)[0]
-    elif bit_width_of[dtype]() == 64:
+    elif dtype.bit_width() == 64:
         var val_bitcast = bitcast[DType.uint32, simd_width * 2](val)
         var val_half1, val_half2 = val_bitcast.deinterleave()
         var shuffle1 = _shuffle_amd_helper(dst_lane, val_half1)
@@ -774,7 +774,7 @@ fn sum[
 
 @fieldwise_init
 @register_passable("trivial")
-struct ReductionMethod:
+struct ReductionMethod(EqualityComparable, Identifiable):
     """Enumerates the supported reduction methods."""
 
     var _value: Int
@@ -795,17 +795,6 @@ struct ReductionMethod:
         """
         return self._value == other._value
 
-    fn __ne__(self, other: Self) -> Bool:
-        """Checks if two ReductionMethod are not equal.
-
-        Args:
-            other: The other ReductionMethod to compare.
-
-        Returns:
-            True if the ReductionMethod are not equal, false otherwise.
-        """
-        return self._value != other._value
-
     fn __is__(self, other: Self) -> Bool:
         """Checks if two ReductionMethod are identical.
 
@@ -816,17 +805,6 @@ struct ReductionMethod:
             True if the ReductionMethod are identical, false otherwise.
         """
         return self == other
-
-    fn __isnot__(self, other: Self) -> Bool:
-        """Checks if two ReductionMethod are not identical.
-
-        Args:
-            other: The other ReductionMethod to compare.
-
-        Returns:
-            True if the ReductionMethod are not identical, false otherwise.
-        """
-        return self != other
 
 
 @always_inline

@@ -102,6 +102,9 @@ def validate_field_type(field_type: Any) -> bool:
     else:
         test_type = field_type
 
+    if get_origin(test_type) is dict:
+        return True
+
     for valid_type in VALID_CONFIG_TYPES:
         if valid_type == test_type:
             return True
@@ -134,7 +137,7 @@ def get_field_type(field_type: Any):
     return field_type
 
 
-def get_default(dataclass_field: Field) -> Any:
+def get_default(dataclass_field: Field[Any]) -> Any:
     if dataclass_field.default_factory != MISSING:
         default = dataclass_field.default_factory()
     elif dataclass_field.default != MISSING:
@@ -149,7 +152,9 @@ def is_multiple(field_type: Any) -> bool:
     return get_origin(field_type) is list
 
 
-def get_normalized_flag_name(dataclass_field: Field, field_type: Any) -> str:
+def get_normalized_flag_name(
+    dataclass_field: Field[Any], field_type: Any
+) -> str:
     normalized_name = dataclass_field.name.lower().replace("_", "-")
 
     if is_flag(field_type):
@@ -160,9 +165,9 @@ def get_normalized_flag_name(dataclass_field: Field, field_type: Any) -> str:
 
 def create_click_option(
     help_for_fields: dict[str, str],
-    dataclass_field: Field,
+    dataclass_field: Field[Any],
     field_type: Any,
-) -> Callable[[Callable], Callable]:
+) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]:
     # Get Help text.
     help_text = help_for_fields.get(dataclass_field.name, None)
 
@@ -277,6 +282,125 @@ def pipeline_config_options(func: Callable[_P, _R]) -> Callable[_P, _R]:
             draft_devices
         )
 
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
+def sampling_params_options(func: Callable[_P, _R]) -> Callable[_P, _R]:
+    @click.option(
+        "--top-k",
+        is_flag=False,
+        type=int,
+        show_default=False,
+        default=None,
+        help="Limits the sampling to the K most probable tokens. This defaults to 255. For greedy sampling, set to 1.",
+    )
+    @click.option(
+        "--top-p",
+        is_flag=False,
+        type=float,
+        show_default=False,
+        default=None,
+        help="Only use the tokens whose cumulative probability is within the top_p threshold. This applies to the top_k tokens.",
+    )
+    @click.option(
+        "--min-p",
+        is_flag=False,
+        type=float,
+        show_default=False,
+        default=None,
+        help="Float that represents the minimum probability for a token to be considered, relative to the probability of the most likely token. Must be in [0, 1]. Set to 0 to disable this.",
+    )
+    @click.option(
+        "--temperature",
+        is_flag=False,
+        type=float,
+        show_default=False,
+        default=None,
+        help="Controls the randomness of the model's output; higher values produce more diverse responses.",
+    )
+    @click.option(
+        "--frequency-penalty",
+        is_flag=False,
+        type=float,
+        show_default=False,
+        default=None,
+        help="The frequency penalty to apply to the model's output. A positive value will penalize new tokens based on their frequency in the generated text.",
+    )
+    @click.option(
+        "--presence-penalty",
+        is_flag=False,
+        type=float,
+        show_default=False,
+        default=None,
+        help="The presence penalty to apply to the model's output. A positive value will penalize new tokens that have already appeared in the generated text at least once.",
+    )
+    @click.option(
+        "--repetition-penalty",
+        is_flag=False,
+        type=float,
+        show_default=False,
+        default=None,
+        help="The repetition penalty to apply to the model's output. Values > 1 will penalize new tokens that have already appeared in the generated text at least once.",
+    )
+    @click.option(
+        "--max-new-tokens",
+        is_flag=False,
+        type=int,
+        show_default=False,
+        default=None,
+        help="Maximum number of new tokens to generate during a single inference pass of the model.",
+    )
+    @click.option(
+        "--min-new-tokens",
+        is_flag=False,
+        type=int,
+        show_default=False,
+        default=None,
+        help="Minimum number of tokens to generate in the response.",
+    )
+    @click.option(
+        "--ignore-eos",
+        is_flag=True,
+        show_default=False,
+        default=None,
+        help="If True, the response will ignore the EOS token, and continue to generate until the max tokens or a stop string is hit.",
+    )
+    @click.option(
+        "--stop",
+        is_flag=False,
+        type=str,
+        show_default=False,
+        default=None,
+        multiple=True,
+        help="A list of detokenized sequences that can be used as stop criteria when generating a new sequence. Can be specified multiple times.",
+    )
+    @click.option(
+        "--stop-token-ids",
+        is_flag=False,
+        type=str,
+        show_default=False,
+        default=None,
+        help="A list of token ids that are used as stopping criteria when generating a new sequence. Comma-separated integers.",
+    )
+    @click.option(
+        "--detokenize/--no-detokenize",
+        is_flag=True,
+        show_default=False,
+        default=None,
+        help="Whether to detokenize the output tokens into text.",
+    )
+    @click.option(
+        "--seed",
+        is_flag=False,
+        type=int,
+        show_default=False,
+        default=None,
+        help="Seed for the random number generator.",
+    )
+    @functools.wraps(func)
+    def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
         return func(*args, **kwargs)
 
     return wrapper

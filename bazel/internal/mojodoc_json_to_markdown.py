@@ -68,6 +68,35 @@ def processStructConvention(mojo_json) -> None:  # noqa: ANN001
                 exit(1)
 
 
+def processTraitMethods(mojo_json) -> None:  # noqa: ANN001
+    """Dividing the single list of methods into required and provided lists,
+    where provided methods are those with a default implementation.
+    Note that a single function may have both required overloads and provided
+    overloads."""
+    for trait in mojo_json["traits"]:
+        trait["required_methods"] = []
+        trait["provided_methods"] = []
+
+        for function in trait["functions"]:
+            required_overloads = []
+            provided_overloads = []
+
+            for overload in function["overloads"]:
+                if overload["hasDefaultImplementation"]:
+                    provided_overloads.append(overload)
+                else:
+                    required_overloads.append(overload)
+
+            if len(required_overloads) > 0:
+                required_method = function.copy()
+                required_method["overloads"] = required_overloads
+                trait["required_methods"].append(required_method)
+            if len(provided_overloads) > 0:
+                provided_method = function.copy()
+                provided_method["overloads"] = provided_overloads
+                trait["provided_methods"].append(provided_method)
+
+
 def removeSelfArgumentFromStructMethods(mojo_json) -> None:  # noqa: ANN001
     """If we are in a non-static struct method, we don't want to show the first argument (self) as an
     argument in the documentation. So we remove it from all the functions that are child of structs.
@@ -170,7 +199,35 @@ def generateMarkdown(
     is_nested=False,  # noqa: ANN001
     namespace=None,  # noqa: ANN001
 ) -> None:
+    """Generate markdown docs from `mojo doc` JSON data.
+
+    This function recursively processes Mojo documentation JSON data and generates
+    corresponding markdown files using Jinja2 templates. It handles packages, modules,
+    structs, traits, and functions, applying various transformations to the data
+    before rendering.
+
+    Args:
+        mojo_json: The JSON data structure containing Mojo documentation information.
+        version: The version string to be included in the generated documentation.
+        output: The base output directory path where generated markdown files will be written.
+        environment: The Jinja2 environment configured with template loaders and settings.
+            Used to load and render documentation templates.
+        template: The Jinja2 template to use for rendering the current JSON data.
+        parent_json: The parent JSON data structure when processing nested elements.
+            Used for context when generating documentation for child modules, structs, etc.
+            Defaults to None.
+        is_nested: Flag indicating whether this is a nested call within a package/module hierarchy.
+            Affects path generation and namespace handling. Defaults to False.
+        namespace: The current namespace path (dot-separated).
+            Used to generate fully qualified names and proper cross-references.
+            Defaults to None.
+    """
     name = mojo_json["name"]
+
+    # Add the module name to the JSON only if the parent is "__init__"
+    # so we can create the proper "view source" link.
+    if parent_json and parent_json["name"] == "__init__":
+        mojo_json["module_name"] = parent_json["name"]
 
     # Skip private modules.
     if name != "__init__" and name.startswith("_"):
@@ -208,6 +265,7 @@ def generateMarkdown(
             addImplicitConversionDecorator,
             copyFieldTypesToValue,
             processStructConvention,
+            processTraitMethods,
             removeParametersWithoutDocumentation,
             removeArgumentsWithoutDocumentation,
             removeSelfArgumentFromStructMethods,
@@ -215,8 +273,13 @@ def generateMarkdown(
         ]:
             transformation(mojo_json)
 
-        # If we don't have an output path, we use the slug for the module.
-        output = output / Path(mojo_json["slug"])
+        # Use the member name as the `slug` for Docusaurus URLs (case sensitive).
+        # But don't use the `__init__` name in the path. Normally this doesn't
+        # matter, because the init module is just the index file and has no
+        # descendant members. But in the event that the `__init__.mojo` file does
+        # include code, we don't want the `__init__` name in the path.
+        if name != "__init__":
+            output = output / Path(mojo_json["slug"])
         struct_template = environment.get_template("mojodoc_struct.md")
         function_template = environment.get_template("mojodoc_function.md")
 
@@ -274,9 +337,8 @@ def generateMarkdown(
 
         # Handle the init module.
         if name == "__init__" and parent_json:
-            # The init module is generated as the index file in the output
-            # directory.
-            output = output.with_name("index.md")
+            mojo_json["module_name"] = name  # For the "view source" link.
+            output = output / Path("index.md")
 
             # Add links to the public modules and packages in the parent.
             mojo_json["modules"] = [
@@ -347,7 +409,7 @@ def main() -> None:
         version = docJson["version"]
         decl = docJson["decl"]
         generateMarkdown(decl, version, args.output, environment, template)
-        os.remove(args.filename)
+        # os.remove(args.filename)
 
 
 if __name__ == "__main__":

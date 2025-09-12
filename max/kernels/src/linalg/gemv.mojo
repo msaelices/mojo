@@ -62,7 +62,7 @@ from layout.tensor_builder import LayoutTensorBuild as tb
 
 
 @fieldwise_init
-struct GEMVAlgorithm(Copyable, Movable, Stringable, Writable):
+struct GEMVAlgorithm(ImplicitlyCopyable, Movable, Stringable, Writable):
     var _value: Int
 
     alias GEMV_KERNEL = Self(0)
@@ -206,7 +206,7 @@ fn gemv_kernel_vector[
         var a_tile = a.tile[1, Int(WARP_SIZE * simd_width)](warp_id, i)
         var b_tile = b.tile[1, Int(WARP_SIZE * simd_width)](0, i)
 
-        if idx >= k:
+        if idx >= UInt(k):
             continue
 
         var a_vec = a_tile.vectorize[1, Int(simd_width)]()[0, Int(lane_id())]
@@ -215,7 +215,7 @@ fn gemv_kernel_vector[
             local_accum_type
         ](b_vec.cast[s_type]())
 
-        idx += step
+        idx += UInt(step)
 
     var accum = warp.sum[
         a_type, reduction_method=reduction_method, output_type=s_type
@@ -299,7 +299,7 @@ fn gemv_split_k[
             # of rows in the weight matrix.
             @parameter
             if check_bounds:
-                if i + tile_id_n >= n:
+                if i + tile_id_n >= UInt(n):
                     continue
             var b_vec = weight_tile.vectorize[1, simd_width]()[i, thread_idx.x]
             tile_w.store[simd_width](i, 0, rebind[WeightVecType](b_vec))
@@ -313,7 +313,7 @@ fn gemv_split_k[
             # tile_m is 1.
             @parameter
             if check_bounds:
-                if i + tile_id_m >= m:
+                if i + tile_id_m >= UInt(m):
                     continue
             var act_vec = act_tile.vectorize[1, simd_width]()[i, thread_idx.x]
 
@@ -415,7 +415,7 @@ fn gevm_kernel[
     ]()
 
     # Every block computes warp size length of output values
-    for i in range(ceildiv(UInt(k), warps_per_block)):
+    for i in range(ceildiv(UInt(k), UInt(warps_per_block))):
         var row = i * warps_per_block + warp_id
         var lhs = a.load(row)
         var rhs = b.load(row * n + col)
@@ -500,10 +500,10 @@ fn gemv_gpu_dispatch[
             c_tensor.layout,
             a_tensor.layout,
             b_tensor.layout,
-            simd_width=simd_width,
-            tile_m=tile_m,
-            tile_n=tile_n,
-            num_threads=num_threads,
+            simd_width = UInt(simd_width),
+            tile_m = UInt(tile_m),
+            tile_n = UInt(tile_n),
+            num_threads = UInt(num_threads),
             elementwise_lambda_fn=elementwise_lambda_fn,
             check_bounds=check_bounds,
         ]
@@ -536,7 +536,7 @@ fn gemv_gpu_dispatch[
                     c_tensor.layout,
                     a_tensor.layout,
                     b_tensor.layout,
-                    simd_width=simd_width,
+                    simd_width = UInt(simd_width),
                     reduction_method = warp.ReductionMethod.WARP,
                     transpose_b=False,
                     elementwise_lambda_fn=elementwise_lambda_fn,
@@ -553,7 +553,7 @@ fn gemv_gpu_dispatch[
                 )
             else:
                 # runtime transpose since layout_tensor.transpose requires static shape
-                alias b_alignment = b.alignment
+                alias b_alignment = b.alignment2
                 var aligned_b = b.data.static_alignment_cast[b_alignment]()
 
                 alias has_K = a.shape.has_value[1]()
@@ -578,7 +578,7 @@ fn gemv_gpu_dispatch[
                     b.type,
                     b_layout_template,
                     MutableAnyOrigin,
-                    alignment = aligned_b.alignment,
+                    alignment = aligned_b.alignment2,
                     address_space = aligned_b.address_space,
                 ](aligned_b, b_runtime_layout)
 
@@ -607,7 +607,7 @@ fn gemv_gpu_dispatch[
                         c_tensor.layout,
                         a_tensor.layout,
                         b_tensor_n_major.layout,
-                        simd_width=simd_width,
+                        simd_width = UInt(simd_width),
                         reduction_method = warp.ReductionMethod.WARP,
                         transpose_b=transpose_b,
                         elementwise_lambda_fn=elementwise_lambda_fn,
@@ -621,7 +621,7 @@ fn gemv_gpu_dispatch[
                         k,
                         grid_dim=ceildiv(m, block_dim // WARP_SIZE),
                         block_dim=block_dim,
-                        attributes=launch_attributes,
+                        attributes=launch_attributes^,
                     )
                 else:
                     alias kernel = gemv_kernel_vector[
@@ -631,7 +631,7 @@ fn gemv_gpu_dispatch[
                         c_tensor.layout,
                         a_tensor.layout,
                         b_layout_template,
-                        simd_width=simd_width,
+                        simd_width = UInt(simd_width),
                         reduction_method = warp.ReductionMethod.WARP,
                         transpose_b=transpose_b,
                         elementwise_lambda_fn=elementwise_lambda_fn,
@@ -654,7 +654,7 @@ fn gemv_gpu_dispatch[
                 c_tensor.layout,
                 b_tensor.layout,
                 a_tensor.layout,
-                simd_width=simd_width,
+                simd_width = UInt(simd_width),
                 reduction_method=reduction_method,
                 transpose_b=transpose_b,
                 elementwise_lambda_fn=elementwise_lambda_fn,
@@ -881,12 +881,12 @@ fn gemv[
     @always_inline
     @parameter
     fn input_fn[
-        type: DType, width: Int, rank: Int
-    ](idx: IndexList[rank]) -> SIMD[type, width]:
+        dtype: DType, width: Int, rank: Int
+    ](idx: IndexList[rank]) -> SIMD[dtype, width]:
         return (
-            a_buf.load[width=width](Index(idx[0], idx[1])).cast[type]()
-            * b_buf.load[width=width](idx[1]).cast[type]()
-        ).cast[type]()
+            a_buf.load[width=width](Index(idx[0], idx[1])).cast[dtype]()
+            * b_buf.load[width=width](idx[1]).cast[dtype]()
+        ).cast[dtype]()
 
     @always_inline
     @parameter
@@ -926,11 +926,11 @@ fn naive_gemv[
     c_size: Dim,
     a_shape: DimList,
     b_size: Dim,
-    type: DType,
+    dtype: DType,
 ](
-    c_buf: NDBuffer[mut=True, type, 1, _, c_size],
-    a_buf: NDBuffer[type, 2, _, a_shape],
-    b_buf: NDBuffer[type, 1, _, b_size],
+    c_buf: NDBuffer[mut=True, dtype, 1, _, c_size],
+    a_buf: NDBuffer[dtype, 2, _, a_shape],
+    b_buf: NDBuffer[dtype, 1, _, b_size],
 ):
     var M = a_buf.dim[0]()
     var K = a_buf.dim[1]()

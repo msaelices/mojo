@@ -16,10 +16,16 @@ from __future__ import annotations
 import functools
 import logging
 import os
+import sys
+from collections.abc import Sequence
+from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 import click
+from click import shell_completion
+from max.entrypoints.cli.entrypoint import configure_cli_logging
 from max.entrypoints.workers import start_workers
+from max.interfaces import SamplingParams
 from max.serve.config import Settings
 from max.serve.telemetry.common import configure_logging
 from typing_extensions import ParamSpec
@@ -43,17 +49,22 @@ class WithLazyPipelineOptions(click.Command):
         self._options_loaded = False
         super().__init__(*args, **kwargs)
 
+    @staticmethod
+    def _add_options(callback: Callable[_P, _R]) -> Callable[_P, _R]:
+        from max.entrypoints.cli import pipeline_config_options
+
+        return pipeline_config_options(callback)
+
     def _ensure_options_loaded(self) -> None:
         if not self._options_loaded:
             # Lazily load and apply pipeline_config_options decorator
-            from max.entrypoints.cli import pipeline_config_options
 
             # In Click, each command has a callback function that's executed when the command runs.
             # The callback contains the actual implementation of the command.
             # Here, we're applying the pipeline_config_options decorator to add CLI parameters
             # to our callback function dynamically, rather than statically at import time.
             assert self.callback is not None
-            self.callback = pipeline_config_options(self.callback)
+            self.callback = self._add_options(self.callback)
             self._options_loaded = True
 
             # When Click decorators (like @click.option) are applied to a function,
@@ -83,9 +94,20 @@ class WithLazyPipelineOptions(click.Command):
 
     def shell_complete(
         self, ctx: click.Context, incomplete: str
-    ) -> list[click.shell_completion.CompletionItem]:
+    ) -> list[shell_completion.CompletionItem]:
         self._ensure_options_loaded()
         return super().shell_complete(ctx, incomplete)
+
+
+class WithLazySamplingAndPipelineOptions(WithLazyPipelineOptions):
+    @staticmethod
+    def _add_options(callback: Callable[_P, _R]) -> Callable[_P, _R]:
+        from max.entrypoints.cli import (
+            pipeline_config_options,
+            sampling_params_options,
+        )
+
+        return sampling_params_options(pipeline_config_options(callback))
 
 
 class ModelGroup(click.Group):
@@ -111,7 +133,17 @@ class ModelGroup(click.Group):
     is_eager=True,  # Eager ensures this runs before other options/commands
     help="Show the MAX version and exit.",
 )
-def main() -> None:
+@click.option(
+    "--log-level",
+    type=click.Choice(
+        ["DEBUG", "INFO", "WARNING", "ERROR"], case_sensitive=False
+    ),
+    default="INFO",
+    help="Set logging level explicitly (ignored if --verbose or --quiet is used).",
+)
+def main(log_level: str = "INFO") -> None:
+    # Configure logging first, before any other initialization
+    configure_cli_logging(level=log_level)
     configure_telemetry()
 
 
@@ -132,6 +164,11 @@ def common_server_options(func: Callable[_P, _R]) -> Callable[_P, _R]:
         help=(
             "Whether to enable pyinstrument profiling on the serving endpoint."
         ),
+    )
+    @click.option(
+        "--served-model-name",
+        type=str,
+        help="Model name used in HTTP API. If unspecified, the model name is equal to --model-path",
     )
     @click.option(
         "--sim-failure",
@@ -170,6 +207,12 @@ def common_server_options(func: Callable[_P, _R]) -> Callable[_P, _R]:
     type=str,  # Take them all in as strings
     help="Task-specific arguments to pass to the underlying model (can be used multiple times).",
 )
+@click.option(
+    "--pretty-print-config",
+    is_flag=True,
+    default=False,
+    help="Pretty Print Entire Config",
+)
 def cli_serve(
     profile_serve: bool,
     sim_failure: int,
@@ -178,6 +221,7 @@ def cli_serve(
     log_prefix: str | None,
     task: str,
     task_arg: tuple[str, ...],
+    pretty_print_config: bool,
     **config_kwargs: Any,
 ) -> None:
     """Start a model serving endpoint for inference.
@@ -201,21 +245,32 @@ def cli_serve(
     else:
         pipeline_config = PipelineConfig(**config_kwargs)
 
+    # Log Pipeline and Sampling Configuration
+    if pretty_print_config:
+        pipeline_config.log_pipeline_info()
+
+        # Log Default Sampling Configuration
+        sampling_params = SamplingParams()
+        sampling_params.log_sampling_info()
+    else:
+        pipeline_config.log_basic_config()
+
     failure_percentage = None
     if sim_failure > 0:
         failure_percentage = sim_failure
 
     # Initialize Settings
-    settings = Settings()
-
+    setting_kwargs: dict[str, Any] = {}
     if port is not None:
-        settings.port = port
+        setting_kwargs["MAX_SERVE_PORT"] = port
 
     if log_prefix is not None:
-        settings.log_prefix = log_prefix
+        setting_kwargs["MAX_SERVE_LOG_PREFIX"] = log_prefix
 
     if headless is not None:
-        settings.headless = headless
+        setting_kwargs["MAX_SERVE_HEADLESS"] = headless
+
+    settings = Settings(**setting_kwargs)
 
     # Configure Logging Globally
     configure_logging(settings)
@@ -236,7 +291,7 @@ def cli_serve(
         )
 
 
-@main.command(name="generate", cls=WithLazyPipelineOptions)
+@main.command(name="generate", cls=WithLazySamplingAndPipelineOptions)
 @click.option(
     "--prompt",
     type=str,
@@ -265,6 +320,20 @@ def cli_pipeline(
     prompt: str,
     image_url: list[str],
     num_warmups: int,
+    top_k: int,
+    top_p: float,
+    min_p: float,
+    temperature: float,
+    frequency_penalty: float,
+    presence_penalty: float,
+    repetition_penalty: float,
+    max_new_tokens: int,
+    min_new_tokens: int,
+    ignore_eos: bool,
+    stop: list[str],
+    stop_token_ids: list[int],
+    detokenize: bool,
+    seed: int,
     **config_kwargs: Any,
 ) -> None:
     """Generate text using the specified model.
@@ -273,16 +342,32 @@ def cli_pipeline(
     accepting image inputs for multimodal models.
     """
     from max.entrypoints.cli import generate_text_for_pipeline
+    from max.interfaces import SamplingParams, SamplingParamsInput
     from max.pipelines import PipelineConfig
 
-    if config_kwargs["max_new_tokens"] == -1:
+    params = SamplingParamsInput(
+        top_k=top_k,
+        top_p=top_p,
+        min_p=min_p,
+        temperature=temperature,
+        frequency_penalty=frequency_penalty,
+        presence_penalty=presence_penalty,
+        repetition_penalty=repetition_penalty,
         # Limit generate default max_new_tokens to 100.
-        config_kwargs["max_new_tokens"] = 100
+        max_new_tokens=max_new_tokens or 100,
+        min_new_tokens=min_new_tokens,
+        ignore_eos=ignore_eos,
+        stop=stop,
+        stop_token_ids=stop_token_ids,
+        detokenize=detokenize,
+        seed=seed,
+    )
 
     # Load tokenizer & pipeline.
     pipeline_config = PipelineConfig(**config_kwargs)
     generate_text_for_pipeline(
         pipeline_config,
+        sampling_params=SamplingParams.from_input(params),
         prompt=prompt,
         image_urls=image_url,
         num_warmups=num_warmups,
@@ -349,6 +434,64 @@ def cli_list(json: bool) -> None:
         list_pipelines_to_json()
     else:
         list_pipelines_to_console()
+
+
+# Because we already have an argparser for benchmark_serving.py, we shouldn't have
+# to maintain a whole list of benchmark_serving CLI arg options here. This makes
+# it harder to keep them in sync and is error prone. We unroll all the args
+# instead and let BenchmarkCommand (which wraps benchmark_serving.py) handle them.
+@main.command(
+    name="benchmark",
+    context_settings={
+        "ignore_unknown_options": True,
+        "allow_extra_args": True,
+        "help_option_names": [],
+    },
+)
+@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+def cli_benchmark(args: Sequence[str]) -> None:
+    """Run benchmark tests on a serving model.
+
+    This command runs comprehensive benchmark tests on a model server to measure
+    performance metrics including throughput, latency, and resource utilization.
+    Make sure that the MAX server is running and hosting a model before running
+    this command.
+    """
+    # For benchmark command, we want to handle all arguments directly
+    # and bypass Click's argument processing
+    # args = ctx.params.get("args", [])
+
+    from benchmark_serving import main as benchmark_main
+    from benchmark_serving import parse_args as benchmark_parse_args
+
+    # Default to serving_config.yaml in the benchmark directory for now.
+    # Based on how we're packaging our benchmark/ in max, this should be the correct path.
+    config_file_path = (
+        Path(__file__).parent.parent / "benchmark" / "serving_config.yaml"
+    )
+
+    logger.debug("Using config file path: %s", config_file_path)
+    logger.debug("Running benchmark subcommand with args: %s", args)
+    try:
+        argparse_namespace = benchmark_parse_args(
+            config_file_path=config_file_path, args=args
+        )
+
+        # Run the benchmark
+        click.echo("Starting benchmark...")
+        benchmark_main(argparse_namespace)
+        click.echo("Benchmark completed successfully!")
+    except SystemExit as e:
+        # argparse calls sys.exit() for help and errors, we need to handle this
+        if e.code == 0:
+            # Help was requested and printed, just return
+            return
+        else:
+            # There was an error, exit with the same code
+            sys.exit(e.code)
+    except Exception as e:
+        click.echo(f"Benchmark failed: {e}", err=True)
+        sys.exit(1)
 
 
 def print_version(

@@ -25,7 +25,7 @@ def test_tensor_prints(
     input_type: TensorType, label1: str, label2: str
 ) -> None:
     with Graph("print_tensors", input_types=[input_type]) as graph:
-        out = graph.inputs[0]
+        out = graph.inputs[0].tensor
         chain_0 = graph._current_chain
         out.print(label1)
         chain_1 = graph._current_chain

@@ -98,14 +98,14 @@ struct _DirHandle:
         ]()
 
         if not isdir(path):
-            raise "the directory '" + path + "' does not exist"
+            raise Error("the directory '", path, "' does not exist")
 
         self._handle = external_call["opendir", OpaquePointer](
             path.unsafe_cstr_ptr()
         )
 
         if not self._handle:
-            raise "unable to open the directory '" + path + "'"
+            raise Error("unable to open the directory '", path, "'")
 
     fn __del__(deinit self):
         """Closes the handle opened via popen."""
@@ -148,7 +148,7 @@ struct _DirHandle:
                 continue
             res.append(String(name_str))
 
-        return res
+        return res^
 
     fn _list_macos(self) -> List[String]:
         """Reads all the data from the handle.
@@ -174,7 +174,7 @@ struct _DirHandle:
                 continue
             res.append(String(name_str))
 
-        return res
+        return res^
 
 
 # ===----------------------------------------------------------------------=== #
@@ -241,11 +241,14 @@ fn abort[result: AnyType = NoneType._mlir_type]() -> result:
 
 
 @no_inline
-fn abort[result: AnyType = NoneType._mlir_type](message: String) -> result:
+fn abort[
+    result: AnyType = NoneType._mlir_type, *, prefix: StaticString = "ABORT:"
+](message: String) -> result:
     """Calls a target dependent trap instruction if available.
 
     Parameters:
         result: The result type.
+        prefix: A static string prefix to include before the message.
 
     Args:
         message: The message to include when aborting.
@@ -256,7 +259,7 @@ fn abort[result: AnyType = NoneType._mlir_type](message: String) -> result:
 
     @parameter
     if not is_gpu():
-        print("ABORT:", message, flush=True)
+        print(prefix, message, flush=True)
 
     return abort[result]()
 
@@ -285,7 +288,7 @@ fn remove[PathLike: os.PathLike](path: PathLike) raises:
         # var error_str = String("Something went wrong")
         # _ = external_call["perror", OpaquePointer](error_str.unsafe_ptr())
         # _ = error_str
-        raise Error("Can not remove file: " + fspath)
+        raise Error("Can not remove file: ", fspath)
 
 
 fn unlink[PathLike: os.PathLike](path: PathLike) raises:
@@ -326,7 +329,7 @@ fn mkdir[PathLike: os.PathLike](path: PathLike, mode: Int = 0o777) raises:
     var fspath = path.__fspath__()
     var error = external_call["mkdir", Int32](fspath.unsafe_cstr_ptr(), mode)
     if error != 0:
-        raise Error("Can not create directory: " + fspath)
+        raise Error("Can not create directory: ", fspath)
 
 
 def makedirs[
@@ -382,7 +385,7 @@ fn rmdir[PathLike: os.PathLike](path: PathLike) raises:
     var fspath = path.__fspath__()
     var error = external_call["rmdir", Int32](fspath.unsafe_cstr_ptr())
     if error != 0:
-        raise Error("Can not remove directory: " + fspath)
+        raise Error("Can not remove directory: ", fspath)
 
 
 def removedirs[PathLike: os.PathLike](path: PathLike) -> None:

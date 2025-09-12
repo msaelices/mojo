@@ -199,19 +199,18 @@ fn sqrt(x: Int) -> Int:
 
 
 @always_inline
-fn _sqrt_nvvm(x: SIMD) -> __type_of(x):
+fn _sqrt_nvvm(x: SIMD, out res: __type_of(x)):
     constrained[
         x.dtype in (DType.float32, DType.float64), "must be f32 or f64 type"
     ]()
     alias instruction = "llvm.nvvm.sqrt.approx.ftz.f" if x.dtype is DType.float32 else "llvm.nvvm.sqrt.approx.d"
-    var res = __type_of(x)()
+    res = {}
 
     @parameter
     for i in range(x.size):
         res[i] = llvm_intrinsic[
             instruction, Scalar[x.dtype], has_side_effect=False
         ](x[i])
-    return res
 
 
 @always_inline
@@ -261,20 +260,19 @@ fn sqrt[
 
 
 @always_inline
-fn _isqrt_nvvm(x: SIMD) -> __type_of(x):
+fn _isqrt_nvvm(x: SIMD, out res: __type_of(x)):
     constrained[
         x.dtype in (DType.float32, DType.float64), "must be f32 or f64 type"
     ]()
 
     alias instruction = "llvm.nvvm.rsqrt.approx.ftz.f" if x.dtype is DType.float32 else "llvm.nvvm.rsqrt.approx.d"
-    var res = __type_of(x)()
+    res = {}
 
     @parameter
     for i in range(x.size):
         res[i] = llvm_intrinsic[
             instruction, Scalar[x.dtype], has_side_effect=False
         ](x[i])
-    return res
 
 
 @always_inline
@@ -306,7 +304,7 @@ fn isqrt[dtype: DType, width: Int, //](x: SIMD[dtype, width]) -> __type_of(x):
         @parameter
         if dtype in (DType.float16, DType.float32, DType.float64):
             return _call_amdgcn_intrinsic[
-                "llvm.amdgcn.rsq." + _get_amdgcn_type_suffix[dtype]()
+                String("llvm.amdgcn.rsq.", _get_amdgcn_type_suffix[dtype]())
             ](x)
 
         return isqrt(x.cast[DType.float32]()).cast[dtype]()
@@ -320,20 +318,19 @@ fn isqrt[dtype: DType, width: Int, //](x: SIMD[dtype, width]) -> __type_of(x):
 
 
 @always_inline
-fn _recip_nvvm(x: SIMD) -> __type_of(x):
+fn _recip_nvvm(x: SIMD, out res: __type_of(x)):
     constrained[
         x.dtype in (DType.float32, DType.float64), "must be f32 or f64 type"
     ]()
 
     alias instruction = "llvm.nvvm.rcp.approx.ftz.f" if x.dtype is DType.float32 else "llvm.nvvm.rcp.approx.ftz.d"
-    var res = __type_of(x)()
+    res = {}
 
     @parameter
     for i in range(x.size):
         res[i] = llvm_intrinsic[
             instruction, Scalar[x.dtype], has_side_effect=False
         ](x[i])
-    return res
 
 
 @always_inline
@@ -365,7 +362,7 @@ fn recip[dtype: DType, width: Int, //](x: SIMD[dtype, width]) -> __type_of(x):
         @parameter
         if dtype in (DType.float16, DType.float32, DType.float64):
             return _call_amdgcn_intrinsic[
-                "llvm.amdgcn.rcp." + _get_amdgcn_type_suffix[dtype]()
+                String("llvm.amdgcn.rcp.", _get_amdgcn_type_suffix[dtype]())
             ](x)
 
         return recip(x.cast[DType.float32]()).cast[dtype]()
@@ -430,7 +427,7 @@ fn exp2[
     @parameter
     if is_amd_gpu() and dtype in (DType.float16, DType.float32):
         return _call_amdgcn_intrinsic[
-            "llvm.amdgcn.exp2." + _get_amdgcn_type_suffix[dtype]()
+            String("llvm.amdgcn.exp2.", _get_amdgcn_type_suffix[dtype]())
         ](x)
 
     @parameter
@@ -1718,7 +1715,7 @@ fn atanh[dtype: DType, width: Int, //](x: SIMD[dtype, width]) -> __type_of(x):
     ]()
 
     @parameter
-    if bit_width_of[dtype]() <= 16:
+    if dtype.bit_width() <= 16:
         # We promote the input to float32 and then cast back to the original
         # type. This is done to avoid precision issues that can occur when
         # using the lower-precision floating-point types.
@@ -2780,15 +2777,14 @@ fn _call_ptx_intrinsic[
 
 
 @always_inline
-fn _call_amdgcn_intrinsic[intrin: StaticString](x: SIMD) -> __type_of(x):
-    var res = __type_of(x)()
+fn _call_amdgcn_intrinsic[intrin: StaticString](x: SIMD, out res: __type_of(x)):
+    res = {}
 
     @parameter
     for i in range(x.size):
         res[i] = llvm_intrinsic[intrin, Scalar[x.dtype], has_side_effect=False](
             x[i]
         )
-    return res
 
 
 @always_inline
@@ -2822,7 +2818,7 @@ trait Ceilable:
     from math import Ceilable, ceil
 
     @fieldwise_init
-    struct Complex(Ceilable, Copyable):
+    struct Complex(Ceilable, ImplicitlyCopyable):
         var re: Float64
         var im: Float64
 
@@ -2859,7 +2855,7 @@ trait Floorable:
     from math import Floorable, floor
 
     @fieldwise_init
-    struct Complex(Floorable, Copyable):
+    struct Complex(Floorable, ImplicitlyCopyable):
         var re: Float64
         var im: Float64
 
@@ -2897,7 +2893,7 @@ trait CeilDivable:
     from math import CeilDivable
 
     @fieldwise_init
-    struct Foo(CeilDivable, Copyable):
+    struct Foo(CeilDivable, ImplicitlyCopyable):
         var x: Float64
 
         fn __ceildiv__(self, denominator: Self) -> Self:
@@ -2930,7 +2926,7 @@ trait CeilDivableRaising:
     from math import CeilDivableRaising
 
     @fieldwise_init
-    struct Foo(CeilDivableRaising, Copyable):
+    struct Foo(CeilDivableRaising, ImplicitlyCopyable):
         var x: Float64
 
         fn __ceildiv__(self, denominator: Self) raises -> Self:
@@ -2968,7 +2964,7 @@ trait Truncable:
     from math import Truncable, trunc
 
     @fieldwise_init
-    struct Complex(Truncable, Copyable):
+    struct Complex(Truncable, ImplicitlyCopyable):
         var re: Float64
         var im: Float64
 

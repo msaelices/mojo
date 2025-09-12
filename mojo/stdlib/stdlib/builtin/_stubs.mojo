@@ -18,11 +18,8 @@
 
 
 @register_passable("trivial")
-struct __MLIRType[T: AnyTrivialRegType](Copyable, ExplicitlyCopyable, Movable):
+struct __MLIRType[T: AnyTrivialRegType](ImplicitlyCopyable, Movable):
     var value: T
-
-    fn copy(self) -> Self:
-        return self
 
 
 # ===-----------------------------------------------------------------------===#
@@ -36,11 +33,11 @@ fn paramfor_next_iter[
     # NOTE: This function is called by the compiler's elaborator only when
     # __has_next__ will return true.  This is needed because the interpreter
     # memory model isn't smart enough to handle mut arguments cleanly.
-    var result = it
+    var result = it.copy()
     # This intentionally discards the value, but this only happens at comptime,
     # so recomputing it in the body of the loop is fine.
     _ = result.__next__()
-    return result
+    return result.copy()
 
 
 fn paramfor_next_value[
@@ -49,5 +46,5 @@ fn paramfor_next_value[
     # NOTE: This function is called by the compiler's elaborator only when
     # __has_next__ will return true.  This is needed because the interpreter
     # memory model isn't smart enough to handle mut arguments cleanly.
-    var result = it
+    var result = it.copy()
     return result.__next__()

@@ -21,7 +21,7 @@ from .utils_gpu import (
 fn create_matmul_configs_ampere[
     key: String, a_type: DType, b_type: DType, c_type: DType, transpose_b: Bool
 ]() -> MatmulConfig[a_type, b_type, c_type, transpose_b]:
-    alias dict = get_dispatch_table[a_type, b_type, c_type, transpose_b]()
+    var dict = get_dispatch_table[a_type, b_type, c_type, transpose_b]()
     try:
         return dict[key]
     except error:
@@ -43,7 +43,15 @@ fn get_dispatch_table[
         default_comp_time_hasher,
     ]()
 
+    # TODO(PAQ-1284):
+    #   The configs below are sometimes less optimal than the
+    #   default config, leading to performance regressions that were previously
+    #   masked by a bug. Retune and update before using them again. Return an
+    #   empty dict in the meantime.
+    return tile_configs^
+
     @always_inline
+    @parameter
     fn insert(
         name: StaticString,
         *,
@@ -56,9 +64,9 @@ fn get_dispatch_table[
         tile_configs[name] = MatmulConfig[a_type, b_type, c_type, transpose_b](
             block_tile_shape=IndexList[3](block_tile_shape),
             warp_tile_shape=IndexList[3](warp_tile_shape),
-            num_pipeline_stages=num_pipeline_stages,
-            num_k_partitions=num_k_partitions,
-            num_warp_k_partitions=num_warp_k_partitions,
+            num_pipeline_stages=UInt(num_pipeline_stages),
+            num_k_partitions=UInt(num_k_partitions),
+            num_warp_k_partitions=UInt(num_warp_k_partitions),
         )
 
     # ===------------------------------------------------------------------=== #
@@ -580,4 +588,4 @@ fn get_dispatch_table[
         num_warp_k_partitions=2,
     )
 
-    return tile_configs
+    return tile_configs^

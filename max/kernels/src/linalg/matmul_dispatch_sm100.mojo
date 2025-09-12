@@ -33,6 +33,7 @@ from .matmul_sm100 import (
     blackwell_matmul_tma_umma_warp_specialized,
     matmul_sm100_fallback,
 )
+from linalg.matmul_tile_scheduler import RasterOrder
 
 from utils.index import Index, IndexList
 
@@ -63,6 +64,8 @@ fn matmul_dispatch_sm100[
         alias CLUSTER_DIM_Y = env_get_int["TUNE_CLUSTER_DIM_Y", 1]()
         alias CLUSTER_DIM_Z = env_get_int["TUNE_CLUSTER_DIM_Z", 1]()
         alias CLUSTER_DIM = Index(CLUSTER_DIM_X, CLUSTER_DIM_Y, CLUSTER_DIM_Z)
+        alias BLOCK_SWIZZLE_SIZE = env_get_int["TUNE_BLOCK_SWIZZLE_SIZE", 8]()
+        alias RASTERIZE_ORDER = env_get_int["TUNE_RASTER_ORDER", 1]()
         alias block_tile_shape = Index(BM, BN, BK)
         alias MMA_K = 32 if a_type == DType.float8_e4m3fn else 16
         alias UmmaShape = Index(BM * 2, BN * 2, MMA_K)
@@ -74,7 +77,11 @@ fn matmul_dispatch_sm100[
         )
 
         blackwell_matmul_tma_umma_warp_specialized[
-            transpose_b=transpose_b, config=config, cta_group=2
+            transpose_b=transpose_b,
+            config=config,
+            cta_group=2,
+            block_swizzle_size=BLOCK_SWIZZLE_SIZE,
+            rasterize_order = RasterOrder(RASTERIZE_ORDER),
         ](c, a, b, ctx)
 
         return DISPATCH_HIT
@@ -132,7 +139,11 @@ fn matmul_dispatch_sm100[
                 cluster_shape=cluster_shape,
             )
             blackwell_matmul_tma_umma_warp_specialized[
-                transpose_b=transpose_b, config=config, cta_group=2
+                transpose_b=transpose_b,
+                config=config,
+                cta_group=2,
+                block_swizzle_size=2,
+                rasterize_order = RasterOrder.AlongM,
             ](c, a, b, ctx)
             return DISPATCH_HIT
         elif m == 4096:
@@ -147,7 +158,11 @@ fn matmul_dispatch_sm100[
                 cluster_shape=cluster_shape,
             )
             blackwell_matmul_tma_umma_warp_specialized[
-                transpose_b=transpose_b, config=config, cta_group=2
+                transpose_b=transpose_b,
+                config=config,
+                cta_group=2,
+                block_swizzle_size=2,
+                rasterize_order = RasterOrder.AlongM,
             ](c, a, b, ctx)
             return DISPATCH_HIT
         elif m == 8192:
@@ -162,22 +177,11 @@ fn matmul_dispatch_sm100[
                 cluster_shape=cluster_shape,
             )
             blackwell_matmul_tma_umma_warp_specialized[
-                transpose_b=transpose_b, config=config, cta_group=2
-            ](c, a, b, ctx)
-            return DISPATCH_HIT
-        else:
-            # Fallback
-            alias block_tile_shape = Index(128, 64, BK)
-            alias umma_shape = Index(
-                block_tile_shape[0] * 2, block_tile_shape[1] * 2, MMA_K
-            )
-            alias config = MatmulConfig[a_type, b_type, c_type, transpose_b](
-                block_tile_shape=block_tile_shape,
-                mma_shape=umma_shape,
-                cluster_shape=Index(2, 1, 1),
-            )
-            blackwell_matmul_tma_umma_warp_specialized[
-                transpose_b=transpose_b, config=config, cta_group=2
+                transpose_b=transpose_b,
+                config=config,
+                cta_group=2,
+                block_swizzle_size=1,
+                rasterize_order = RasterOrder.AlongM,
             ](c, a, b, ctx)
             return DISPATCH_HIT
 
@@ -198,7 +202,11 @@ fn matmul_dispatch_sm100[
                 cluster_shape=cluster_shape,
             )
             blackwell_matmul_tma_umma_warp_specialized[
-                transpose_b=transpose_b, config=config, cta_group=2
+                transpose_b=transpose_b,
+                config=config,
+                cta_group=2,
+                block_swizzle_size=8,
+                rasterize_order = RasterOrder.AlongM,
             ](c, a, b, ctx)
             return DISPATCH_HIT
         elif m == 4096:
@@ -221,29 +229,18 @@ fn matmul_dispatch_sm100[
             alias umma_shape = Index(
                 block_tile_shape[0] * 2, block_tile_shape[1] * 2, MMA_K
             )
-            alias cluster_shape = Index(4, 1, 1)
+            alias cluster_shape = Index(2, 1, 1)
             alias config = MatmulConfig[a_type, b_type, c_type, transpose_b](
                 block_tile_shape=block_tile_shape,
                 mma_shape=umma_shape,
                 cluster_shape=cluster_shape,
             )
             blackwell_matmul_tma_umma_warp_specialized[
-                transpose_b=transpose_b, config=config, cta_group=2
-            ](c, a, b, ctx)
-            return DISPATCH_HIT
-        else:
-            # Fallback
-            alias block_tile_shape = Index(128, 64, BK)
-            alias umma_shape = Index(
-                block_tile_shape[0] * 2, block_tile_shape[1] * 2, MMA_K
-            )
-            alias config = MatmulConfig[a_type, b_type, c_type, transpose_b](
-                block_tile_shape=block_tile_shape,
-                mma_shape=umma_shape,
-                cluster_shape=Index(2, 1, 1),
-            )
-            blackwell_matmul_tma_umma_warp_specialized[
-                transpose_b=transpose_b, config=config, cta_group=2
+                transpose_b=transpose_b,
+                config=config,
+                cta_group=2,
+                block_swizzle_size=8,
+                rasterize_order = RasterOrder.AlongM,
             ](c, a, b, ctx)
             return DISPATCH_HIT
 
@@ -253,18 +250,22 @@ fn matmul_dispatch_sm100[
     @parameter
     if static_N == 14336 and static_K == 8192:
         if m == 512:
-            alias block_tile_shape = Index(128, 112, BK)
+            alias block_tile_shape = Index(128, 104, BK)
             alias umma_shape = Index(
                 block_tile_shape[0] * 2, block_tile_shape[1] * 2, MMA_K
             )
-            alias cluster_shape = Index(4, 1, 1)
+            alias cluster_shape = Index(2, 1, 1)
             alias config = MatmulConfig[a_type, b_type, c_type, transpose_b](
                 block_tile_shape=block_tile_shape,
                 mma_shape=umma_shape,
                 cluster_shape=cluster_shape,
             )
             blackwell_matmul_tma_umma_warp_specialized[
-                transpose_b=transpose_b, config=config, cta_group=2
+                transpose_b=transpose_b,
+                config=config,
+                cta_group=2,
+                block_swizzle_size=1,
+                rasterize_order = RasterOrder.AlongM,
             ](c, a, b, ctx)
             return DISPATCH_HIT
         elif m == 4096:
@@ -279,37 +280,30 @@ fn matmul_dispatch_sm100[
                 cluster_shape=cluster_shape,
             )
             blackwell_matmul_tma_umma_warp_specialized[
-                transpose_b=transpose_b, config=config, cta_group=2
+                transpose_b=transpose_b,
+                config=config,
+                cta_group=2,
+                block_swizzle_size=8,
+                rasterize_order = RasterOrder.AlongM,
             ](c, a, b, ctx)
             return DISPATCH_HIT
         elif m == 8192:
-            alias block_tile_shape = Index(128, 112, BK)
+            alias block_tile_shape = Index(128, 128, BK)
             alias umma_shape = Index(
                 block_tile_shape[0] * 2, block_tile_shape[1] * 2, MMA_K
             )
-            alias cluster_shape = Index(4, 1, 1)
+            alias cluster_shape = Index(2, 1, 1)
             alias config = MatmulConfig[a_type, b_type, c_type, transpose_b](
                 block_tile_shape=block_tile_shape,
                 mma_shape=umma_shape,
                 cluster_shape=cluster_shape,
             )
             blackwell_matmul_tma_umma_warp_specialized[
-                transpose_b=transpose_b, config=config, cta_group=2
-            ](c, a, b, ctx)
-            return DISPATCH_HIT
-        else:
-            # Fallback
-            alias block_tile_shape = Index(128, 64, BK)
-            alias umma_shape = Index(
-                block_tile_shape[0] * 2, block_tile_shape[1] * 2, MMA_K
-            )
-            alias config = MatmulConfig[a_type, b_type, c_type, transpose_b](
-                block_tile_shape=block_tile_shape,
-                mma_shape=umma_shape,
-                cluster_shape=Index(2, 1, 1),
-            )
-            blackwell_matmul_tma_umma_warp_specialized[
-                transpose_b=transpose_b, config=config, cta_group=2
+                transpose_b=transpose_b,
+                config=config,
+                cta_group=2,
+                block_swizzle_size=8,
+                rasterize_order = RasterOrder.AlongM,
             ](c, a, b, ctx)
             return DISPATCH_HIT
 
@@ -334,7 +328,7 @@ fn matmul_dispatch_sm100[
             ](c, a, b, ctx)
             return DISPATCH_HIT
         elif m == 4096:
-            alias block_tile_shape = Index(128, 80, BK)
+            alias block_tile_shape = Index(128, 72, BK)
             alias umma_shape = Index(
                 block_tile_shape[0] * 2, block_tile_shape[1] * 2, MMA_K
             )
@@ -345,7 +339,11 @@ fn matmul_dispatch_sm100[
                 cluster_shape=cluster_shape,
             )
             blackwell_matmul_tma_umma_warp_specialized[
-                transpose_b=transpose_b, config=config, cta_group=2
+                transpose_b=transpose_b,
+                config=config,
+                cta_group=2,
+                block_swizzle_size=8,
+                rasterize_order = RasterOrder.AlongM,
             ](c, a, b, ctx)
             return DISPATCH_HIT
         elif m == 8192:
@@ -358,21 +356,6 @@ fn matmul_dispatch_sm100[
                 block_tile_shape=block_tile_shape,
                 mma_shape=umma_shape,
                 cluster_shape=cluster_shape,
-            )
-            blackwell_matmul_tma_umma_warp_specialized[
-                transpose_b=transpose_b, config=config, cta_group=2
-            ](c, a, b, ctx)
-            return DISPATCH_HIT
-        else:
-            # Fallback
-            alias block_tile_shape = Index(128, 64, BK)
-            alias umma_shape = Index(
-                block_tile_shape[0] * 2, block_tile_shape[1] * 2, MMA_K
-            )
-            alias config = MatmulConfig[a_type, b_type, c_type, transpose_b](
-                block_tile_shape=block_tile_shape,
-                mma_shape=umma_shape,
-                cluster_shape=Index(2, 1, 1),
             )
             blackwell_matmul_tma_umma_warp_specialized[
                 transpose_b=transpose_b, config=config, cta_group=2
@@ -394,22 +377,33 @@ fn matmul_dispatch_sm100[
                 cluster_shape=cluster_shape,
             )
             blackwell_matmul_tma_umma_warp_specialized[
-                transpose_b=transpose_b, config=config, cta_group=2
+                transpose_b=transpose_b,
+                config=config,
+                cta_group=2,
+                block_swizzle_size=0,
+                rasterize_order = RasterOrder.AlongM,
             ](c, a, b, ctx)
             return DISPATCH_HIT
-        else:
-            # Fallback
-            alias block_tile_shape = Index(128, 64, BK)
+
+    @parameter
+    if static_N == 8192 and static_K == 8192:
+        if m == 8192:
+            alias block_tile_shape = Index(128, 128, BK)
             alias umma_shape = Index(
                 block_tile_shape[0] * 2, block_tile_shape[1] * 2, MMA_K
             )
+            alias cluster_shape = Index(2, 1, 1)
             alias config = MatmulConfig[a_type, b_type, c_type, transpose_b](
                 block_tile_shape=block_tile_shape,
                 mma_shape=umma_shape,
-                cluster_shape=Index(2, 1, 1),
+                cluster_shape=cluster_shape,
             )
             blackwell_matmul_tma_umma_warp_specialized[
-                transpose_b=transpose_b, config=config, cta_group=2
+                transpose_b=transpose_b,
+                config=config,
+                cta_group=2,
+                block_swizzle_size=8,
+                rasterize_order = RasterOrder.AlongM,
             ](c, a, b, ctx)
             return DISPATCH_HIT
 

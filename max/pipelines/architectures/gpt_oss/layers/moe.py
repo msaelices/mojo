@@ -22,7 +22,7 @@ from max.dtype import DType
 from max.graph import DeviceRef, ShardingStrategy, TensorValue, Weight, ops
 from max.nn.clamp import clamp
 from max.nn.kernels import grouped_matmul_ragged, moe_create_indices
-from max.nn.layer import LayerList
+from max.nn.layer import LayerList, Shardable
 from max.nn.linear import Linear
 from max.nn.moe import MoE, MoEGate
 
@@ -87,7 +87,7 @@ class GptOssMoEGate(MoEGate):
         return topk_indices, topk_scores
 
 
-class GptOssMoE(MoE):
+class GptOssMoE(MoE, Shardable):
     """GptOss-style MoE implementation with custom activation and biases."""
 
     def __init__(
@@ -235,8 +235,8 @@ class GptOssMoE(MoE):
         gate_up_output = gate_up_output + bias_per_token
 
         # Split gate and up projections
-        gate = gate_up_output[:, : self.moe_dim]
-        up = gate_up_output[:, self.moe_dim :]
+        gate = gate_up_output[:, 0::2]
+        up = gate_up_output[:, 1::2]
 
         # Apply clamping (NOTE: This is specific to GptOss)
         gate = ops.min(gate, self.limit)

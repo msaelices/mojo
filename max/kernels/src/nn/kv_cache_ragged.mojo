@@ -107,6 +107,7 @@ fn generic_fused_qkv_matmul_kv_cache_cont_batch_ragged[
         + ".hdim_"
         + String(kv_collection.kv_params.head_size),
         Trace[TraceLevel.OP]._get_detail_str[description_fn](),
+        task_id=Int(ctx.get_device_context().id()),
     ):
         return _fused_qkv_matmul_kv_cache_ragged[
             kv_collection.CacheType, target=target
@@ -171,6 +172,7 @@ fn generic_fused_qkv_matmul_kv_cache_paged_ragged[
     with Trace[TraceLevel.OP, target=target](
         name,
         Trace[TraceLevel.OP]._get_detail_str[description_fn](),
+        task_id=Int(ctx.get_device_context().id()),
     ):
         return _fused_qkv_matmul_kv_cache_ragged[
             kv_collection.CacheType,
@@ -240,6 +242,7 @@ fn generic_fused_qkv_matmul_kv_cache_paged_ragged_bias[
     with Trace[TraceLevel.OP, target=target](
         name,
         Trace[TraceLevel.OP]._get_detail_str[description_fn](),
+        task_id=Int(ctx.get_device_context().id()),
     ):
         return _fused_qkv_matmul_kv_cache_ragged_bias[
             kv_collection.CacheType,
@@ -317,6 +320,7 @@ fn generic_fused_qkv_matmul_kv_cache_paged_ragged_scale[
     with Trace[TraceLevel.OP, target=target](
         name,
         Trace[TraceLevel.OP]._get_detail_str[description_fn](),
+        task_id=Int(ctx.get_device_context().id()),
     ):
         return _fused_qkv_matmul_kv_cache_ragged_scale[
             kv_collection.CacheType,
@@ -563,6 +567,9 @@ fn _fused_qkv_matmul_kv_cache_ragged_impl[
     var qk_offset = q_dim + k_dim
     var batch_size = input_row_offsets.dim[0]() - 1
 
+    if batch_size == 0:
+        return
+
     @parameter
     @__copy_capture(q_dim, qk_offset, batch_size)
     @always_inline
@@ -590,11 +597,13 @@ fn _fused_qkv_matmul_kv_cache_ragged_impl[
         var output_val = val
         if idx[1] < qk_offset:
             cache = k_cache
-            h_idx, hd_idx = divmod(UInt(idx[1]) - q_dim, kv_params.head_size)
+            h_idx, hd_idx = divmod(
+                UInt(idx[1]) - UInt(q_dim), kv_params.head_size
+            )
         else:
             cache = v_cache
             h_idx, hd_idx = divmod(
-                UInt(idx[1]) - qk_offset, kv_params.head_size
+                UInt(idx[1]) - UInt(qk_offset), kv_params.head_size
             )
 
         var cache_length = cache.cache_length(batch_idx)
@@ -699,6 +708,9 @@ fn _fused_qkv_matmul_kv_cache_ragged_impl_bias[
     var qk_offset = q_dim + k_dim
     var batch_size = input_row_offsets.dim[0]() - 1
 
+    if batch_size == 0:
+        return
+
     @parameter
     @__copy_capture(q_dim, qk_offset, batch_size)
     @always_inline
@@ -728,11 +740,13 @@ fn _fused_qkv_matmul_kv_cache_ragged_impl_bias[
         var cache: cache_t
         if idx[1] < qk_offset:
             cache = k_cache
-            h_idx, hd_idx = divmod(UInt(idx[1]) - q_dim, kv_params.head_size)
+            h_idx, hd_idx = divmod(
+                UInt(idx[1]) - UInt(q_dim), kv_params.head_size
+            )
         else:
             cache = v_cache
             h_idx, hd_idx = divmod(
-                UInt(idx[1]) - qk_offset, kv_params.head_size
+                UInt(idx[1]) - UInt(qk_offset), kv_params.head_size
             )
 
         var cache_length = cache.cache_length(batch_idx)
@@ -836,6 +850,9 @@ fn _fused_qkv_matmul_kv_cache_ragged_impl_scale[
     var qk_offset = q_dim + k_dim
     var batch_size = input_row_offsets.dim[0]() - 1
 
+    if batch_size == 0:
+        return
+
     # Here we decide the quantization scheme for the QKV Tensor.
     alias use_per_tensor = (
         input_scale.shape.get[0]() == 1
@@ -895,11 +912,13 @@ fn _fused_qkv_matmul_kv_cache_ragged_impl_scale[
         var cache: cache_t
         if idx[1] < qk_offset:
             cache = k_cache
-            h_idx, hd_idx = divmod(UInt(idx[1]) - q_dim, kv_params.head_size)
+            h_idx, hd_idx = divmod(
+                UInt(idx[1]) - UInt(q_dim), kv_params.head_size
+            )
         else:
             cache = v_cache
             h_idx, hd_idx = divmod(
-                UInt(idx[1]) - qk_offset, kv_params.head_size
+                UInt(idx[1]) - UInt(qk_offset), kv_params.head_size
             )
 
         var cache_length = cache.cache_length(batch_idx)
@@ -953,15 +972,12 @@ fn _matmul_common[
         # something to ensure we don't segfault.
         var c_ptr = UnsafePointer[Scalar[output_dtype]].alloc(TOTAL_SEQ_LEN * N)
 
-        c_nd = __type_of(c_nd)(
-            c_ptr,
-            IndexList[2](TOTAL_SEQ_LEN, N),
-        )
+        c_nd = {c_ptr, IndexList[2](TOTAL_SEQ_LEN, N)}
     else:
-        c_nd = __type_of(c_nd)(
+        c_nd = {
             UnsafePointer[Scalar[output_dtype]](),
             IndexList[2](TOTAL_SEQ_LEN, N),
-        )
+        }
 
     matmul[
         target=target,
@@ -992,10 +1008,10 @@ fn _qmatmul_common[
     alias N = weight.shape.get[0]()
     var c_nd: NDBuffer[dtype, 2, MutableAnyOrigin, DimList(Dim(), N)]
 
-    c_nd = __type_of(c_nd)(
+    c_nd = {
         UnsafePointer[Scalar[dtype]](),
         IndexList[2](TOTAL_SEQ_LEN, N),
-    )
+    }
 
     matmul_gpu_qint4_impl[
         target=target,
@@ -1021,7 +1037,9 @@ fn kv_matmul_ragged_paged[
     weight: NDBuffer[dtype, 2, _, _],
     kv_collection: PagedKVCacheCollection[
         dtype,
-        KVCacheStaticParams(num_heads=num_heads, head_size=head_dim),
+        KVCacheStaticParams(
+            num_heads=UInt(num_heads), head_size=UInt(head_dim)
+        ),
         page_size,
     ],
     layer_idx: UInt32,
@@ -1057,6 +1075,7 @@ fn kv_matmul_ragged_paged[
         + ".hdim_"
         + String(kv_collection.kv_params.head_size),
         Trace[TraceLevel.OP]._get_detail_str[description_fn](),
+        task_id=Int(ctx.get_device_context().id()),
     ):
         return _matmul_kv_cache_ragged[target=target](
             hidden_state,
@@ -1143,8 +1162,8 @@ fn _matmul_kv_cache_ragged_impl[
         return
 
     alias kv_params = cache_t.kv_params
-    alias N: UInt = weight.shape.get[0]()
-    alias K: UInt = weight.shape.get[1]()
+    alias N: UInt = UInt(weight.shape.get[0]())
+    alias K: UInt = UInt(weight.shape.get[1]())
 
     batch_size = input_row_offsets.dim[0]() - 1
 
@@ -1231,7 +1250,9 @@ fn k_matmul_ragged_paged[
     weight: NDBuffer[dtype, 2, *_],
     kv_collection: PagedKVCacheCollection[
         dtype,
-        KVCacheStaticParams(num_heads=num_heads, head_size=head_dim),
+        KVCacheStaticParams(
+            num_heads=UInt(num_heads), head_size=UInt(head_dim)
+        ),
         page_size,
     ],
     layer_idx: UInt32,
@@ -1265,6 +1286,7 @@ fn k_matmul_ragged_paged[
         + ".hdim_"
         + String(kv_collection.kv_params.head_size),
         Trace[TraceLevel.OP]._get_detail_str[description_fn](),
+        task_id=Int(ctx.get_device_context().id()),
     ):
         return _matmul_k_cache_ragged[target=target](
             hidden_state,
@@ -1348,8 +1370,8 @@ fn _matmul_k_cache_ragged_impl[
         return
 
     alias kv_params = cache_t.kv_params
-    alias N: UInt = weight.shape.get[0]()
-    alias K: UInt = weight.shape.get[1]()
+    alias N: UInt = UInt(weight.shape.get[0]())
+    alias K: UInt = UInt(weight.shape.get[1]())
 
     batch_size = input_row_offsets.dim[0]() - 1
 
@@ -1412,7 +1434,9 @@ fn unfused_qkv_matmul_ragged_paged_gguf_quantized[
     v_weight: NDBuffer[DType.uint8, 2, _, _],
     kv_collection: PagedKVCacheCollection[
         dtype,
-        KVCacheStaticParams(num_heads=num_heads, head_size=head_dim),
+        KVCacheStaticParams(
+            num_heads=UInt(num_heads), head_size=UInt(head_dim)
+        ),
         page_size,
     ],
     layer_idx: UInt32,
@@ -1592,8 +1616,8 @@ fn _qmatmul_k_or_v_cache_ragged_gguf_quantized_impl[
     k_or_v_cache: cache_t,
 ) raises:
     alias kv_params = cache_t.kv_params
-    alias N: UInt = k_or_v_weight.shape.get[0]()
-    alias K: UInt = k_or_v_weight.shape.get[1]()
+    alias N: UInt = UInt(k_or_v_weight.shape.get[0]())
+    alias K: UInt = UInt(k_or_v_weight.shape.get[1]())
 
     batch_size = input_row_offsets.dim[0]() - 1
 
@@ -1664,10 +1688,7 @@ fn _qmatmul_gguf_quantized_alloc_output[
     # something to ensure we don't segfault.
     var c_ptr = UnsafePointer[Scalar[DType.float32]].alloc(TOTAL_SEQ_LEN * N)
 
-    c_nd = __type_of(c_nd)(
-        c_ptr,
-        IndexList[2](TOTAL_SEQ_LEN, N),
-    )
+    c_nd = {c_ptr, IndexList[2](TOTAL_SEQ_LEN, N)}
 
     _qmatmul_gguf_quantized_common[
         quantization_encoding, elementwise_lambda_fn
@@ -1758,6 +1779,7 @@ fn generic_fused_qk_rope_bshd_continuous_batch_ragged[
         + ".hdim_"
         + String(kv_collection.kv_params.head_size),
         Trace[TraceLevel.OP]._get_detail_str[description_fn](),
+        task_id=Int(context.get_device_context().id()),
     ):
 
         @parameter
@@ -1849,6 +1871,7 @@ fn generic_fused_qk_rope_bshd_paged_ragged[
     with Trace[TraceLevel.OP, target=target](
         name,
         Trace[TraceLevel.OP]._get_detail_str[description_fn](),
+        task_id=Int(context.get_device_context().id()),
     ):
 
         @parameter
@@ -1934,6 +1957,7 @@ fn generic_flash_attention_kv_cache_ragged[
     with Trace[TraceLevel.OP, target=target](
         name,
         Trace[TraceLevel.OP]._get_detail_str[description_fn](),
+        task_id=Int(context.get_device_context().id()),
     ):
         return _flash_attention_dispatch[
             target=target,
@@ -1971,6 +1995,11 @@ fn _flash_attention_dispatch[
 ) raises:
     var k = kv_cache.get_key_cache(Int(layer_idx))
     var v = kv_cache.get_value_cache(Int(layer_idx))
+
+    var has_inputs = q.dim[0]() > 0
+    if not has_inputs:
+        # no-op if there are no inputs
+        return
 
     @parameter
     @__copy_capture(k, v)
@@ -2071,6 +2100,7 @@ fn generic_flash_attention_kv_cache_ragged_sink[
     with Trace[TraceLevel.OP, target=target](
         name,
         Trace[TraceLevel.OP]._get_detail_str[description_fn](),
+        task_id=Int(context.get_device_context().id()),
     ):
         return _flash_attention_dispatch[
             target=target,
@@ -2134,6 +2164,7 @@ fn generic_flare_mla_decode_kv_cache_ragged[
         + ".hdim_"
         + String(collection_t.kv_params.head_size),
         Trace[TraceLevel.OP]._get_detail_str[description_fn](),
+        task_id=Int(context.get_device_context().id()),
     ):
         return _flare_mla_decode_kv_cache_ragged[
             target=target,
@@ -2268,6 +2299,7 @@ fn generic_flare_mla_prefill_kv_cache_ragged[
         + ".hdim_"
         + String(collection_t.kv_params.head_size),
         Trace[TraceLevel.OP]._get_detail_str[description_fn](),
+        task_id=Int(context.get_device_context().id()),
     ):
         return _flare_mla_prefill_kv_cache_ragged[
             write_softmax_info=write_softmax_info,
@@ -2410,7 +2442,8 @@ fn generic_flare_mla_prefill_ragged_paged_plan[
     var k = kv_collection.get_key_cache(layer_idx_cast)
 
     with Trace[TraceLevel.OP, target=target](
-        "mo.mla.prefill.ragged.paged.plan"
+        "mo.mla.prefill.ragged.paged.plan",
+        task_id=Int(context.get_device_context().id()),
     ):
         mla_prefill_plan(
             buffer_row_offsets,
@@ -2613,6 +2646,7 @@ fn generic_cross_attention_kv_cache[
         + ".hdim_"
         + String(collection_t.kv_params.head_size),
         Trace[TraceLevel.OP]._get_detail_str[description_fn](),
+        task_id=Int(context.get_device_context().id()),
     ):
         return _cross_attention_dispatch[
             target=target,
@@ -2702,10 +2736,10 @@ fn generic_kv_cache_radd_dispatch[
         var corrected_dim: UInt
         if idx[1] < hidden_size:
             cache = k_cache
-            corrected_dim = idx[1]
+            corrected_dim = UInt(idx[1])
         else:
             cache = v_cache
-            corrected_dim = idx[1] - hidden_size
+            corrected_dim = UInt(idx[1] - hidden_size)
 
         var h_idx: UInt
         var hd_idx: UInt

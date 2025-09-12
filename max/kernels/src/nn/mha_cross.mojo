@@ -83,7 +83,7 @@ fn _bmm0_bs[
     debug_assert(cur_kv_len <= kv_max_seq_len, "Invalid cur_kv_len")
     debug_assert(num_keys <= padded_num_keys, "Invalid max_cache_size")
 
-    if x >= kv_max_seq_len + max_cache_size or y >= q_max_seq_len:
+    if x >= UInt(kv_max_seq_len + max_cache_size) or y >= UInt(q_max_seq_len):
         return
 
     var q = q_ptr + q_offset
@@ -95,7 +95,7 @@ fn _bmm0_bs[
     var accum = SIMD[p_type, 1](0.0)
 
     # Set total KV length: KV written previous to and during this forward.
-    if x < num_keys and y < cur_query_len:
+    if x < UInt(num_keys) and y < UInt(cur_query_len):
         var accum_vec = SIMD[p_type, simd_width_of[p_type]()](0)
         var k_ptr = k_cache.block_paged_ptr[tile_size=1](batch, x, kv_head, 0)
 
@@ -178,7 +178,7 @@ fn _bmm1_bs[
     debug_assert(cur_query_len <= q_max_seq_len, "Invalid cur_query_len")
     debug_assert(cur_kv_len <= kv_max_seq_len, "Invalid cur_kv_len")
 
-    if x >= depth or y >= cur_query_len:
+    if x >= UInt(depth) or y >= UInt(cur_query_len):
         return
 
     var p = p_ptr + p_offset
@@ -247,16 +247,16 @@ fn mha_cross_gpu_naive[
     """
     constrained[rank == 3, "only support rank 3 inputs for ragged inputs."]()
     constrained[
-        q.type == cache_t.dtype == cache_t.dtype == output.type,
+        q.dtype == cache_t.dtype == cache_t.dtype == output.type,
         "Q, K, V, output should have same type.",
     ]()
     constrained[
-        q.type is DType.float32 or q.type.is_half_float(),
+        q.dtype is DType.float32 or q.dtype.is_half_float(),
         "Only support single and half precision.",
     ]()
 
     alias config = MHAConfig(
-        dtype, q_shape.get[rank - 2](), q_shape.get[rank - 1]()
+        dtype, UInt(q_shape.get[rank - 2]()), UInt(q_shape.get[rank - 1]())
     )
 
     alias num_heads = Int(config.num_heads)
@@ -267,7 +267,7 @@ fn mha_cross_gpu_naive[
     var batch_size = q_input_row_offsets.dim[0]() - 1
     var max_cache_size = Int(k.max_context_length())
 
-    alias q_type = q.type
+    alias q_type = q.dtype
     alias k_type = cache_t.dtype
     alias v_type = cache_t.dtype
 
@@ -318,7 +318,7 @@ fn mha_cross_gpu_naive[
         Index(batch_size * num_heads, q_max_seq_len, num_keys), p_buffer, 2, ctx
     )
 
-    ctx.enqueue_function[_bmm1_bs[__type_of(v), p_type, output.type]](
+    ctx.enqueue_function[_bmm1_bs[__type_of(v), p_type, output.dtype]](
         output.data,
         p_device,
         v,

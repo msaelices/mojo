@@ -69,9 +69,11 @@ from .utils_gpu import MatmulConfig, block_swizzle
 
 @always_inline
 fn distance[
-    type: DType, //
-](arg0: UnsafePointer[Scalar[type]], arg1: UnsafePointer[Scalar[type]]) -> Int:
-    return (Int(arg0) - Int(arg1)) // size_of[arg1.type]()
+    dtype: DType, //
+](
+    arg0: UnsafePointer[Scalar[dtype]], arg1: UnsafePointer[Scalar[dtype]]
+) -> Int:
+    return (Int(arg0) - Int(arg1)) // dtype.size_of()
 
 
 @always_inline
@@ -267,7 +269,7 @@ fn multistage_mma[
     fn _mask_tensor_row(
         tensor: LayoutTensor, num_rows: Int, out result: __type_of(tensor)
     ):
-        return __type_of(tensor)(
+        return {
             tensor.ptr,
             RuntimeLayout[
                 element_type = tensor.layout_int_type,
@@ -278,7 +280,7 @@ fn multistage_mma[
                 ](num_rows, tensor.dim[1]()),
                 tensor.runtime_layout.stride,
             ),
-        )
+        }
 
     @always_inline
     @parameter
@@ -348,7 +350,7 @@ fn multistage_mma[
     alias MMA_M = mma_shape[0]
     alias MMA_N = mma_shape[1]
     alias MMA_K = mma_shape[2]
-    alias num_k_mmas: UInt = BK // MMA_K
+    alias num_k_mmas: UInt = UInt(BK // MMA_K)
     alias num_k_mma_iters: UInt = num_k_mmas // k_group_size
     alias num_m_mmas = WM // MMA_M
     alias num_n_mmas = WN // MMA_N
@@ -412,7 +414,7 @@ fn multistage_mma[
                 a_warp_tile, a_reg_tiles[i].vectorize[1, a_frag_size](), i
             )
 
-        mma_op.load_b(b_warp_tile, b_reg_tiles[i], i, Int(warp_x))
+        mma_op.load_b(b_warp_tile, b_reg_tiles[i], i, UInt(warp_x))
 
     @parameter
     if static_num_iters.has_value():
@@ -503,7 +505,7 @@ fn multistage_mma[
                         mma_op.load_a[swizzle_a_pattern](
                             a_warp_tile,
                             a_reg_tiles[next].vectorize[1, a_frag_size](),
-                            Int(kidx),
+                            UInt(kidx),
                         )
                     else:
                         # Assume input is the 16x8 output of 16x8x16 or 16x8x8 mma.
@@ -513,8 +515,8 @@ fn multistage_mma[
                     mma_op.load_b(
                         b_warp_tile,
                         b_reg_tiles[Int(next)],
-                        Int(kidx),
-                        Int(warp_x),
+                        UInt(kidx),
+                        UInt(warp_x),
                     )
 
                 @parameter
@@ -653,13 +655,13 @@ fn multistage_mma[
                 mma_op.load_a[swizzle_a_pattern](
                     a_warp_tile,
                     a_reg_tiles[next].vectorize[1, a_frag_size](),
-                    kidx,
+                    UInt(kidx),
                 )
                 mma_op.load_b(
                     b_warp_tile,
                     b_reg_tiles[next],
-                    kidx,
-                    Int(warp_x),
+                    UInt(kidx),
+                    UInt(warp_x),
                 )
 
             @parameter
@@ -724,9 +726,9 @@ fn multistage_gemm_kernel[
     ]()
     alias simd_size = simd_width_of[c_type]()
 
-    var M: UInt = c.dim[0]()
-    var N: UInt = b.dim[0 if transpose_b else 1]()
-    var K: UInt = b.dim[1 if transpose_b else 0]()
+    var M: UInt = UInt(c.dim[0]())
+    var N: UInt = UInt(b.dim[0 if transpose_b else 1]())
+    var K: UInt = UInt(b.dim[1 if transpose_b else 0]())
 
     alias BM = config.block_tile_shape[0]
     alias BN = config.block_tile_shape[1]
@@ -778,22 +780,10 @@ fn multistage_gemm_kernel[
         a_type,
         Layout.row_major(BM, BK),
         address_space = a_smem.address_space,
-        alignment = a_smem.alignment,
+        alignment = a_smem.alignment2,
         circular=True,
     ](
-        rebind[
-            __type_of(
-                LayoutTensorIter[
-                    a_type,
-                    Layout.row_major(BM, BK),
-                    MutableAnyOrigin,
-                    address_space = a_smem.address_space,
-                    alignment = a_smem.alignment,
-                    circular=True,
-                ]().ptr
-            )
-        ](a_smem)
-        + warp_k_part_id * a_smem_size,
+        a_smem + warp_k_part_id * a_smem_size,
         a_smem_size,
     )
 
@@ -864,7 +854,7 @@ fn multistage_gemm_kernel[
         b_gmem_iter,
         a_smem_iter,
         b_smem_iter,
-        Int(ceildiv(K // num_warp_k_partitions, BK)),
+        Int(ceildiv(K // num_warp_k_partitions, UInt(BK))),
     )
 
     # reduce within the threadblock
@@ -915,7 +905,7 @@ fn multistage_gemm_kernel[
         @parameter
         for i in range(__type_of(c_gmem_frag).layout.size()):
             alias src_idx = c_reg_frag.layout(i)
-            alias dst_static_idx: UInt = __type_of(c_gmem_frag).layout(i)
+            alias dst_static_idx: UInt = UInt(__type_of(c_gmem_frag).layout(i))
             var dst_idx: Int
 
             @parameter

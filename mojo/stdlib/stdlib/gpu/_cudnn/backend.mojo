@@ -32,19 +32,37 @@ alias CUDA_CUDNN_LIBRARY_PATHS = List[Path](
     "/usr/lib/x86_64-linux-gnu/libcudnn.so.8",
 )
 
+
+fn _on_error_msg() -> String:
+    return String(
+        (
+            "Cannot find the CUDNN libraries. Please make sure that "
+            "the CUDA toolkit is installed and that the library path is "
+            "correctly set in one of the following paths ["
+        ),
+        ", ".join(materialize[CUDA_CUDNN_LIBRARY_PATHS]()),
+        (
+            "]. You may need to make sure that you are using the non-slim"
+            " version of the MAX container."
+        ),
+    )
+
+
 alias CUDA_CUDNN_LIBRARY = _Global[
-    "CUDA_CUDNN_LIBRARY", _OwnedDLHandle, _init_dylib
+    "CUDA_CUDNN_LIBRARY", _init_dylib, on_error_msg=_on_error_msg
 ]
 
 
 fn _init_dylib() -> _OwnedDLHandle:
-    return _find_dylib["CUDA cuDNN"](CUDA_CUDNN_LIBRARY_PATHS)
+    return _find_dylib[abort_on_failure=False](
+        materialize[CUDA_CUDNN_LIBRARY_PATHS]()
+    )
 
 
 @always_inline
 fn _get_dylib_function[
     func_name: StaticString, result_type: AnyTrivialRegType
-]() -> result_type:
+]() raises -> result_type:
     return _ffi_get_dylib_function[
         CUDA_CUDNN_LIBRARY(),
         func_name,
@@ -57,7 +75,7 @@ fn _get_dylib_function[
 # ===-----------------------------------------------------------------------===#
 
 
-fn cudnnBackendInitialize(descriptor: OpaquePointer) -> cudnnStatus_t:
+fn cudnnBackendInitialize(descriptor: OpaquePointer) raises -> cudnnStatus_t:
     return _get_dylib_function[
         "cudnnBackendInitialize", fn (OpaquePointer) -> cudnnStatus_t
     ]()(descriptor)
@@ -65,7 +83,7 @@ fn cudnnBackendInitialize(descriptor: OpaquePointer) -> cudnnStatus_t:
 
 @fieldwise_init
 @register_passable("trivial")
-struct cudnnBackendKnobType_t(Writable):
+struct cudnnBackendKnobType_t(EqualityComparable, Writable):
     var _value: Int8
     alias CUDNN_KNOB_TYPE_SPLIT_K = Self(0)
     alias CUDNN_KNOB_TYPE_SWIZZLE = Self(1)
@@ -112,14 +130,8 @@ struct cudnnBackendKnobType_t(Writable):
     fn __eq__(self, other: Self) -> Bool:
         return self._value == other._value
 
-    fn __ne__(self, other: Self) -> Bool:
-        return not (self == other)
-
     fn __is__(self, other: Self) -> Bool:
         return self == other
-
-    fn __isnot__(self, other: Self) -> Bool:
-        return self != other
 
     @no_inline
     fn write_to(self, mut writer: Some[Writer]):
@@ -215,7 +227,7 @@ struct cudnnBackendKnobType_t(Writable):
 
 @fieldwise_init
 @register_passable("trivial")
-struct cudnnPointwiseMode_t(Writable):
+struct cudnnPointwiseMode_t(EqualityComparable, Writable):
     var _value: Int8
     alias CUDNN_POINTWISE_ADD = Self(0)
     alias CUDNN_POINTWISE_ADD_SQUARE = Self(1)
@@ -274,14 +286,8 @@ struct cudnnPointwiseMode_t(Writable):
     fn __eq__(self, other: Self) -> Bool:
         return self._value == other._value
 
-    fn __ne__(self, other: Self) -> Bool:
-        return not (self == other)
-
     fn __is__(self, other: Self) -> Bool:
         return self == other
-
-    fn __isnot__(self, other: Self) -> Bool:
-        return self != other
 
     @no_inline
     fn write_to(self, mut writer: Some[Writer]):
@@ -401,7 +407,7 @@ struct cudnnPointwiseMode_t(Writable):
 
 @fieldwise_init
 @register_passable("trivial")
-struct cudnnBackendDescriptorType_t(Writable):
+struct cudnnBackendDescriptorType_t(EqualityComparable, Writable):
     var _value: Int8
     alias CUDNN_BACKEND_POINTWISE_DESCRIPTOR = Self(0)
     alias CUDNN_BACKEND_CONVOLUTION_DESCRIPTOR = Self(1)
@@ -448,14 +454,8 @@ struct cudnnBackendDescriptorType_t(Writable):
     fn __eq__(self, other: Self) -> Bool:
         return self._value == other._value
 
-    fn __ne__(self, other: Self) -> Bool:
-        return not (self == other)
-
     fn __is__(self, other: Self) -> Bool:
         return self == other
-
-    fn __isnot__(self, other: Self) -> Bool:
-        return self != other
 
     @no_inline
     fn write_to(self, mut writer: Some[Writer]):
@@ -574,7 +574,7 @@ fn cudnnBackendSetAttribute(
     attribute_type: cudnnBackendAttributeType_t,
     element_count: Int64,
     array_of_elements: OpaquePointer,
-) -> cudnnStatus_t:
+) raises -> cudnnStatus_t:
     return _get_dylib_function[
         "cudnnBackendSetAttribute",
         fn (
@@ -595,7 +595,7 @@ fn cudnnBackendSetAttribute(
 
 @fieldwise_init
 @register_passable("trivial")
-struct cudnnBackendBehaviorNote_t(Writable):
+struct cudnnBackendBehaviorNote_t(EqualityComparable, Identifiable, Writable):
     var _value: Int8
     alias CUDNN_BEHAVIOR_NOTE_RUNTIME_COMPILATION = Self(0)
     alias CUDNN_BEHAVIOR_NOTE_REQUIRES_FILTER_INT8x32_REORDER = Self(1)
@@ -608,14 +608,8 @@ struct cudnnBackendBehaviorNote_t(Writable):
     fn __eq__(self, other: Self) -> Bool:
         return self._value == other._value
 
-    fn __ne__(self, other: Self) -> Bool:
-        return not (self == other)
-
     fn __is__(self, other: Self) -> Bool:
         return self == other
-
-    fn __isnot__(self, other: Self) -> Bool:
-        return self != other
 
     @no_inline
     fn write_to(self, mut writer: Some[Writer]):
@@ -647,7 +641,7 @@ struct cudnnBackendBehaviorNote_t(Writable):
 
 @fieldwise_init
 @register_passable("trivial")
-struct cudnnBackendLayoutType_t(Writable):
+struct cudnnBackendLayoutType_t(EqualityComparable, Identifiable, Writable):
     var _value: Int8
     alias CUDNN_LAYOUT_TYPE_PREFERRED_NCHW = Self(0)
     alias CUDNN_LAYOUT_TYPE_PREFERRED_NHWC = Self(1)
@@ -661,14 +655,8 @@ struct cudnnBackendLayoutType_t(Writable):
     fn __eq__(self, other: Self) -> Bool:
         return self._value == other._value
 
-    fn __ne__(self, other: Self) -> Bool:
-        return not (self == other)
-
     fn __is__(self, other: Self) -> Bool:
         return self == other
-
-    fn __isnot__(self, other: Self) -> Bool:
-        return self != other
 
     @no_inline
     fn write_to(self, mut writer: Some[Writer]):
@@ -698,7 +686,7 @@ struct cudnnBackendLayoutType_t(Writable):
 
 @fieldwise_init
 @register_passable("trivial")
-struct cudnnBackendNormFwdPhase_t(Writable):
+struct cudnnBackendNormFwdPhase_t(EqualityComparable, Identifiable, Writable):
     var _value: Int8
     alias CUDNN_NORM_FWD_INFERENCE = Self(0)
     alias CUDNN_NORM_FWD_TRAINING = Self(1)
@@ -709,14 +697,8 @@ struct cudnnBackendNormFwdPhase_t(Writable):
     fn __eq__(self, other: Self) -> Bool:
         return self._value == other._value
 
-    fn __ne__(self, other: Self) -> Bool:
-        return not (self == other)
-
     fn __is__(self, other: Self) -> Bool:
         return self == other
-
-    fn __isnot__(self, other: Self) -> Bool:
-        return self != other
 
     @no_inline
     fn write_to(self, mut writer: Some[Writer]):
@@ -740,7 +722,7 @@ struct cudnnBackendNormFwdPhase_t(Writable):
 
 @fieldwise_init
 @register_passable("trivial")
-struct cudnnBackendHeurMode_t(Writable):
+struct cudnnBackendHeurMode_t(EqualityComparable, Identifiable, Writable):
     var _value: Int8
     alias CUDNN_HEUR_MODE_INSTANT = Self(0)
     alias CUDNN_HEUR_MODE_B = Self(1)
@@ -754,14 +736,8 @@ struct cudnnBackendHeurMode_t(Writable):
     fn __eq__(self, other: Self) -> Bool:
         return self._value == other._value
 
-    fn __ne__(self, other: Self) -> Bool:
-        return not (self == other)
-
     fn __is__(self, other: Self) -> Bool:
         return self == other
-
-    fn __isnot__(self, other: Self) -> Bool:
-        return self != other
 
     @no_inline
     fn write_to(self, mut writer: Some[Writer]):
@@ -797,7 +773,7 @@ struct cudnnFractionStruct:
 
 @fieldwise_init
 @register_passable("trivial")
-struct cudnnBackendNumericalNote_t(Writable):
+struct cudnnBackendNumericalNote_t(EqualityComparable, Writable):
     var _value: Int8
     alias CUDNN_NUMERICAL_NOTE_TENSOR_CORE = Self(0)
     alias CUDNN_NUMERICAL_NOTE_DOWN_CONVERT_INPUTS = Self(1)
@@ -816,14 +792,8 @@ struct cudnnBackendNumericalNote_t(Writable):
     fn __eq__(self, other: Self) -> Bool:
         return self._value == other._value
 
-    fn __ne__(self, other: Self) -> Bool:
-        return not (self == other)
-
     fn __is__(self, other: Self) -> Bool:
         return self == other
-
-    fn __isnot__(self, other: Self) -> Bool:
-        return self != other
 
     @no_inline
     fn write_to(self, mut writer: Some[Writer]):
@@ -866,7 +836,7 @@ struct cudnnBackendNumericalNote_t(Writable):
 fn cudnnBackendCreateDescriptor(
     descriptor_type: cudnnBackendDescriptorType_t,
     descriptor: UnsafePointer[OpaquePointer],
-) -> cudnnStatus_t:
+) raises -> cudnnStatus_t:
     return _get_dylib_function[
         "cudnnBackendCreateDescriptor",
         fn (
@@ -877,7 +847,7 @@ fn cudnnBackendCreateDescriptor(
 
 @fieldwise_init
 @register_passable("trivial")
-struct cudnnBackendAttributeType_t(Writable):
+struct cudnnBackendAttributeType_t(EqualityComparable, Writable):
     var _value: Int8
     alias CUDNN_TYPE_HANDLE = Self(0)
     alias CUDNN_TYPE_DATA_TYPE = Self(1)
@@ -916,14 +886,8 @@ struct cudnnBackendAttributeType_t(Writable):
     fn __eq__(self, other: Self) -> Bool:
         return self._value == other._value
 
-    fn __ne__(self, other: Self) -> Bool:
-        return not (self == other)
-
     fn __is__(self, other: Self) -> Bool:
         return self == other
-
-    fn __isnot__(self, other: Self) -> Bool:
-        return self != other
 
     @no_inline
     fn write_to(self, mut writer: Some[Writer]):
@@ -1003,7 +967,7 @@ struct cudnnBackendAttributeType_t(Writable):
 
 @fieldwise_init
 @register_passable("trivial")
-struct cudnnRngDistribution_t(Writable):
+struct cudnnRngDistribution_t(EqualityComparable, Identifiable, Writable):
     var _value: Int8
     alias CUDNN_RNG_DISTRIBUTION_BERNOULLI = Self(0)
     alias CUDNN_RNG_DISTRIBUTION_UNIFORM = Self(1)
@@ -1015,14 +979,8 @@ struct cudnnRngDistribution_t(Writable):
     fn __eq__(self, other: Self) -> Bool:
         return self._value == other._value
 
-    fn __ne__(self, other: Self) -> Bool:
-        return not (self == other)
-
     fn __is__(self, other: Self) -> Bool:
         return self == other
-
-    fn __isnot__(self, other: Self) -> Bool:
-        return self != other
 
     @no_inline
     fn write_to(self, mut writer: Some[Writer]):
@@ -1046,7 +1004,7 @@ struct cudnnRngDistribution_t(Writable):
         return Int(self._value)
 
 
-fn cudnnBackendFinalize(descriptor: OpaquePointer) -> cudnnStatus_t:
+fn cudnnBackendFinalize(descriptor: OpaquePointer) raises -> cudnnStatus_t:
     return _get_dylib_function[
         "cudnnBackendFinalize", fn (OpaquePointer) -> cudnnStatus_t
     ]()(descriptor)
@@ -1054,7 +1012,9 @@ fn cudnnBackendFinalize(descriptor: OpaquePointer) -> cudnnStatus_t:
 
 @fieldwise_init
 @register_passable("trivial")
-struct cudnnBackendTensorReordering_t(Writable):
+struct cudnnBackendTensorReordering_t(
+    EqualityComparable, Identifiable, Writable
+):
     var _value: Int8
     alias CUDNN_TENSOR_REORDERING_NONE = Self(0)
     alias CUDNN_TENSOR_REORDERING_INT8x32 = Self(1)
@@ -1066,14 +1026,8 @@ struct cudnnBackendTensorReordering_t(Writable):
     fn __eq__(self, other: Self) -> Bool:
         return self._value == other._value
 
-    fn __ne__(self, other: Self) -> Bool:
-        return not (self == other)
-
     fn __is__(self, other: Self) -> Bool:
         return self == other
-
-    fn __isnot__(self, other: Self) -> Bool:
-        return self != other
 
     @no_inline
     fn write_to(self, mut writer: Some[Writer]):
@@ -1099,7 +1053,7 @@ struct cudnnBackendTensorReordering_t(Writable):
 
 @fieldwise_init
 @register_passable("trivial")
-struct cudnnBackendAttributeName_t(Writable):
+struct cudnnBackendAttributeName_t(EqualityComparable, Writable):
     var _value: Int8
     alias CUDNN_ATTR_POINTWISE_MODE = Self(0)
     alias CUDNN_ATTR_POINTWISE_MATH_PREC = Self(1)
@@ -1322,14 +1276,8 @@ struct cudnnBackendAttributeName_t(Writable):
     fn __eq__(self, other: Self) -> Bool:
         return self._value == other._value
 
-    fn __ne__(self, other: Self) -> Bool:
-        return not (self == other)
-
     fn __is__(self, other: Self) -> Bool:
         return self == other
-
-    fn __isnot__(self, other: Self) -> Bool:
-        return self != other
 
     @no_inline
     fn write_to(self, mut writer: Some[Writer]):
@@ -1867,7 +1815,7 @@ struct cudnnBackendAttributeName_t(Writable):
 
 @fieldwise_init
 @register_passable("trivial")
-struct cudnnBackendNormMode_t(Writable):
+struct cudnnBackendNormMode_t(EqualityComparable, Identifiable, Writable):
     var _value: Int8
     alias CUDNN_LAYER_NORM = Self(0)
     alias CUDNN_INSTANCE_NORM = Self(1)
@@ -1881,14 +1829,8 @@ struct cudnnBackendNormMode_t(Writable):
     fn __eq__(self, other: Self) -> Bool:
         return self._value == other._value
 
-    fn __ne__(self, other: Self) -> Bool:
-        return not (self == other)
-
     fn __is__(self, other: Self) -> Bool:
         return self == other
-
-    fn __isnot__(self, other: Self) -> Bool:
-        return self != other
 
     @no_inline
     fn write_to(self, mut writer: Some[Writer]):
@@ -1918,7 +1860,7 @@ struct cudnnBackendNormMode_t(Writable):
 
 @fieldwise_init
 @register_passable("trivial")
-struct cudnnSignalMode_t(Writable):
+struct cudnnSignalMode_t(EqualityComparable, Identifiable, Writable):
     var _value: Int8
     alias CUDNN_SIGNAL_SET = Self(0)
     alias CUDNN_SIGNAL_WAIT = Self(1)
@@ -1929,14 +1871,8 @@ struct cudnnSignalMode_t(Writable):
     fn __eq__(self, other: Self) -> Bool:
         return self._value == other._value
 
-    fn __ne__(self, other: Self) -> Bool:
-        return not (self == other)
-
     fn __is__(self, other: Self) -> Bool:
         return self == other
-
-    fn __isnot__(self, other: Self) -> Bool:
-        return self != other
 
     @no_inline
     fn write_to(self, mut writer: Some[Writer]):
@@ -1963,7 +1899,7 @@ alias cudnnBackendDescriptor_t = OpaquePointer
 
 @fieldwise_init
 @register_passable("trivial")
-struct cudnnBnFinalizeStatsMode_t(Writable):
+struct cudnnBnFinalizeStatsMode_t(EqualityComparable, Identifiable, Writable):
     var _value: Int8
     alias CUDNN_BN_FINALIZE_STATISTICS_TRAINING = Self(0)
     alias CUDNN_BN_FINALIZE_STATISTICS_INFERENCE = Self(1)
@@ -1974,14 +1910,8 @@ struct cudnnBnFinalizeStatsMode_t(Writable):
     fn __eq__(self, other: Self) -> Bool:
         return self._value == other._value
 
-    fn __ne__(self, other: Self) -> Bool:
-        return not (self == other)
-
     fn __is__(self, other: Self) -> Bool:
         return self == other
-
-    fn __isnot__(self, other: Self) -> Bool:
-        return self != other
 
     @no_inline
     fn write_to(self, mut writer: Some[Writer]):
@@ -2005,7 +1935,7 @@ struct cudnnBnFinalizeStatsMode_t(Writable):
 
 @fieldwise_init
 @register_passable("trivial")
-struct cudnnGenStatsMode_t(Writable):
+struct cudnnGenStatsMode_t(EqualityComparable, Identifiable, Writable):
     var _value: Int8
     alias CUDNN_GENSTATS_SUM_SQSUM = Self(0)
 
@@ -2015,14 +1945,8 @@ struct cudnnGenStatsMode_t(Writable):
     fn __eq__(self, other: Self) -> Bool:
         return self._value == other._value
 
-    fn __ne__(self, other: Self) -> Bool:
-        return not (self == other)
-
     fn __is__(self, other: Self) -> Bool:
         return self == other
-
-    fn __isnot__(self, other: Self) -> Bool:
-        return self != other
 
     @no_inline
     fn write_to(self, mut writer: Some[Writer]):
@@ -2044,7 +1968,7 @@ struct cudnnGenStatsMode_t(Writable):
 
 fn cudnnBackendDestroyDescriptor(
     descriptor: OpaquePointer,
-) -> cudnnStatus_t:
+) raises -> cudnnStatus_t:
     return _get_dylib_function[
         "cudnnBackendDestroyDescriptor",
         fn (OpaquePointer) -> cudnnStatus_t,
@@ -2055,7 +1979,7 @@ fn cudnnBackendExecute(
     handle: UnsafePointer[cudnnContext],
     execution_plan: OpaquePointer,
     variant_pack: OpaquePointer,
-) -> cudnnStatus_t:
+) raises -> cudnnStatus_t:
     return _get_dylib_function[
         "cudnnBackendExecute",
         fn (
@@ -2068,7 +1992,7 @@ fn cudnnBackendExecute(
 
 @fieldwise_init
 @register_passable("trivial")
-struct cudnnResampleMode_t(Writable):
+struct cudnnResampleMode_t(EqualityComparable, Identifiable, Writable):
     var _value: Int8
     alias CUDNN_RESAMPLE_NEAREST = Self(0)
     alias CUDNN_RESAMPLE_BILINEAR = Self(1)
@@ -2083,14 +2007,8 @@ struct cudnnResampleMode_t(Writable):
     fn __eq__(self, other: Self) -> Bool:
         return self._value == other._value
 
-    fn __ne__(self, other: Self) -> Bool:
-        return not (self == other)
-
     fn __is__(self, other: Self) -> Bool:
         return self == other
-
-    fn __isnot__(self, other: Self) -> Bool:
-        return self != other
 
     @no_inline
     fn write_to(self, mut writer: Some[Writer]):
@@ -2130,7 +2048,7 @@ fn cudnnBackendGetAttribute(
     requested_element_count: Int64,
     element_count: UnsafePointer[Int64],
     array_of_elements: OpaquePointer,
-) -> cudnnStatus_t:
+) raises -> cudnnStatus_t:
     return _get_dylib_function[
         "cudnnBackendGetAttribute",
         fn (
@@ -2153,7 +2071,7 @@ fn cudnnBackendGetAttribute(
 
 @fieldwise_init
 @register_passable("trivial")
-struct cudnnPaddingMode_t(Writable):
+struct cudnnPaddingMode_t(EqualityComparable, Identifiable, Writable):
     var _value: Int8
     alias CUDNN_ZERO_PAD = Self(0)
     alias CUDNN_NEG_INF_PAD = Self(1)
@@ -2165,14 +2083,8 @@ struct cudnnPaddingMode_t(Writable):
     fn __eq__(self, other: Self) -> Bool:
         return self._value == other._value
 
-    fn __ne__(self, other: Self) -> Bool:
-        return not (self == other)
-
     fn __is__(self, other: Self) -> Bool:
         return self == other
-
-    fn __isnot__(self, other: Self) -> Bool:
-        return self != other
 
     @no_inline
     fn write_to(self, mut writer: Some[Writer]):

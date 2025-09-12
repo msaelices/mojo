@@ -31,12 +31,12 @@ from memory import Pointer
 @fieldwise_init
 struct _SpanIter[
     mut: Bool, //,
-    T: ExplicitlyCopyable & Movable,
+    T: Copyable & Movable,
     origin: Origin[mut],
     forward: Bool = True,
     address_space: AddressSpace = AddressSpace.GENERIC,
     alignment: Int = align_of[T](),
-](Copyable, Movable):
+](ImplicitlyCopyable, Movable):
     """Iterator for Span.
 
     Parameters:
@@ -54,7 +54,7 @@ struct _SpanIter[
 
     @always_inline
     fn __iter__(self) -> Self:
-        return self
+        return self.copy()
 
     @always_inline
     fn __has_next__(self) -> Bool:
@@ -80,12 +80,18 @@ struct _SpanIter[
 @register_passable("trivial")
 struct Span[
     mut: Bool, //,
-    T: ExplicitlyCopyable & Movable,
+    T: Copyable & Movable,
     origin: Origin[mut],
     *,
     address_space: AddressSpace = AddressSpace.GENERIC,
     alignment: Int = align_of[T](),
-](ExplicitlyCopyable, Copyable, Movable, Sized, Boolable, Defaultable):
+](
+    ImplicitlyCopyable,
+    Movable,
+    Sized,
+    Boolable,
+    Defaultable,
+):
     """A non-owning view of contiguous data.
 
     Parameters:
@@ -106,7 +112,7 @@ struct Span[
         mut=mut,
         origin=origin,
         address_space=address_space,
-        alignment=alignment,
+        alignment2=alignment,
     ]
     """The UnsafePointer type that corresponds to this `Span`."""
     # Fields
@@ -431,7 +437,7 @@ struct Span[
         mut=mut,
         origin=origin,
         address_space=address_space,
-        alignment=alignment,
+        alignment2=alignment,
     ]:
         """Retrieves a pointer to the underlying memory.
 
@@ -486,7 +492,8 @@ struct Span[
     # accesses to the origin.
     @__unsafe_disable_nested_origin_exclusivity
     fn __eq__[
-        T: EqualityComparable & Copyable & Movable, rhs_alignment: Int, //
+        T: EqualityComparable & Copyable & Movable,
+        rhs_alignment: Int, //,
     ](
         self: Span[T, origin, alignment=alignment],
         rhs: Span[T, _, alignment=rhs_alignment],
@@ -494,7 +501,7 @@ struct Span[
         """Verify if span is equal to another span.
 
         Parameters:
-            T: The type of the elements in the span. Must implement the
+            T: The type of the elements must implement the
               traits `EqualityComparable`, `Copyable` and `Movable`.
             rhs_alignment: The inferred alignment of the rhs span.
 
@@ -604,10 +611,10 @@ struct Span[
         Returns:
             A pointer merged with the specified `other_type`.
         """
-        return __type_of(result)(
-            ptr=self._data.origin_cast[result.mut, result.origin](),
-            length=UInt(self._len),
-        )
+        return {
+            ptr = self._data.origin_cast[result.mut, result.origin](),
+            length = UInt(self._len),
+        }
 
     fn reverse[
         dtype: DType, O: MutableOrigin, //

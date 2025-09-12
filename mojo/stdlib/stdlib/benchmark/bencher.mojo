@@ -25,7 +25,7 @@ from .benchmark import _run_impl, _RunOptions
 
 
 @fieldwise_init
-struct BenchMetric(Copyable, Movable, Stringable, Writable):
+struct BenchMetric(ImplicitlyCopyable, Movable, Stringable, Writable):
     """Defines a benchmark throughput metric."""
 
     var code: Int
@@ -115,11 +115,13 @@ struct BenchMetric(Copyable, Movable, Stringable, Writable):
             "\n",
             sep,
             sep,
-            "Couldn't match metric [" + name + "]\n",
+            "Couldn't match metric [",
+            name,
+            "]\n",
             "Available throughput metrics (case-insensitive) in the list:\n",
         )
         for m in metric_list:
-            err += String("    metric: [" + m.name.lower(), "]\n")
+            err += String("    metric: [", m.name.lower(), "]\n")
         err += String(
             sep, sep, "[ERROR]: metric [", name, "] is NOT supported!\n"
         )
@@ -127,7 +129,7 @@ struct BenchMetric(Copyable, Movable, Stringable, Writable):
 
 
 @fieldwise_init
-struct ThroughputMeasure(Copyable, Movable):
+struct ThroughputMeasure(ImplicitlyCopyable, Movable):
     """Records a throughput metric of metric BenchMetric and value."""
 
     var metric: BenchMetric
@@ -189,7 +191,7 @@ struct ThroughputMeasure(Copyable, Movable):
 
 
 @fieldwise_init
-struct Format(Copyable, Movable, Stringable, Writable):
+struct Format(ImplicitlyCopyable, Movable, Stringable, Writable):
     """Defines a format for the benchmark output when printing or writing to a
     file.
     """
@@ -262,6 +264,10 @@ struct BenchConfig(Copyable, Movable):
     execution times and frequency.
     """
 
+    # ===-------------------------------------------------------------------===#
+    # Fields
+    # ===-------------------------------------------------------------------===#
+
     var out_file: Optional[Path]
     """Output file to write results to."""
     var min_runtime_secs: Float64
@@ -290,12 +296,21 @@ struct BenchConfig(Copyable, Movable):
     """Whether to print verbose timing results."""
     var verbose_metric_names: Bool
     """If True print the metric name and unit, else print the unit only."""
+
+    # ===-------------------------------------------------------------------===#
+    # Aliases
+    # ===-------------------------------------------------------------------===#
+
     alias VERBOSE_TIMING_LABELS = List[String](
         "min (ms)", "mean (ms)", "max (ms)", "duration (ms)"
     )
     """Labels to print verbose timing results."""
 
     # TODO: to add median and stddev to verbose-timing
+
+    # ===-------------------------------------------------------------------===#
+    # Life cycle methods
+    # ===-------------------------------------------------------------------===#
 
     fn __init__(
         out self,
@@ -431,8 +446,8 @@ struct BenchmarkInfo(Copyable, Movable):
     fn __init__(
         out self,
         name: String,
-        result: Report,
-        measures: List[ThroughputMeasure] = List[ThroughputMeasure](),
+        var result: Report,
+        var measures: List[ThroughputMeasure] = List[ThroughputMeasure](),
         verbose_timing: Bool = False,
     ):
         """Constructs a `BenchmarkInfo` object to return benchmark report and
@@ -446,13 +461,13 @@ struct BenchmarkInfo(Copyable, Movable):
         """
 
         self.name = name
-        self.result = result
-        self.measures = measures
+        self.result = result^
+        self.measures = measures^
         self.verbose_timing = verbose_timing
 
 
 @fieldwise_init
-struct Mode(Copyable, Movable):
+struct Mode(ImplicitlyCopyable, Movable):
     """Defines a Benchmark Mode to distinguish between test runs and actual benchmarks.
     """
 
@@ -566,7 +581,7 @@ struct Bench(Stringable, Writable):
             mode: Benchmark mode object representing benchmark or test mode.
         """
 
-        self.config = config.value() if config else BenchConfig()
+        self.config = config.value().copy() if config else BenchConfig()
         self.mode = mode
         self.info_vec = List[BenchmarkInfo]()
 
@@ -779,7 +794,7 @@ struct Bench(Stringable, Writable):
 
         if self.mode == Mode.Benchmark:
             for _ in range(self.config.num_repetitions):
-                self._bench[bench_fn](bench_id, measures)
+                self._bench[bench_fn](bench_id, measures.copy())
         elif self.mode == Mode.Test:
             self._test[bench_fn]()
 
@@ -867,7 +882,7 @@ struct Bench(Stringable, Writable):
     ](
         mut self,
         bench_id: BenchId,
-        measures: List[ThroughputMeasure] = {},
+        var measures: List[ThroughputMeasure] = {},
     ) raises:
         """Benchmarks an input function.
 
@@ -908,7 +923,7 @@ struct Bench(Stringable, Writable):
 
         var full_name = bench_id.func_name
         if bench_id.input_id:
-            full_name += "/" + bench_id.input_id.value()
+            full_name.write("/", bench_id.input_id.value())
 
         if self.config.show_progress:
             print("Running", full_name)
@@ -929,8 +944,8 @@ struct Bench(Stringable, Writable):
         self.info_vec.append(
             BenchmarkInfo(
                 full_name,
-                res,
-                measures,
+                res^,
+                measures^,
                 self.config.verbose_timing,
             )
         )
@@ -1036,7 +1051,9 @@ struct Bench(Stringable, Writable):
 
         # Write the timing labels
         if self.config.verbose_timing:
-            var labels = self.config.VERBOSE_TIMING_LABELS
+            var labels = materialize[
+                __type_of(self.config).VERBOSE_TIMING_LABELS
+            ]()
             # skip the met label
             for i in range(len(labels)):
                 writer.write(sep, labels[i])
@@ -1057,7 +1074,9 @@ struct Bench(Stringable, Writable):
                 writer.write(self.pad["-"](metric.value.max_width, ""))
 
             if self.config.verbose_timing:
-                var labels = self.config.VERBOSE_TIMING_LABELS
+                var labels = materialize[
+                    __type_of(self.config).VERBOSE_TIMING_LABELS
+                ]()
                 # skip the met label
                 for i in range(len(labels)):
                     writer.write(sep)
@@ -1067,10 +1086,10 @@ struct Bench(Stringable, Writable):
         writer.write("\n")
 
         # Loop through the runs and write out the table rows
-        var runs = self.info_vec
+        var runs = self.info_vec.copy()
         for i in range(len(runs)):
-            var run = runs[i]
-            var result = run.result
+            ref run = runs[i]
+            ref result = run.result
 
             # TODO: remove when kbench adds the spec column
             if self.config.format == Format.csv:
@@ -1091,7 +1110,7 @@ struct Bench(Stringable, Writable):
 
             for metric in metrics.items():
                 try:
-                    var rates = metric.value.rates
+                    ref rates = metric.value.rates
                     var max_width = metric.value.max_width
                     if i not in rates:
                         writer.write(sep, "N/A", self.pad(max_width, "N/A"))
@@ -1135,7 +1154,7 @@ struct Bench(Stringable, Writable):
         var metrics = Dict[String, _Metric]()
         var runs = len(self.info_vec)
         for i in range(runs):
-            var run = self.info_vec[i]
+            ref run = self.info_vec[i]
             for j in range(len(run.measures)):
                 var measure = run.measures[j]
                 var rate = measure.compute(run.result.mean(unit=Unit.s))
@@ -1153,27 +1172,32 @@ struct Bench(Stringable, Writable):
                         abort(String(e))
                 else:
                     try:
-                        metrics[name].max_width = max(
-                            width, metrics[name].max_width
-                        )
+                        # FIXME(MOCO-2394):
+                        #   This intermediate ref is needed to avoid the
+                        #   compiler unnecessarily inserting an implicit copy.
+                        ref entry = metrics[name]
+                        entry.max_width = max(width, metrics[name].max_width)
                         metrics[name].rates[i] = rate
                     except e:
                         abort(String(e))
-        return metrics
+        return metrics^
 
     fn _get_max_timing_widths(self, met_label: StaticString) -> List[Int]:
         # If label is larger than any value, will pad to the label length
 
         var max_met = len(met_label)
-        var max_min = len(self.config.VERBOSE_TIMING_LABELS[0])
-        var max_mean = len(self.config.VERBOSE_TIMING_LABELS[1])
-        var max_max = len(self.config.VERBOSE_TIMING_LABELS[2])
-        var max_dur = len(self.config.VERBOSE_TIMING_LABELS[3])
+        alias ConfigType = __type_of(self.config)
+        # NOTE: We insert an explicit materialization for Int here to avoid
+        # materialize a more expensive `VERBOSE_TIMING_LABELS[]` object.
+        var max_min = materialize[len(ConfigType.VERBOSE_TIMING_LABELS[0])]()
+        var max_mean = materialize[len(ConfigType.VERBOSE_TIMING_LABELS[1])]()
+        var max_max = materialize[len(ConfigType.VERBOSE_TIMING_LABELS[2])]()
+        var max_dur = materialize[len(ConfigType.VERBOSE_TIMING_LABELS[3])]()
         for i in range(len(self.info_vec)):
             # TODO: Move met (ms) to the end of the table to align with verbose
             # timing, don't repeat `Mean (ms)`, and make sure it works with
             # kernel benchmarking.
-            var result = self.info_vec[i].result
+            ref result = self.info_vec[i].result
             var mean_len = len(String(result.mean(unit=Unit.ms)))
             # met == mean execution time == mean
             max_met = max(max_met, mean_len)

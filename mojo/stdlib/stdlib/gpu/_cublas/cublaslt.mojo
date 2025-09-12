@@ -37,19 +37,37 @@ alias CUDA_CUBLASLT_LIBRARY_PATHS = List[Path](
     "/usr/local/cuda/lib64/libcublasLt.so.12",
 )
 
+
+fn _on_error_msg() -> String:
+    return String(
+        (
+            "Cannot find the cuBLASLT libraries. Please make sure that "
+            "the CUDA toolkit is installed and that the library path is "
+            "correctly set in one of the following paths ["
+        ),
+        ", ".join(materialize[CUDA_CUBLASLT_LIBRARY_PATHS]()),
+        (
+            "]. You may need to make sure that you are using the non-slim"
+            " version of the MAX container."
+        ),
+    )
+
+
 alias CUDA_CUBLASLT_LIBRARY = _Global[
-    "CUDA_CUBLASLT_LIBRARY", _OwnedDLHandle, _init_dylib
+    "CUDA_CUBLASLT_LIBRARY", _init_dylib, on_error_msg=_on_error_msg
 ]
 
 
 fn _init_dylib() -> _OwnedDLHandle:
-    return _find_dylib(CUDA_CUBLASLT_LIBRARY_PATHS)
+    return _find_dylib[abort_on_failure=False](
+        materialize[CUDA_CUBLASLT_LIBRARY_PATHS]()
+    )
 
 
 @always_inline
 fn _get_dylib_function[
     func_name: StaticString, result_type: AnyTrivialRegType
-]() -> result_type:
+]() raises -> result_type:
     return _ffi_get_dylib_function[
         CUDA_CUBLASLT_LIBRARY(),
         func_name,
@@ -67,7 +85,7 @@ fn cublasLtMatmulAlgoConfigSetAttribute(
     attr: AlgorithmConfig,
     buf: OpaquePointer,
     size_in_bytes: Int,
-) -> Result:
+) raises -> Result:
     """Set algo configuration attribute.
 
     algo         The algo descriptor
@@ -92,7 +110,7 @@ fn cublasLtMatmulAlgoConfigSetAttribute(
 
 fn cublasLtCreate(
     light_handle: UnsafePointer[UnsafePointer[Context]],
-) -> Result:
+) raises -> Result:
     return _get_dylib_function[
         "cublasLtCreate",
         fn (UnsafePointer[UnsafePointer[Context]]) -> Result,
@@ -102,7 +120,7 @@ fn cublasLtCreate(
 fn cublasLtMatrixTransformDescCreate(
     transform_desc: UnsafePointer[UnsafePointer[Transform]],
     scale_type: DataType,
-) -> Result:
+) raises -> Result:
     """Create new matrix transform operation descriptor.
 
     \retval     CUBLAS_STATUS_ALLOC_FAILED  if memory could not be allocated
@@ -186,7 +204,7 @@ fn cublasLtMatrixLayoutSetAttribute(
     attr: LayoutAttribute,
     buf: OpaquePointer,
     size_in_bytes: Int,
-) -> Result:
+) raises -> Result:
     """Set matrix layout descriptor attribute.
 
     matLayout    The descriptor
@@ -496,7 +514,7 @@ struct ClusterShape:
         return Int(self._value)
 
 
-fn cublasLtHeuristicsCacheSetCapacity(capacity: Int) -> Result:
+fn cublasLtHeuristicsCacheSetCapacity(capacity: Int) raises -> Result:
     return _get_dylib_function[
         "cublasLtHeuristicsCacheSetCapacity", fn (Int) -> Result
     ]()(capacity)
@@ -737,7 +755,7 @@ fn cublasLtMatmulDescGetAttribute(
     buf: OpaquePointer,
     size_in_bytes: Int,
     size_written: UnsafePointer[Int],
-) -> Result:
+) raises -> Result:
     """Get matmul operation descriptor attribute.
 
     matmulDesc   The descriptor
@@ -782,7 +800,7 @@ fn cublasLtMatmulAlgoCheck(
     _ddesc: UnsafePointer[MatrixLayout],
     algo: UnsafePointer[MatmulAlgorithm],
     result: UnsafePointer[cublasLtMatmulHeuristicResult_t],
-) -> Result:
+) raises -> Result:
     """Check configured algo descriptor for correctness and support on current device.
 
     Result includes required workspace size and calculated wave count.
@@ -952,7 +970,7 @@ struct ReductionScheme:
 
 fn cublasLtLoggerSetCallback(
     callback: fn (Int16, UnsafePointer[Int8], OpaquePointer) raises -> None
-) -> Result:
+) raises -> Result:
     """Experimental: Logger callback setter.
 
     callback                     a user defined callback function to be called by the logger
@@ -967,7 +985,9 @@ fn cublasLtLoggerSetCallback(
     ]()(callback)
 
 
-fn cublasLtGetProperty(type: Property, value: UnsafePointer[Int16]) -> Result:
+fn cublasLtGetProperty(
+    type: Property, value: UnsafePointer[Int16]
+) raises -> Result:
     return _get_dylib_function[
         "cublasLtGetProperty",
         fn (Property, UnsafePointer[Int16]) -> Result,
@@ -984,7 +1004,7 @@ fn cublasLtMatrixLayoutGetAttribute(
     buf: OpaquePointer,
     size_in_bytes: Int,
     size_written: UnsafePointer[Int],
-) -> Result:
+) raises -> Result:
     """Get matrix layout descriptor attribute.
 
     matLayout    The descriptor
@@ -1440,7 +1460,7 @@ fn cublasLtMatrixTransformDescInit_internal(
     transform_desc: UnsafePointer[Transform],
     size: Int,
     scale_type: DataType,
-) -> Result:
+) raises -> Result:
     """Internal. Do not use directly.
     ."""
     return _get_dylib_function[
@@ -1451,7 +1471,7 @@ fn cublasLtMatrixTransformDescInit_internal(
 
 fn cublasLtMatrixLayoutDestroy(
     mat_layout: UnsafePointer[MatrixLayout],
-) -> Result:
+) raises -> Result:
     """Destroy matrix layout descriptor.
 
     \retval     CUBLAS_STATUS_SUCCESS  if operation was successful
@@ -1488,7 +1508,7 @@ fn cublasLtMatmul(
     workspace: OpaquePointer,
     workspace_size_in_bytes: Int,
     stream: _CUstream_st,
-) -> Result:
+) raises -> Result:
     """Execute matrix multiplication (D = alpha * op(A) * op(B) + beta * C).
 
     \retval     CUBLAS_STATUS_NOT_INITIALIZED   if cuBLASLt handle has not been initialized
@@ -1543,7 +1563,7 @@ fn cublasLtMatmul(
 
 fn cublasLtMatrixTransformDescDestroy(
     transform_desc: UnsafePointer[Transform],
-) -> Result:
+) raises -> Result:
     """Destroy matrix transform operation descriptor.
 
     \retval     CUBLAS_STATUS_SUCCESS  if operation was successful
@@ -1560,7 +1580,7 @@ fn cublasLtMatmulAlgoCapGetAttribute(
     buf: OpaquePointer,
     size_in_bytes: Int,
     size_written: UnsafePointer[Int],
-) -> Result:
+) raises -> Result:
     """Get algo capability attribute.
 
     E.g. to get list of supported Tile IDs:
@@ -1599,7 +1619,7 @@ fn cublasLtMatmulDescSetAttribute(
     attr: cublasLtMatmulDescAttributes_t,
     buf: OpaquePointer,
     size_in_bytes: Int,
-) -> Result:
+) raises -> Result:
     """Set matmul operation descriptor attribute.
 
     matmulDesc   The descriptor
@@ -1627,7 +1647,7 @@ fn cublasLtMatmulPreferenceSetAttribute(
     attr: Preference,
     buf: OpaquePointer,
     size_in_bytes: Int,
-) -> Result:
+) raises -> Result:
     """Set matmul heuristic search preference descriptor attribute.
 
     pref         The descriptor
@@ -1664,7 +1684,7 @@ fn cublasLtMatrixLayoutInit_internal(
     rows: UInt64,
     cols: UInt64,
     ld: Int64,
-) -> Result:
+) raises -> Result:
     """Internal. Do not use directly.
     ."""
     return _get_dylib_function[
@@ -1900,7 +1920,7 @@ struct AlgorithmConfig:
 
 fn cublasLtMatmulPreferenceDestroy(
     pref: UnsafePointer[PreferenceOpaque],
-) -> Result:
+) raises -> Result:
     """Destroy matmul heuristic search preference descriptor.
 
     \retval     CUBLAS_STATUS_SUCCESS  if operation was successful
@@ -1922,7 +1942,7 @@ fn cublasLtMatmulAlgoGetHeuristic(
     requested_algo_count: Int,
     heuristic_results_array: UnsafePointer[cublasLtMatmulHeuristicResult_t],
     return_algo_count: UnsafePointer[Int],
-) -> Result:
+) raises -> Result:
     """Query cublasLt heuristic for algorithm appropriate for given use case.
 
         lightHandle            UnsafePointer to the allocated cuBLASLt handle for the cuBLASLt
@@ -2168,7 +2188,7 @@ struct LayoutAttribute:
         return Int(self._value)
 
 
-fn cublasLtDestroy(light_handle: UnsafePointer[Context]) -> Result:
+fn cublasLtDestroy(light_handle: UnsafePointer[Context]) raises -> Result:
     return _get_dylib_function[
         "cublasLtDestroy", fn (UnsafePointer[Context]) -> Result
     ]()(light_handle)
@@ -2184,7 +2204,7 @@ fn cublasLtMatmulAlgoConfigGetAttribute(
     buf: OpaquePointer,
     size_in_bytes: Int,
     size_written: UnsafePointer[Int],
-) -> Result:
+) raises -> Result:
     """Get algo configuration attribute.
 
     algo         The algo descriptor
@@ -2211,7 +2231,7 @@ fn cublasLtMatmulAlgoConfigGetAttribute(
     ]()(algo, attr, buf, size_in_bytes, size_written)
 
 
-fn cublasLtLoggerForceDisable() -> Result:
+fn cublasLtLoggerForceDisable() raises -> Result:
     """Experimental: Disable logging for the entire session.
 
     \retval     CUBLAS_STATUS_SUCCESS        if disabled logging
@@ -2223,7 +2243,7 @@ fn cublasLtLoggerForceDisable() -> Result:
 
 fn cublasLtHeuristicsCacheGetCapacity(
     capacity: UnsafePointer[Int],
-) -> Result:
+) raises -> Result:
     return _get_dylib_function[
         "cublasLtHeuristicsCacheGetCapacity",
         fn (UnsafePointer[Int]) -> Result,
@@ -2246,7 +2266,7 @@ fn cublasLtDisableCpuInstructionsSetMask(mask: Int16) raises -> Int16:
     ]()(mask)
 
 
-fn cublasLtLoggerSetLevel(level: Int16) -> Result:
+fn cublasLtLoggerSetLevel(level: Int16) raises -> Result:
     """Experimental: Log level setter.
 
     level                        log level, should be one of the following:
@@ -2406,7 +2426,7 @@ struct Stages:
 
 fn cublasLtMatmulDescDestroy(
     matmul_desc: UnsafePointer[Descriptor],
-) -> Result:
+) raises -> Result:
     """Destroy matmul operation descriptor.
 
     \retval     CUBLAS_STATUS_SUCCESS  if operation was successful
@@ -2422,7 +2442,7 @@ fn cublasLtMatrixTransformDescSetAttribute(
     attr: TransformDescriptor,
     buf: OpaquePointer,
     size_in_bytes: Int,
-) -> Result:
+) raises -> Result:
     """Set matrix transform operation descriptor attribute.
 
     transformDesc  The descriptor
@@ -2451,7 +2471,7 @@ fn cublasLtMatmulPreferenceGetAttribute(
     buf: OpaquePointer,
     size_in_bytes: Int,
     size_written: UnsafePointer[Int],
-) -> Result:
+) raises -> Result:
     """Get matmul heuristic search preference descriptor attribute.
 
     pref         The descriptor
@@ -2488,7 +2508,7 @@ fn cublasLtMatmulAlgoInit(
     _dtype: DataType,
     algo_id: Int16,
     algo: UnsafePointer[MatmulAlgorithm],
-) -> Result:
+) raises -> Result:
     """Initialize algo structure.
 
     \retval     CUBLAS_STATUS_INVALID_VALUE  if algo is NULL or algoId is outside of recognized range
@@ -2678,7 +2698,7 @@ fn cublasLtMatrixLayoutCreate(
     rows: UInt64,
     cols: UInt64,
     ld: Int64,
-) -> Result:
+) raises -> Result:
     """Create new matrix layout descriptor.
 
     \retval     CUBLAS_STATUS_ALLOC_FAILED  if memory could not be allocated
@@ -2751,7 +2771,7 @@ fn cublasLtMatmulDescCreate(
     matmul_desc: UnsafePointer[UnsafePointer[Descriptor]],
     compute_type: ComputeType,
     scale_type: DataType,
-) -> Result:
+) raises -> Result:
     """Create new matmul operation descriptor.
 
     \retval     CUBLAS_STATUS_ALLOC_FAILED  if memory could not be allocated
@@ -3513,7 +3533,7 @@ fn cublasLtGetStatusName(status: Result) raises -> UnsafePointer[Int8]:
 
 fn cublasLtMatmulPreferenceCreate(
     pref: UnsafePointer[UnsafePointer[PreferenceOpaque]],
-) -> Result:
+) raises -> Result:
     """Create new matmul heuristic search preference descriptor.
 
     \retval     CUBLAS_STATUS_ALLOC_FAILED  if memory could not be allocated
@@ -3560,7 +3580,7 @@ struct cublasLtMatmulHeuristicResult_t(Defaultable):
         self.reserved = StaticTuple[Int32, 4](0)
 
 
-fn cublasLtLoggerSetFile(file: OpaquePointer) -> Result:
+fn cublasLtLoggerSetFile(file: OpaquePointer) raises -> Result:
     """Experimental: Log file setter.
 
     file                         an open file with write permissions
@@ -3572,7 +3592,7 @@ fn cublasLtLoggerSetFile(file: OpaquePointer) -> Result:
     ]()(file)
 
 
-fn cublasLtLoggerOpenFile(log_file: UnsafePointer[Int8]) -> Result:
+fn cublasLtLoggerOpenFile(log_file: UnsafePointer[Int8]) raises -> Result:
     """Experimental: Open log file.
 
     logFile                      log file path. if the log file does not exist, it will be created
@@ -3596,7 +3616,7 @@ fn cublasLtMatrixTransform(
     _c: OpaquePointer,
     _cdesc: UnsafePointer[MatrixLayout],
     stream: _CUstream_st,
-) -> Result:
+) raises -> Result:
     """Matrix layout conversion helper (C = alpha * op(A) + beta * op(B)).
 
     Can be used to change memory order of data or to scale and shift the values.
@@ -3640,7 +3660,7 @@ fn cublasLtMatrixTransform(
     )
 
 
-fn cublasLtLoggerSetMask(mask: Int16) -> Result:
+fn cublasLtLoggerSetMask(mask: Int16) raises -> Result:
     """Experimental: Log mask setter.
 
     mask                         log mask, should be a combination of the following masks:
@@ -3669,7 +3689,7 @@ fn cublasLtMatrixTransformDescGetAttribute(
     buf: OpaquePointer,
     size_in_bytes: Int,
     size_written: UnsafePointer[Int],
-) -> Result:
+) raises -> Result:
     """Get matrix transform operation descriptor attribute.
 
     transformDesc  The descriptor
@@ -3701,7 +3721,7 @@ fn cublasLtMatmulDescInit_internal(
     size: Int,
     compute_type: ComputeType,
     scale_type: DataType,
-) -> Result:
+) raises -> Result:
     """Internal. Do not use directly.
     ."""
     return _get_dylib_function[
@@ -3717,7 +3737,7 @@ fn cublasLtMatmulDescInit_internal(
 
 fn cublasLtMatmulPreferenceInit_internal(
     pref: UnsafePointer[PreferenceOpaque], size: Int
-) -> Result:
+) raises -> Result:
     """Internal. Do not use directly.
     ."""
     return _get_dylib_function[
@@ -3799,7 +3819,7 @@ struct TransformDescriptor:
 #     requested_algo_count: Int16,
 #     algo_ids_array: UNKNOWN,
 #     return_algo_count: UnsafePointer[Int16],
-# ) -> Result:
+# )raises -> Result:
 #     """Routine to get all algo IDs that can potentially run
 
 #     int              requestedAlgoCount requested number of algos (must be less or equal to size of algoIdsA

@@ -75,10 +75,10 @@ fn async_load_AB[
     rank_m: UInt,
     mut write_pipeline_states: PipelineState[pipeline_stages],
     empty_mbar: UnsafePointer[
-        SharedMemBarrier, address_space = AddressSpace.SHARED, alignment=8
+        SharedMemBarrier, address_space = AddressSpace.SHARED, alignment2=8
     ],
     full_mbar: UnsafePointer[
-        SharedMemBarrier, address_space = AddressSpace.SHARED, alignment=8
+        SharedMemBarrier, address_space = AddressSpace.SHARED, alignment2=8
     ],
 ):
     alias a_expected_bytes = a_smem_layout.size() * size_of[a_type]()
@@ -140,8 +140,9 @@ fn async_load_AB[
                         a_smem_slice,
                         full_mbar[write_idx],
                         (
-                            UInt(k_coord + k_iter * pipeline_stages + j) * BK,
-                            a_gmem_slice_coord,
+                            UInt(k_coord + k_iter * pipeline_stages + j)
+                            * UInt(BK),
+                            UInt(a_gmem_slice_coord),
                         ),
                         UInt16(multicast_row_mask),
                     )
@@ -153,7 +154,7 @@ fn async_load_AB[
                             full_mbar[write_idx],
                             (
                                 UInt(k_coord + k_iter * pipeline_stages + j)
-                                * BK,
+                                * UInt(BK),
                                 m_coord,
                             ),
                             UInt16(multicast_row_mask),
@@ -164,7 +165,7 @@ fn async_load_AB[
                     a_smem_tile,
                     full_mbar[write_idx],
                     (
-                        UInt(k_coord + k_iter * pipeline_stages + j) * BK,
+                        UInt(k_coord + k_iter * pipeline_stages + j) * UInt(BK),
                         m_coord,
                     ),
                 )
@@ -183,8 +184,9 @@ fn async_load_AB[
                         b_smem_slice,
                         full_mbar[write_idx],
                         (
-                            UInt(k_coord + k_iter * pipeline_stages + j) * BK,
-                            b_gmem_slice_coord,
+                            UInt(k_coord + k_iter * pipeline_stages + j)
+                            * UInt(BK),
+                            UInt(b_gmem_slice_coord),
                         ),
                         UInt16(multicast_column_mask << rank_n),
                     )
@@ -196,7 +198,7 @@ fn async_load_AB[
                             full_mbar[write_idx],
                             (
                                 UInt(k_coord + k_iter * pipeline_stages + j)
-                                * BK,
+                                * UInt(BK),
                                 n_coord,
                             ),
                             UInt16(multicast_column_mask << rank_n),
@@ -207,7 +209,7 @@ fn async_load_AB[
                     b_smem_tile,
                     full_mbar[write_idx],
                     (
-                        UInt(k_coord + k_iter * pipeline_stages + j) * BK,
+                        UInt(k_coord + k_iter * pipeline_stages + j) * UInt(BK),
                         n_coord,
                     ),
                 )
@@ -273,10 +275,10 @@ fn async_load_AB[
     ],
     mut write_pipeline_states: PipelineState[pipeline_stages],
     empty_mbar: UnsafePointer[
-        SharedMemBarrier, address_space = AddressSpace.SHARED, alignment=8
+        SharedMemBarrier, address_space = AddressSpace.SHARED, alignment2=8
     ],
     full_mbar: UnsafePointer[
-        SharedMemBarrier, address_space = AddressSpace.SHARED, alignment=8
+        SharedMemBarrier, address_space = AddressSpace.SHARED, alignment2=8
     ],
 ):
     alias BM = block_tile_shape[0]
@@ -340,15 +342,19 @@ fn async_load_AB[
 
 @always_inline
 fn async_copy_with_bound_check[
-    type: DType, //,
+    dtype: DType, //,
     thread_layout: Layout,
     swizzle_mode: TensorMapSwizzle,
 ](
     src: LayoutTensor[
-        type, _, MutableAnyOrigin, address_space = AddressSpace.GENERIC, *_, **_
+        dtype,
+        _,
+        MutableAnyOrigin,
+        address_space = AddressSpace.GENERIC,
+        *_, **_,
     ],
     dst: LayoutTensor[
-        type, _, MutableAnyOrigin, address_space = AddressSpace.SHARED, *_, **_
+        dtype, _, MutableAnyOrigin, address_space = AddressSpace.SHARED, *_, **_
     ],
 ):
     constrained[src.layout.rank() == 2, "Global memory tile must be rank 2."]()

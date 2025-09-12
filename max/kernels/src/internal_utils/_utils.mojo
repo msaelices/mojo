@@ -61,7 +61,7 @@ struct HostNDBuffer[
     rank: Int,
     /,
     shape: DimList = DimList.create_unknown[rank](),
-](Copyable, Movable):
+](ImplicitlyCopyable, Movable):
     var tensor: NDBuffer[dtype, rank, MutableAnyOrigin, shape]
 
     @always_inline
@@ -119,12 +119,12 @@ struct HostNDBuffer[
             dtype, Layout.row_major(IntTuple(shape)), MutableAnyOrigin
         ],
     ):
-        result = __type_of(result)(
+        result = {
             self.tensor.data,
             RuntimeLayout[__type_of(result).layout](
                 self.tensor.get_shape(), self.tensor.get_strides()
             ),
-        )
+        }
 
 
 @fieldwise_init
@@ -133,7 +133,7 @@ struct DeviceNDBuffer[
     rank: Int,
     /,
     shape: DimList = DimList.create_unknown[rank](),
-](Copyable, Movable):
+](ImplicitlyCopyable, Movable):
     var buffer: DeviceBuffer[dtype]
     var tensor: NDBuffer[
         dtype,
@@ -224,17 +224,17 @@ struct DeviceNDBuffer[
             dtype, Layout.row_major(IntTuple(shape)), __origin_of(self.buffer)
         ],
     ):
-        result = __type_of(result)(
+        result = {
             self.buffer,
             RuntimeLayout[__type_of(result).layout](
                 self.tensor.get_shape(), self.tensor.get_strides()
             ),
-        )
+        }
 
 
 # TODO: add address_space: AddressSpace = AddressSpace.GENERIC
 @fieldwise_init
-struct TestTensor[dtype: DType, rank: Int](Copyable, Movable):
+struct TestTensor[dtype: DType, rank: Int](ImplicitlyCopyable, Movable):
     var ndbuffer: NDBuffer[dtype, rank, MutableAnyOrigin]
     var shape: DimList
     var num_elements: Int
@@ -274,7 +274,7 @@ struct TestTensor[dtype: DType, rank: Int](Copyable, Movable):
         return DynamicTensor[dtype, rank](self.ndbuffer)
 
 
-struct InitializationType(Copyable, EqualityComparable, Movable):
+struct InitializationType(EqualityComparable, ImplicitlyCopyable, Movable):
     var _value: Int
     alias zero = InitializationType(0)
     alias one = InitializationType(1)
@@ -378,7 +378,7 @@ fn bench_compile_time[
     # the value of all measured metrics m to 0.
     var measures: List[ThroughputMeasure] = List[ThroughputMeasure]()
     if len(m.info_vec) > 0:
-        var ref_measures = m.info_vec[0].measures
+        ref ref_measures = m.info_vec[0].measures
         for i in range(len(ref_measures)):
             metric = ref_measures[i].metric
             measures.append(ThroughputMeasure(metric, 0))
@@ -422,7 +422,7 @@ fn parse_shape[name: StaticString]() -> List[Int]:
             continue
         sum = sum * 10 + diff
     vals.append(sum)
-    return vals
+    return vals^
 
 
 fn env_get_shape[name: StaticString, default: StaticString]() -> List[Int]:
@@ -444,7 +444,7 @@ fn env_get_shape[name: StaticString, default: StaticString]() -> List[Int]:
     """
     alias shape_str = env_get_string[name, default]()
     alias shape: List[Int] = parse_shape[shape_str]()
-    return shape
+    return materialize[shape]()
 
 
 fn int_list_to_tuple[x: List[Int]]() -> IndexList[len(x)]:
@@ -452,7 +452,8 @@ fn int_list_to_tuple[x: List[Int]]() -> IndexList[len(x)]:
 
     @parameter
     for i in range(len(x)):
-        t[i] = x[i]
+        alias xi = x[i]
+        t[i] = xi
     return t
 
 
@@ -620,7 +621,7 @@ fn array_equal[
 
 @fieldwise_init
 @register_passable("trivial")
-struct Mode(Copyable, Movable, Stringable):
+struct Mode(ImplicitlyCopyable, Movable, Stringable):
     var _value: Int
     var handle: StaticString
     alias NONE = Self(0x0, "none")
@@ -754,7 +755,7 @@ fn init_vector_gpu[
 
             @parameter
             if i == 3:
-                if tid >= len:
+                if tid >= UInt(len):
                     return
             x[tid] = Scalar[dtype](values[i])
             tid += stride

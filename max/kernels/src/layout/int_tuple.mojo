@@ -124,7 +124,7 @@ fn _get_layout_type(layout: Layout, address_space: AddressSpace) -> DType:
 
 
 @register_passable
-struct IntArray:
+struct IntArray(ImplicitlyCopyable):
     """A memory-efficient, register-passable array of integers.
 
     `IntArray` provides a low-level implementation of a dynamically-sized integer array
@@ -320,9 +320,9 @@ struct _IntTupleIter[origin: ImmutableOrigin, tuple_origin: ImmutableOrigin](
 
 
 struct IntTuple[origin: ImmutableOrigin = __origin_of()](
-    Copyable,
     Defaultable,
     EqualityComparable,
+    ImplicitlyCopyable,
     Intable,
     Movable,
     Sized,
@@ -1461,7 +1461,7 @@ fn is_tuple(t: IntTuple) -> Bool:
     return t.is_tuple()
 
 
-struct _ZipIter[origin: ImmutableOrigin, n: Int](Copyable, Movable):
+struct _ZipIter[origin: ImmutableOrigin, n: Int](ImplicitlyCopyable, Movable):
     """Iterator for zipped `IntTuple` collections."""
 
     alias Element = IntTuple[origin]
@@ -1517,7 +1517,7 @@ struct _ZipIter[origin: ImmutableOrigin, n: Int](Copyable, Movable):
 
 
 @fieldwise_init
-struct _zip[origin: ImmutableOrigin, n: Int](Copyable, Movable):
+struct _zip[origin: ImmutableOrigin, n: Int](ImplicitlyCopyable, Movable):
     """Container for zipped `IntTuple` collections."""
 
     var ts: InlineArray[Pointer[IntTuple, origin], n]
@@ -1579,12 +1579,12 @@ fn zip(
         The resulting zip iterator for the input `IntTuple`s.
     """
     alias common_type = Pointer[IntTuple, __origin_of(a, b)]
-    return __type_of(result)(
+    return {
         InlineArray[common_type, 2](
             rebind[common_type](Pointer(to=a)),
             rebind[common_type](Pointer(to=b)),
         )
-    )
+    }
 
 
 @always_inline("nodebug")
@@ -1608,13 +1608,13 @@ fn zip(
         The resulting zip iterator for the input `IntTuple`s.
     """
     alias common_type = Pointer[IntTuple, __origin_of(a, b, c)]
-    return __type_of(result)(
+    return {
         InlineArray[common_type, 3](
             rebind[common_type](Pointer(to=a)),
             rebind[common_type](Pointer(to=b)),
             rebind[common_type](Pointer(to=c)),
         )
-    )
+    }
 
 
 # Python-style reduce
@@ -2882,7 +2882,7 @@ fn _sorted_perm(tuple: IntTuple) -> IntList:
         values.replace_entry(j + 1, int_value=Int(key_val))
         indices[j + 1] = key_idx
 
-    return indices
+    return indices^
 
 
 fn _flat_apply_perm(tuple: IntTuple, perm: IntList) -> IntTuple:

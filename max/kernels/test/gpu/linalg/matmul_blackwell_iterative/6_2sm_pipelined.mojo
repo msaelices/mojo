@@ -87,7 +87,7 @@ fn is_benchmark() -> Bool:
 
 @fieldwise_init
 @register_passable("trivial")
-struct WarpRole(Copyable, Movable):
+struct WarpRole(ImplicitlyCopyable, Movable):
     var _role: Int32
 
     alias MainLoad = Self(4)
@@ -221,14 +221,14 @@ fn load_AB[
     a_tma_op.async_multicast_load[cta_group](
         a_smem_slice,
         tma_mbar[stage],
-        (UInt(iter_idx) * BK, a_gmem_slice_coord),
+        (UInt(iter_idx * BK), UInt(a_gmem_slice_coord)),
         a_multicast_mask,
     )
 
     b_tma_op.async_multicast_load[cta_group](
         b_smem_slice,
         tma_mbar[stage],
-        (UInt(iter_idx) * BK, b_gmem_slice_coord),
+        (UInt(iter_idx * BK), UInt(b_gmem_slice_coord)),
         b_multicast_mask,
     )
 
@@ -297,8 +297,12 @@ fn consumer_main_loop[
 
     tma_mbar[stage].wait(phase)
 
-    var a_smem_tile = a_smem_iter.next_unsafe(stage)[]
-    var b_smem_tile = b_smem_iter.next_unsafe(stage)[]
+    var a_smem_tile = a_smem_iter.next_unsafe(
+        rebind[a_smem_iter.linear_uint_type](stage)
+    )[]
+    var b_smem_tile = b_smem_iter.next_unsafe(
+        rebind[b_smem_iter.linear_uint_type](stage)
+    )[]
 
     if elect_one_sync():
         mma_op.mma(
@@ -558,7 +562,7 @@ fn store_C[
     # UMMA (tensor memory) → registers → shared memory → global memory
     # #           c_frag                   c_smem_tile      c_tma_op
 
-    if elect_one_warp and thread_idx.x < NUM_TMA_TILES:
+    if elect_one_warp and thread_idx.x < UInt(NUM_TMA_TILES):
         var row_start = block_idx.x * BM
         var col_start = block_idx.y * MMA_N + thread_idx.x * TMA_BN
 
@@ -573,7 +577,7 @@ fn store_C[
             alignment=128,
         ](c_smem_offset)
 
-        c_tma_op.async_store(c_tma_tile, (col_start, row_start))
+        c_tma_op.async_store(c_tma_tile, (UInt(col_start), UInt(row_start)))
         c_tma_op.commit_group()
         c_tma_op.wait_group[0]()
 
@@ -711,12 +715,12 @@ fn kernel_6[
     var tma_mbar_ptr = smem_pool
     # + num_pipeline_stages is 1 * num_pipeline_stage so 8 bytes for each barrier at each stage
     var mma_mbar_ptr = tma_mbar_ptr + (num_pipeline_stages)
-    var math_barrier_base = mma_mbar_ptr + (num_pipeline_stages)
-    var ptr_tmem_addr = (math_barrier_base + 1).bitcast[UInt32]()
+    var compute_barrier_base = mma_mbar_ptr + (num_pipeline_stages)
+    var ptr_tmem_addr = (compute_barrier_base + 1).bitcast[UInt32]()
 
     tma_mbar = tma_mbar_ptr.bitcast[SharedMemBarrier]()
     mma_mbar = mma_mbar_ptr.bitcast[SharedMemBarrier]()
-    math_barrier = math_barrier_base.bitcast[SharedMemBarrier]()
+    compute_barrier = compute_barrier_base.bitcast[SharedMemBarrier]()
 
     var elect_one_warp = thread_idx.x // WARP_SIZE == 0
     var elect_one_thread = elect_one_sync_with_mask()
@@ -732,6 +736,9 @@ fn kernel_6[
     barrier()
 
     if elect_one_warp and elect_one_thread:
+        a_tma_op.prefetch_descriptor()
+        b_tma_op.prefetch_descriptor()
+        c_tma_op.prefetch_descriptor()
 
         @parameter
         for i in range(num_pipeline_stages):
@@ -740,7 +747,7 @@ fn kernel_6[
             mma_mbar[i].init(
                 cluster_shape[0] // cta_group + cluster_shape[1] - 1
             )
-        math_barrier[].init()
+        compute_barrier[].init()
 
     cluster_sync()
 
@@ -770,9 +777,9 @@ fn kernel_6[
 
     # (peer_id, mma_coord_m, mma_coord_n)
     var peer_cta_coord = (
-        rank_m % cta_group,
-        rank_m // cta_group,
-        rank_n,
+        UInt(rank_m % cta_group),
+        UInt(rank_m // cta_group),
+        UInt(rank_n),
     )  # v,m,n
 
     var a_multicast_mask: UInt16 = 0x0
@@ -811,7 +818,7 @@ fn kernel_6[
                     tma_mbar,
                     producer_phase,
                     peer_cta_coord,
-                    (block_idx.x, block_idx.y),
+                    (UInt(block_idx.x), UInt(block_idx.y)),
                     a_multicast_mask,
                     b_multicast_mask,
                     i,
@@ -843,10 +850,10 @@ fn kernel_6[
 
         # mma arrive multicast will track completion of all mma prior to this barrier.
         if elect_one_sync():
-            mma_arrive_multicast[cta_group](math_barrier, mma_complete_mask)
+            mma_arrive_multicast[cta_group](compute_barrier, mma_complete_mask)
 
     if WarpRole.is_epilogue():
-        math_barrier[].wait()
+        compute_barrier[].wait()
 
         store_C[
             accum_type=accum_type,
@@ -884,14 +891,14 @@ fn blackwell_kernel_6[
     c_device: NDBuffer[c_type, 2, _, c_shape],
     a_device: NDBuffer[a_type, 2, _, a_shape],
     b_device: NDBuffer[b_type, 2, _, b_shape],
-    M: Int,
-    N: Int,
-    K: Int,
     ctx: DeviceContext,
 ) raises:
     var a = from_ndbuffer_row_major(a_device)
     var b = from_ndbuffer_row_major(b_device)
     var c = from_ndbuffer_row_major(c_device)
+    var M = c.dim[0]()
+    var N = c.dim[1]()
+    var K = a.dim[1]()
 
     constrained[
         transpose_b,
@@ -942,7 +949,7 @@ fn blackwell_kernel_6[
     # - ptr_tmem_addr: 4 bytes → 8 bytes (padded)
     # - tma_mbar_ptr: 8 bytes
     # - mma_mbar_ptr: 8 bytes
-    # - math_barrier: 8 bytes (padded)
+    # - compute_barrier: 8 bytes (padded)
     # Total with alignment: 32 bytes
     # This is why we pad 32 bytes * num_pipeline_stages to the smem size
 
@@ -970,7 +977,7 @@ fn blackwell_kernel_6[
         b_swizzle=b_swizzle,
         c_swizzle=c_swizzle,
         cta_group=cta_group,
-        num_pipeline_stages=max_pipeline_stages,
+        num_pipeline_stages = UInt(max_pipeline_stages),
     ]
 
     ctx.enqueue_function[kernel](
@@ -1083,9 +1090,6 @@ def test_blackwell_kernel_6[
         c_device.tensor,
         a_device.tensor,
         b_device.tensor,
-        M,
-        N,
-        K,
         ctx,
     )
 
@@ -1108,9 +1112,6 @@ def test_blackwell_kernel_6[
                 c_device.tensor,
                 a_device.tensor,
                 b_device.tensor,
-                M,
-                N,
-                K,
                 ctx,
             )
 
@@ -1180,7 +1181,7 @@ fn make_dic_of_shapes() -> (
 ):
     var dic = Dict[Int, Tuple[Int, Int, Int], default_comp_time_hasher]()
     dic[0] = (4096, 4096, 4096)
-    return dic
+    return dic^
 
 
 fn benchmark_blackwell_matmul(ctx: DeviceContext) raises:

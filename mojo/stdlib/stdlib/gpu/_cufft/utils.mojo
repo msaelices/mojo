@@ -27,19 +27,37 @@ alias CUDA_CUFFT_LIBRARY_PATHS = List[Path](
     "/usr/local/cuda/lib64/libcufft.so.11",
 )
 
+
+fn _on_error_msg() -> String:
+    return String(
+        (
+            "Cannot find the cuFFT libraries. Please make sure that "
+            "the CUDA toolkit is installed and that the library path is "
+            "correctly set in one of the following paths ["
+        ),
+        ", ".join(materialize[CUDA_CUFFT_LIBRARY_PATHS]()),
+        (
+            "]. You may need to make sure that you are using the non-slim"
+            " version of the MAX container."
+        ),
+    )
+
+
 alias CUDA_CUFFT_LIBRARY = _Global[
-    "CUDA_CUFFT_LIBRARY", _OwnedDLHandle, _init_dylib
+    "CUDA_CUFFT_LIBRARY", _init_dylib, on_error_msg=_on_error_msg
 ]()
 
 
 fn _init_dylib() -> _OwnedDLHandle:
-    return _find_dylib["CUDA cuFFT"](CUDA_CUFFT_LIBRARY_PATHS)
+    return _find_dylib[abort_on_failure=False](
+        materialize[CUDA_CUFFT_LIBRARY_PATHS]()
+    )
 
 
 @always_inline
 fn _get_dylib_function[
     func_name: StaticString, result_type: AnyTrivialRegType
-]() -> result_type:
+]() raises -> result_type:
     return _ffi_get_dylib_function[
         CUDA_CUFFT_LIBRARY,
         func_name,

@@ -36,7 +36,7 @@ fn is_compile_time() -> Bool:
 
 
 @fieldwise_init
-struct _OptimizationLevel(Intable, Stringable, Writable):
+struct _OptimizationLevel(ImplicitlyCopyable, Intable, Stringable, Writable):
     """Represents the optimization level used during compilation.
 
     The optimization level is determined by the __OPTIMIZATION_LEVEL environment
@@ -80,7 +80,7 @@ alias OptimizationLevel = _OptimizationLevel()
 
 
 @fieldwise_init
-struct _DebugLevel(Copyable, Movable, Stringable, Writable):
+struct _DebugLevel(ImplicitlyCopyable, Movable, Stringable, Writable):
     """Represents the debug level used during compilation.
 
     The debug level is determined by the __DEBUG_LEVEL environment variable,

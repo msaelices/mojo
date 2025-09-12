@@ -23,7 +23,7 @@ from linalg.utils_gpu import block_swizzle
 
 @fieldwise_init
 @register_passable("trivial")
-struct RasterOrder(Copyable, Movable):
+struct RasterOrder(ImplicitlyCopyable, Movable):
     var _value: Int32
 
     alias AlongN = Self(0)
@@ -40,7 +40,7 @@ struct RasterOrder(Copyable, Movable):
 
 @fieldwise_init
 @register_passable("trivial")
-struct WorkInfo(Copyable, Movable, Stringable, Writable):
+struct WorkInfo(ImplicitlyCopyable, Movable, Stringable, Writable):
     # Coordinates in output matrix
     var m: UInt32
     var n: UInt32
@@ -97,7 +97,7 @@ struct WorkInfo(Copyable, Movable, Stringable, Writable):
 
 @fieldwise_init
 @register_passable("trivial")
-struct MatmulSchedule(Copyable, Movable):
+struct MatmulSchedule(ImplicitlyCopyable, Movable):
     var _value: Int32
 
     alias NONE = Self(-1)
@@ -198,7 +198,9 @@ struct TileScheduler[
             )
         else:
             m, n = self._index_to_mn()
-            is_valid = m < self.prob_shape[0] and n < self.prob_shape[1]
+            is_valid = m < UInt(self.prob_shape[0]) and n < UInt(
+                self.prob_shape[1]
+            )
             return WorkInfo(
                 m, n, 0, ceildiv(self.prob_shape[2], tile_shape[2]), is_valid
             )
@@ -271,8 +273,9 @@ struct TileScheduler[
 
     @always_inline
     fn num_output_tiles(self) -> UInt:
-        return ceildiv(self.prob_shape[0], Self.wave_shape[0]) * ceildiv(
-            self.prob_shape[1], Self.wave_shape[1]
+        return UInt(
+            ceildiv(self.prob_shape[0], Self.wave_shape[0])
+            * ceildiv(self.prob_shape[1], Self.wave_shape[1])
         )
 
     @always_inline

@@ -99,8 +99,8 @@ fn repack_Q4_0_for_sm8x[
     var tid: UInt = thread_idx.x
     var warp_id: UInt = tid // WARP_SIZE
     alias num_warps_x = BN // repack_tile[0]
-    var warp_x: UInt = warp_id % num_warps_x
-    var warp_y: UInt = warp_id // num_warps_x
+    var warp_x: UInt = UInt(warp_id % num_warps_x)
+    var warp_y: UInt = UInt(warp_id // num_warps_x)
     var lane_id: Int = tid % WARP_SIZE
     var block_idx = Index(Int(block_idx.x), Int(block_idx.y))
 
@@ -201,7 +201,7 @@ fn repack_Q4_0_for_sm8x[
             var thread_tile = (
                 raw_Q_tile.slice[:, 2:]()
                 .vectorize[1, 2]()
-                .distribute[thd_layout](lane_id)
+                .distribute[thd_layout](UInt(lane_id))
             )
 
             @parameter
@@ -285,8 +285,8 @@ fn create_ref_b[
     var warp_id: UInt = tid // WARP_SIZE
     var lane_id: UInt = tid % WARP_SIZE
     var block_idx = Index(Int(block_idx.x), Int(block_idx.y))
-    var warp_x: UInt = warp_id // num_k_warps
-    var warp_y: UInt = warp_id % num_k_warps
+    var warp_x: UInt = UInt(warp_id // num_k_warps)
+    var warp_y: UInt = UInt(warp_id % num_k_warps)
 
     alias group_bytes = group_size // 2 + 2
     alias N = Int(b_q_layout.shape[0])
@@ -331,7 +331,7 @@ fn create_ref_b[
     scales_reg_tiles.vectorize[8, 1]().copy_from(
         warp_scales_tile.vectorize[1, 8]().distribute[
             smem_reg_scales_layout, axis=0
-        ](Int(lane_id))
+        ](lane_id)
     )
 
     var b_out_tile = b_out.tile[BLOCK_N, BLOCK_K](block_idx[0], block_idx[1])
@@ -555,7 +555,7 @@ fn test_repack_Q4_0_for_sm8x(
         DType.bfloat16,
     ]
 
-    ctx.enqueue_function[repack](
+    ctx.enqueue_function_checked[repack, repack](
         gguf_b_tensor,
         repacked_b_tensor,
         grid_dim=(ceildiv(N, BN), ceildiv(K, BK), 1),
@@ -573,7 +573,7 @@ fn test_repack_Q4_0_for_sm8x(
         pack_factor,
     ]
 
-    ctx.enqueue_function[dequan](
+    ctx.enqueue_function_checked[dequan, dequan](
         repacked_b_tensor,
         repacked_dequan_tensor,
         grid_dim=(ceildiv(N, 128), ceildiv(K, 32), 1),
@@ -761,7 +761,7 @@ fn test_quantized[
         pack_factor,
     ]
 
-    ctx.enqueue_function[dequan](
+    ctx.enqueue_function_checked[dequan, dequan](
         b_tensor,
         b_ref_tensor,
         grid_dim=(ceildiv(N, 128), ceildiv(K, 32), 1),

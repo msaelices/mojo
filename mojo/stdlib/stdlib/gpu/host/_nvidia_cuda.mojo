@@ -175,7 +175,12 @@ struct TensorMapInterleave:
 @fieldwise_init("implicit")
 @register_passable("trivial")
 struct TensorMapSwizzle(
-    Copyable, EqualityComparable, Intable, Movable, Stringable, Writable
+    EqualityComparable,
+    ImplicitlyCopyable,
+    Intable,
+    Movable,
+    Stringable,
+    Writable,
 ):
     var _value: Int32
 
@@ -240,7 +245,7 @@ struct TensorMapFloatOOBFill:
 
 # The TMA descriptor is a 128-byte opaque object filled by the driver API.
 # It should be 64-byte aligned both on the host and the device (if passed to constant memory).
-struct TMADescriptor:
+struct TMADescriptor(ImplicitlyCopyable):
     var data: StaticTuple[UInt8, 128]
 
     @always_inline
@@ -253,7 +258,7 @@ struct TMADescriptor:
 
 
 fn prefetch_tma_descriptor(desc_ptr: OpaquePointer):
-    __mlir_op.`nvvm.prefetch.tensormap`(
+    __mlir_op.`nvvm.prefetch`[tensormap = __mlir_attr.unit](
         to_llvm_ptr(desc_ptr),
     )
 

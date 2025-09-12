@@ -202,7 +202,7 @@ fn _compute_ndbuffer_stride[
 
     @parameter
     if rank == 1:
-        return __type_of(shape)(1)
+        return {1}
 
     var stride = shape
     stride[rank - 1] = 1
@@ -230,10 +230,18 @@ struct NDBuffer[
     shape: DimList = DimList.create_unknown[rank](),
     strides: DimList = DimList.create_unknown[rank](),
     *,
-    alignment: Int = 1,
+    alignment2: Int = 1,
     address_space: AddressSpace = AddressSpace.GENERIC,
     exclusive: Bool = True,
-](Sized, Stringable, Writable, Copyable, Movable, Defaultable, DevicePassable):
+](
+    Sized,
+    Stringable,
+    Writable,
+    ImplicitlyCopyable,
+    Movable,
+    Defaultable,
+    DevicePassable,
+):
     """An N-dimensional buffer.
 
     NDBuffer can be parametrized on rank, static dimensions and Dtype. It does
@@ -246,7 +254,7 @@ struct NDBuffer[
         origin: The origin of the memory being addressed.
         shape: The static size (if known) of the buffer.
         strides: The strides (if known) of the buffer.
-        alignment: The preferred address alignment of the buffer.
+        alignment2: The preferred address alignment of the buffer.
         address_space: The address space of the buffer.
         exclusive: The underlying memory allocation of the tensor is known
             only to be accessible through this pointer.
@@ -357,7 +365,8 @@ struct NDBuffer[
 
         # We can only downgrade our alignment
         constrained[
-            other.alignment >= alignment and other.alignment % alignment == 0,
+            other.alignment2 >= alignment2
+            and other.alignment2 % alignment2 == 0,
             "cannot convert between buffers with incompatible alignments",
         ]()
 
@@ -591,36 +600,35 @@ struct NDBuffer[
 
     @always_inline("nodebug")
     fn origin_cast[
-        mut: Bool = Self.mut,
-        origin: Origin[mut] = Origin[mut].cast_from[Self.origin],
-    ](
-        self,
-        out result: NDBuffer[
-            dtype,
-            rank,
-            origin,
-            shape,
-            strides,
-            alignment=alignment,
-            address_space=address_space,
-            exclusive=exclusive,
+        target_mut: Bool = Self.mut,
+        target_origin: Origin[target_mut] = Origin[target_mut].cast_from[
+            Self.origin
         ],
-    ):
+    ](self) -> NDBuffer[
+        dtype,
+        rank,
+        target_origin,
+        shape,
+        strides,
+        alignment2=alignment2,
+        address_space=address_space,
+        exclusive=exclusive,
+    ]:
         """Changes the origin or mutability of a pointer.
 
         Parameters:
-            mut: Whether the origin is mutable.
-            origin: Origin of the destination pointer.
+            target_mut: Whether the origin is mutable.
+            target_origin: Origin of the destination pointer.
 
         Returns:
             A new `NDBuffer` object with the same type and the same address,
             as the original `NDBuffer` and the new specified mutability and origin.
         """
-        result = __type_of(result)(
-            self.data.origin_cast[mut, origin](),
+        return {
+            self.data.origin_cast[target_mut, target_origin](),
             self.dynamic_shape,
             self.dynamic_stride,
-        )
+        }
 
     @always_inline
     fn get_rank(self) -> Int:
@@ -988,7 +996,7 @@ struct NDBuffer[
             _,
             shape=shape,
             strides=strides,
-            alignment=alignment,
+            alignment2=alignment2,
             address_space=address_space,
             exclusive=exclusive,
         ],
@@ -1012,7 +1020,7 @@ struct NDBuffer[
             _,
             shape=shape,
             strides=strides,
-            alignment=alignment,
+            alignment2=alignment2,
             address_space=address_space,
             exclusive=exclusive,
         ],
@@ -1041,7 +1049,7 @@ struct NDBuffer[
             _,
             shape=shape,
             strides=strides,
-            alignment=_alignment,
+            alignment2=_alignment,
             address_space=address_space,
             exclusive=exclusive,
         ],
@@ -1078,7 +1086,7 @@ struct NDBuffer[
             _,
             shape=shape,
             strides=strides,
-            alignment=_alignment,
+            alignment2=_alignment,
             address_space=address_space,
             exclusive=exclusive,
         ],
@@ -1196,7 +1204,7 @@ struct NDBuffer[
         debug_assert(
             self.is_contiguous(), "Function requires contiguous buffer."
         )
-        return __type_of(result)(self.data, self.size())
+        return {self.data, self.size()}
 
     @always_inline
     fn make_dims_unknown(
@@ -1250,7 +1258,7 @@ struct NDBuffer[
             _,
             shape=shape,
             strides=strides,
-            alignment=alignment,
+            alignment2=alignment2,
             address_space=address_space,
             exclusive=exclusive,
         ],
@@ -1302,7 +1310,7 @@ struct NDBuffer[
             _,
             shape=shape,
             strides=strides,
-            alignment=alignment,
+            alignment2=alignment2,
             address_space=address_space,
             exclusive=exclusive,
         ],

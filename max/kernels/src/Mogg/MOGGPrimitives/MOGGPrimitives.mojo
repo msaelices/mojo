@@ -814,8 +814,8 @@ fn mgp_buffer_host_to_device[
 @no_inline
 fn mgp_buffer_get_cached(
     ctx: StateContext,
+    buffer_slot: Int,
     storage_ref_addr: UnsafePointer[OpaquePointer],
-    buffer_slot: UInt64,
 ) raises -> NDBuffer[DType.uint8, 1, MutableAnyOrigin]:
     var buffer_size: UInt64 = 0
     var buffer_data: OpaquePointer = external_call[
@@ -1110,7 +1110,7 @@ fn ListOfTensorDef[
         ]
     ]
 ) -> __type_of(ty):
-    return ty
+    return ty.copy()
 
 
 # ===-----------------------------------------------------------------------===#
@@ -1140,6 +1140,45 @@ fn reshape_contiguous_buffer[
     shape: IndexList[new_rank],
 ) -> DynamicTensor[dtype, new_rank]:
     return DynamicTensor[dtype, new_rank](buffer._ptr, shape)
+
+
+# TODO: Rename it without `_v2` and get rid of the implementation above.
+# The previous implementation didn't propagate the StaticTensorSpec correctly.
+# This wasn't a problem because we manipulated KGEN in the GC and passed the correct parameter to the kernel either way.
+# But for mojo we need to compute it correctly.
+@register_internal("reshape_contiguous_managed_tensor_slice_v2")
+@always_inline
+fn reshape_contiguous_buffer_v2[
+    static_shape: DimList, static_stride: DimList, new_rank: Int
+](
+    buffer: ManagedTensorSlice,
+    shape: IndexList[new_rank],
+) -> ManagedTensorSlice[
+    io_spec = buffer.io_spec,
+    static_spec = StaticTensorSpec[buffer.dtype, new_rank](
+        static_shape,
+        static_stride,
+        1,
+        AddressSpace.GENERIC,
+        True,
+        None,
+        None,
+        None,
+    ),
+]:
+    return ManagedTensorSlice[
+        io_spec = buffer.io_spec,
+        static_spec = StaticTensorSpec[buffer.dtype, new_rank](
+            static_shape,
+            static_stride,
+            1,
+            AddressSpace.GENERIC,
+            True,
+            None,
+            None,
+            None,
+        ),
+    ](buffer._ptr, shape)
 
 
 # ===----------------------------------------------------------------------===#
@@ -1197,7 +1236,7 @@ fn build_static_tensor_specs_tuple[
     array_of_specs: VariadicList[StaticTensorSpec[dtype, rank]],
     out result: StaticTuple[StaticTensorSpec[dtype, rank], size],
 ):
-    return __type_of(result)(array_of_specs)
+    return {array_of_specs}
 
 
 # TODO: this should take IOSpec as a param -- will require graph compiler changes
@@ -1253,6 +1292,12 @@ fn get_scalar_from_managed_tensor_slice[
         static_spec = StaticTensorSpec[dtype, 1].create_unknown(),
     ]
 ) -> Scalar[dtype]:
+    return _get_scalar_from_managed_tensor_slice(tensor)
+
+
+@register_internal("mogg.as_scalar")
+@always_inline
+fn mogg_as_scalar(tensor: ManagedTensorSlice) -> Scalar[tensor.dtype]:
     return _get_scalar_from_managed_tensor_slice(tensor)
 
 
@@ -1488,7 +1533,7 @@ fn test_my_int_to_index(x: MyInt) -> Int:
 
 
 @register_passable("trivial")
-struct MyIntReg(Copyable, Movable):
+struct MyIntReg(ImplicitlyCopyable, Movable):
     var val: Int
 
     fn __init__(out self, val: Int):
@@ -1502,7 +1547,7 @@ fn test_my_int_reg_square(x: MyIntReg) -> MyIntReg:
 
 
 @register_passable
-struct MyIntReg2(Copyable, Movable):
+struct MyIntReg2(ImplicitlyCopyable, Movable):
     var val: Int
 
     fn __init__(out self, val: Int):

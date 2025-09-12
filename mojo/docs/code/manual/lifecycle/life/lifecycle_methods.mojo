@@ -17,7 +17,7 @@
 # ===----------------------------------------------------------------------=== #
 
 
-struct MyPet:
+struct MyPet(Copyable):
     var name: String
     var age: Int
 
@@ -33,16 +33,13 @@ struct MyPet:
         self.name = existing.name^
         self.age = existing.age
 
-    fn copy(self) -> Self:
-        return Self(self.name, self.age)
-
 
 def main():
     pet = MyPet("Fido", 3)
     pet2 = pet.copy()
     print(pet2.name)
     print(pet2.age)
-    pet3 = pet
+    pet3 = pet.copy()
     print(pet3.name)
     pet4 = pet^
     print(pet4.name)

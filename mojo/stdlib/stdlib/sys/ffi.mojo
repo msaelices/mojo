@@ -13,6 +13,7 @@
 """Implements a foreign functions interface (FFI)."""
 
 from collections.string.string_slice import _get_kgen_string, get_static_string
+from memory import OwnedPointer
 from os import PathLike, abort
 from pathlib import Path
 from sys._libc import dlclose, dlerror, dlopen, dlsym
@@ -176,6 +177,11 @@ struct _OwnedDLHandle(Movable):
     fn __init__(out self, path: String, flags: Int = DEFAULT_RTLD) raises:
         self._handle = DLHandle(path, flags)
 
+    @doc_private
+    @always_inline
+    fn __init__(out self, *, unsafe_uninitialized: Bool):
+        self._handle = DLHandle(OpaquePointer())
+
     fn __moveinit__(out self, deinit other: Self):
         self._handle = other._handle
 
@@ -194,7 +200,7 @@ struct _OwnedDLHandle(Movable):
 
 @fieldwise_init
 @register_passable("trivial")
-struct DLHandle(Boolable, Copyable, ExplicitlyCopyable, Movable):
+struct DLHandle(Boolable, Copyable, Movable):
     """Represents a dynamically linked library that can be loaded and unloaded.
 
     The library is loaded on initialization and unloaded by `close`.
@@ -482,10 +488,10 @@ struct DLHandle(Boolable, Copyable, ExplicitlyCopyable, Movable):
 
 @always_inline
 fn _get_dylib_function[
-    dylib_global: _Global[_, _OwnedDLHandle, _],
+    dylib_global: _Global[StorageType=_OwnedDLHandle, *_, **_],
     func_name: StaticString,
     result_type: AnyTrivialRegType,
-]() -> result_type:
+]() raises -> result_type:
     var func_cache_name = String(dylib_global.name, "/", func_name)
     var func_ptr = _get_global_or_null(func_cache_name)
     if func_ptr:
@@ -536,9 +542,7 @@ fn _try_find_dylib[
             # loaded from any of the paths provided.
             pass
 
-    raise Error(
-        String("Failed to load " + dylib_name + " from " + " or ".join(paths))
-    )
+    raise Error("Failed to load ", dylib_name, " from ", " or ".join(paths))
 
 
 fn _try_find_dylib[
@@ -547,19 +551,24 @@ fn _try_find_dylib[
     """Load a dynamically linked library given a variadic list of possible names.
     """
     # Convert the variadic pack to a list.
-    var paths_list = List[Path]()
+    var paths_list = List[Path](capacity=len(paths))
     for path in paths:
         paths_list.append(path)
     return _try_find_dylib[name](paths_list)
 
 
-fn _find_dylib[name: StaticString = ""](paths: List[Path]) -> _OwnedDLHandle:
+fn _find_dylib[
+    name: StaticString = "", abort_on_failure: Bool = True
+](paths: List[Path]) -> _OwnedDLHandle:
     """Load a dynamically linked library given a list of possible paths or names.
 
     If the library is not found, the function will abort.
 
     Parameters:
         name: Optional name for the library to be used in error messages.
+        abort_on_failure: If set, then the function will abort the program if
+           the library is not found. Otherwise, we return a null _OwnedDLHandle
+           on failure.
 
     Args:
         paths: A list of paths or library names to pass to the DLHandle
@@ -571,7 +580,44 @@ fn _find_dylib[name: StaticString = ""](paths: List[Path]) -> _OwnedDLHandle:
     try:
         return _try_find_dylib[name](paths)
     except e:
-        return abort[_OwnedDLHandle](String(e))
+
+        @parameter
+        if abort_on_failure:
+            return abort[_OwnedDLHandle](String(e))
+        else:
+            return _OwnedDLHandle(unsafe_uninitialized=True)
+
+
+fn _find_dylib[
+    msg: fn () -> String, abort_on_failure: Bool = True
+](paths: List[Path]) -> _OwnedDLHandle:
+    """Load a dynamically linked library given a list of possible paths or names.
+
+    If the library is not found, the function will abort.
+
+    Parameters:
+        msg: A function that produces the error message to use if the
+             library cannot be found.
+        abort_on_failure: If set, then the function will abort the program if
+           the library is not found. Otherwise, we return a null _OwnedDLHandle
+           on failure.
+
+    Args:
+        paths: A list of paths or library names to pass to the DLHandle
+               constructor.
+
+    Returns:
+        A handle to the loaded dynamic library.
+    """
+    try:
+        return _try_find_dylib(paths)
+    except e:
+
+        @parameter
+        if abort_on_failure:
+            return abort[_OwnedDLHandle, prefix="ERROR:"](msg())
+        else:
+            return _OwnedDLHandle(unsafe_uninitialized=True)
 
 
 fn _find_dylib[name: StaticString = ""](*paths: Path) -> _OwnedDLHandle:
@@ -592,9 +638,10 @@ fn _find_dylib[name: StaticString = ""](*paths: Path) -> _OwnedDLHandle:
 # NOTE: This is vending shared mutable pointers to the client without locking.
 # This is not guaranteeing any sort of thread safety.
 struct _Global[
+    StorageType: Movable, //,
     name: StaticString,
-    StorageType: Movable,
     init_fn: fn () -> StorageType,
+    on_error_msg: Optional[fn () -> String] = None,
 ](Defaultable):
     alias ResultType = UnsafePointer[StorageType]
 
@@ -604,37 +651,44 @@ struct _Global[
     @staticmethod
     fn _init_wrapper() -> OpaquePointer:
         # Heap allocate space to store this "global"
-        var ptr = UnsafePointer[StorageType].alloc(1)
-
         # TODO:
         #   Any way to avoid the move, e.g. by calling this function
         #   with the ABI destination result pointer already set to `ptr`?
-        ptr.init_pointee_move(init_fn())
+        var ptr = OwnedPointer(init_fn())
 
-        return ptr.bitcast[NoneType]()
+        return ptr^.steal_data().bitcast[NoneType]()
 
     @staticmethod
     fn _deinit_wrapper(opaque_ptr: OpaquePointer):
         # Deinitialize and deallocate the storage.
-        var ptr = opaque_ptr.bitcast[StorageType]()
-        ptr.destroy_pointee()
-        ptr.free()
+        _ = OwnedPointer(
+            unsafe_from_raw_pointer=opaque_ptr.bitcast[StorageType]()
+        )
 
     @staticmethod
-    fn get_or_create_ptr() -> Self.ResultType:
-        return _get_global[
-            name, Self._init_wrapper, Self._deinit_wrapper
-        ]().bitcast[StorageType]()
+    fn get_or_create_ptr() raises -> Self.ResultType:
+        var ptr = _get_global[name, Self._init_wrapper, Self._deinit_wrapper]()
 
-    # Currently known values for get_or_create_indexed_ptr.  See
+        @parameter
+        if on_error_msg:
+            if not ptr:
+                raise on_error_msg.value()()
+
+        return ptr.bitcast[StorageType]()
+
+    # Currently known values for get_or_create_indexed_ptr. See
     # NUM_INDEXED_GLOBALS in CompilerRT.
+    # 0: Python runtime context
+    # 1: GPU comm P2P availability cache
+    # 2: Intentionally unused (reserved for prototyping / future use)
     alias _python_idx = 0
-    alias _unused = 1  # Intentionally unused (enabled for prototyping).
+    alias _gpu_comm_p2p_idx = 1
+    alias _unused = 2  # Intentionally unused (enabled for prototyping).
 
     # This accesses a well-known global with a fixed index rather than using a
     # name to unique the value.  The index table is above.
     @staticmethod
-    fn get_or_create_indexed_ptr(idx: Int) -> Self.ResultType:
+    fn get_or_create_indexed_ptr(idx: Int) raises -> Self.ResultType:
         var ptr = external_call[
             "KGEN_CompilerRT_GetOrCreateGlobalIndexed", OpaquePointer
         ](
@@ -642,6 +696,12 @@ struct _Global[
             Self._init_wrapper,
             Self._deinit_wrapper,
         )
+
+        @parameter
+        if on_error_msg:
+            if not ptr:
+                raise on_error_msg.value()()
+
         return ptr.bitcast[StorageType]()
 
 

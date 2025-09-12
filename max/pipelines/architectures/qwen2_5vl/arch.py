@@ -14,10 +14,7 @@
 from max.graph.weights import WeightsFormat
 from max.interfaces import PipelineTask
 from max.nn.kv_cache import KVCacheStrategy
-from max.pipelines.lib import (
-    SupportedArchitecture,
-    SupportedEncoding,
-)
+from max.pipelines.lib import SupportedArchitecture, SupportedEncoding
 
 from .model import Qwen2_5VLModel
 from .tokenizer import Qwen2_5VLTokenizer
@@ -31,6 +28,7 @@ qwen2_5_vl_arch = SupportedArchitecture(
         "Qwen/Qwen2.5-VL-7B-Instruct",
     ],
     default_weights_format=WeightsFormat.safetensors,
+    multi_gpu_supported=True,
     default_encoding=SupportedEncoding.bfloat16,
     supported_encodings={
         SupportedEncoding.float32: [KVCacheStrategy.PAGED],
@@ -41,4 +39,5 @@ qwen2_5_vl_arch = SupportedArchitecture(
     },
     pipeline_model=Qwen2_5VLModel,
     tokenizer=Qwen2_5VLTokenizer,
+    prefix_caching_supported=False,
 )

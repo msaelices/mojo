@@ -67,22 +67,19 @@ struct CompilationTarget[value: _TargetType = _current_target()]:
             can be specified to satisfy Mojo type checking.
         """
 
-        alias note_text = " Note: " + note.value() if note else ""
+        alias note_text = String(" Note: ", note.value() if note else "")
+        alias msg = "Current compilation target does not support"
 
         @parameter
         if operation:
             constrained[
                 False,
-                "Current compilation target does not support operation: "
-                + operation.value()
-                + "."
-                + note_text,
+                String(msg, " operation: ", operation.value(), ".", note_text),
             ]()
         else:
             constrained[
                 False,
-                "Current compilation target does not support this operation."
-                + note_text,
+                String(msg, " this operation.", note_text),
             ]()
 
         return os.abort[result]()
@@ -403,11 +400,11 @@ fn platform_map[
 
     @parameter
     if CompilationTarget.is_macos() and macos:
-        return macos.value()
+        return macos.value().copy()
     elif CompilationTarget.is_linux() and linux:
-        return linux.value()
+        return linux.value().copy()
     elif CompilationTarget.is_windows() and windows:
-        return windows.value()
+        return windows.value().copy()
     else:
         return CompilationTarget.unsupported_target_error[
             T, operation=operation
@@ -753,7 +750,7 @@ fn simd_bit_width[target: _TargetType = _current_target()]() -> Int:
         The vector size (in bits) of the specified target.
     """
     return Int(
-        __mlir_attr[
+        mlir_value=__mlir_attr[
             `#kgen.param.expr<target_get_field,`,
             target,
             `, "simd_bit_width" : !kgen.string`,
@@ -823,7 +820,7 @@ fn size_of[type: AnyType, target: _TargetType = _current_target()]() -> Int:
         `> : !kgen.type`,
     ]
     return Int(
-        __mlir_attr[
+        mlir_value=__mlir_attr[
             `#kgen.param.expr<get_sizeof, #kgen.type<`,
             mlir_type,
             `> : !kgen.type,`,
@@ -851,7 +848,7 @@ fn size_of[dtype: DType, target: _TargetType = _current_target()]() -> Int:
         The size of the dtype in bytes.
     """
     return Int(
-        __mlir_attr[
+        mlir_value=__mlir_attr[
             `#kgen.param.expr<get_sizeof, #kgen.type<`,
             Scalar[dtype]._mlir_type,
             `> : !kgen.type,`,
@@ -886,7 +883,7 @@ fn align_of[type: AnyType, target: _TargetType = _current_target()]() -> Int:
         `> : !kgen.type`,
     ]
     return Int(
-        __mlir_attr[
+        mlir_value=__mlir_attr[
             `#kgen.param.expr<get_alignof, #kgen.type<`,
             +mlir_type,
             `> : !kgen.type,`,
@@ -914,7 +911,7 @@ fn align_of[dtype: DType, target: _TargetType = _current_target()]() -> Int:
         The alignment of the dtype in bytes.
     """
     return Int(
-        __mlir_attr[
+        mlir_value=__mlir_attr[
             `#kgen.param.expr<get_alignof, #kgen.type<`,
             Scalar[dtype]._mlir_type,
             `> : !kgen.type,`,

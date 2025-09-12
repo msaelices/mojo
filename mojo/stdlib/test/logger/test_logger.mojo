@@ -14,6 +14,19 @@
 from logger import Level, Logger
 
 
+# CHECK-LABEL: Test logging at trace level
+def test_log_trace():
+    print("=== Test logging at trace level")
+    var log = Logger[Level.TRACE]()
+
+    # CHECK: TRACE::: hello
+    log.trace("hello")
+
+    var log2 = Logger[Level.DEBUG]()
+    # CHECK-NOT: TRACE::: hello
+    log2.trace("hello")
+
+
 # CHECK-LABEL: Test logging at info level
 def test_log_info():
     print("=== Test logging at info level")
@@ -38,6 +51,29 @@ fn test_log_noset():
     log.info("hello")
 
 
+# CHECK-LABEL: Test logging with prefix
+fn test_log_with_prefix():
+    print("=== Test logging with prefix")
+
+    var log = Logger[Level.TRACE](prefix="[XYZ] ")
+
+    # CHECK: [XYZ] hello
+    log.trace("hello")
+
+
+# CHECK-LABEL: Test logging with location
+fn test_log_with_location():
+    print("=== Test logging with location")
+
+    alias log = Logger[Level.TRACE](prefix="", source_location=True)
+
+    # CHECK: test_logger.mojo:71:14] hello
+    log.trace("hello")
+
+
 def main():
+    test_log_trace()
     test_log_info()
     test_log_noset()
+    test_log_with_prefix()
+    test_log_with_location()

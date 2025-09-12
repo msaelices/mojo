@@ -25,7 +25,7 @@ common --platforms=@mojo_host_platform
 common --host_platform=@mojo_host_platform
 
 # TODO: remove when https://github.com/bazelbuild/bazel/issues/25145 is fixed
-info --platforms=
+info --platforms=@platforms//host
 
 # Improve sandboxed build performance by reusing symlink trees
 common --reuse_sandbox_directories
@@ -117,10 +117,15 @@ build --experimental_output_paths=strip
 build --macos_minimum_os=11.0 --host_macos_minimum_os=11.0
 
 build --@llvm_zstd//:llvm_enable_zstd=false
+build --experimental_propagate_custom_flag=@llvm_zstd//:llvm_enable_zstd
 build --@llvm-project//lldb:enable_libedit=true
+build --experimental_propagate_custom_flag=@llvm-project//lldb:enable_libedit
 build --@llvm-project//lldb:enable_curses=true
+build --experimental_propagate_custom_flag=@llvm-project//lldb:enable_curses
 build --@llvm-project//llvm:pfm=disable
+build --experimental_propagate_custom_flag=@llvm-project//llvm:pfm
 build --@llvm-project//mlir:enable_cuda=true
+build --experimental_propagate_custom_flag=@llvm-project//mlir:enable_cuda
 
 build --remote_download_outputs=toplevel
 build --remote_download_regex='.*\.(inc|h)$'

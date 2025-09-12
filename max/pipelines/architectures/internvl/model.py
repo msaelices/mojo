@@ -177,7 +177,7 @@ class InternVLInputs(ModelInputs):
         return self.pixel_values is not None
 
 
-def _assert_image_embeddings_invariant(
+def assert_image_embeddings_invariant(
     image_embeddings: Sequence[Tensor], image_token_indices: Sequence[Tensor]
 ) -> None:
     # Check for shape mismatch that causes scatter_nd OOB access.
@@ -197,7 +197,9 @@ def _assert_image_embeddings_invariant(
         )
 
 
-class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
+class InternVLModel(
+    PipelineModel[TextAndVisionContext], KVCacheMixin[TextAndVisionContext]
+):
     """An InternVL pipeline model for multimodal text generation."""
 
     vision_model: Model
@@ -328,7 +330,7 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
         `mgp.buffer.plan` op, and verifying with GPU free memory at runtime.
 
         The vision encoder memory scales with the number of images that can be
-        processed concurrently, which is limited by target_num_new_tokens / num_image_tokens
+        processed concurrently, which is limited by prefill_chunk_size / num_image_tokens
         where num_image_tokens=256 for InternVL.
 
         TODO(GEX-2365): Replace this with a more general solution that analyzes
@@ -352,8 +354,7 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
         # Maximum number of images that can be processed is limited by
         # how many image tokens fit in the target new tokens
         max_images = (
-            pipeline_config.target_num_new_tokens
-            // image_config.num_image_token
+            pipeline_config.prefill_chunk_size // image_config.num_image_token
         )
         # Ensure at least 1 image worth of memory.
         max_images = max(1, max_images)
@@ -374,7 +375,7 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
         # ~100KB per token for intermediate activations
         llm_memory_per_token = 100 * 1024  # 100 KiB
         llm_activation_memory = (
-            pipeline_config.target_num_new_tokens * llm_memory_per_token
+            pipeline_config.prefill_chunk_size * llm_memory_per_token
         )
 
         total_activation_memory = (
@@ -430,7 +431,6 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
             vision_state_dict=vision_model_weights_dict,
             dtype=self.dtype,
             n_devices=len(self.devices),
-            logits_postprocessor=None,
             cache_dtype=self.encoding.cache_dtype,
             kv_cache_config=self.kv_cache_config,
             return_logits=self.return_logits,
@@ -819,7 +819,7 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
             ]
             image_token_indices = model_inputs.image_token_indices
 
-            _assert_image_embeddings_invariant(
+            assert_image_embeddings_invariant(
                 image_embeddings, image_token_indices
             )
         else:
@@ -934,7 +934,7 @@ class InternVLModel(PipelineModel[TextAndVisionContext], KVCacheMixin):
 
     def load_kv_manager(
         self, session: InferenceSession, available_cache_memory: int | None
-    ) -> KVCacheManager:
+    ) -> KVCacheManager[TextAndVisionContext]:
         """Loads and initializes the KVCacheManager for the InternVL model."""
         return load_kv_manager(
             params=InternVLConfig.get_kv_params(

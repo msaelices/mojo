@@ -84,8 +84,8 @@ from collections.string.string_slice import (
 )
 from hashlib.hasher import Hasher
 from os import PathLike, abort
-from os.atomic import Atomic
-from sys import bit_width_of, size_of
+from os.atomic import Atomic, Consistency, fence
+from sys import size_of
 from sys.info import is_32bit
 from sys.ffi import c_char
 
@@ -113,8 +113,8 @@ struct String(
     ConvertibleFromPython,
     ConvertibleToPython,
     Defaultable,
-    ExplicitlyCopyable,
     FloatableRaising,
+    ImplicitlyCopyable,
     IntableRaising,
     KeyElement,
     PathLike,
@@ -231,7 +231,9 @@ struct String(
         Args:
             data: The static constant string to refer to.
         """
-        self._len_or_data = __mlir_op.`pop.string.size`(data.value)
+        self._len_or_data = Int(
+            mlir_value=__mlir_op.`pop.string.size`(data.value)
+        )
         self._ptr_or_data = UnsafePointer(
             __mlir_op.`pop.string.address`(data.value)
         ).bitcast[Byte]()
@@ -640,7 +642,11 @@ struct String(
     fn _is_unique(mut self) -> Bool:
         """Return true if the refcount is 1."""
         if self._capacity_or_data & Self.FLAG_IS_REF_COUNTED:
-            return self._refcount().load() == 1
+            # TODO: use `load[MONOTONIC]` once load supports memory orderings.
+            return (
+                self._refcount().fetch_sub[ordering = Consistency.MONOTONIC](0)
+                == 1
+            )
         else:
             return False
 
@@ -648,7 +654,9 @@ struct String(
     fn _add_ref(mut self):
         """Atomically increment the refcount."""
         if self._capacity_or_data & Self.FLAG_IS_REF_COUNTED:
-            _ = self._refcount().fetch_add(1)
+            # See `ArcPointer`'s refcount implementation for more details on the
+            # use of memory orderings.
+            _ = self._refcount().fetch_add[ordering = Consistency.MONOTONIC](1)
 
     @always_inline("nodebug")
     fn _drop_ref(mut self):
@@ -658,7 +666,8 @@ struct String(
         if self._capacity_or_data & Self.FLAG_IS_REF_COUNTED:
             var ptr = self._ptr_or_data - Self.REF_COUNT_SIZE
             var refcount = ptr.bitcast[Atomic[DType.index]]()
-            if refcount[].fetch_sub(1) == 1:
+            if refcount[].fetch_sub[ordering = Consistency.RELEASE](1) == 1:
+                fence[Consistency.ACQUIRE]()
                 ptr.free()
 
     @staticmethod
@@ -1444,10 +1453,12 @@ struct String(
         """
         return self.as_string_slice().split(sep, maxsplit=maxsplit)
 
-    fn splitlines(self, keepends: Bool = False) -> List[String]:
+    fn splitlines(
+        self, keepends: Bool = False
+    ) -> List[StringSlice[__origin_of(self)]]:
         """Split the string at line boundaries. This corresponds to Python's
         [universal newlines:](
-            https://docs.python.org/3/library/stdtypes.html#str.splitlines)
+        https://docs.python.org/3/library/stdtypes.html#str.splitlines)
         `"\\r\\n"` and `"\\t\\n\\v\\f\\r\\x1c\\x1d\\x1e\\x85\\u2028\\u2029"`.
 
         Args:
@@ -1456,7 +1467,7 @@ struct String(
         Returns:
             A List of Strings containing the input split by line boundaries.
         """
-        return _to_string_list(self.as_string_slice().splitlines(keepends))
+        return self.as_string_slice().splitlines(keepends)
 
     fn replace(self, old: StringSlice, new: StringSlice) -> String:
         """Return a copy of the string with all occurrences of substring `old`
@@ -1997,9 +2008,9 @@ fn ascii(value: StringSlice) -> String:
         use_dquote = use_dquote or (char == ord_squote)
 
     if use_dquote:
-        return '"' + result + '"'
+        return String('"', result, '"')
     else:
-        return "'" + result + "'"
+        return String("'", result, "'")
 
 
 # ===----------------------------------------------------------------------=== #
@@ -2324,9 +2335,7 @@ fn _calc_initial_buffer_size_int32(n0: Int) -> Int:
         42949672960,
     )
     var n = UInt32(n0)
-    var log2 = Int(
-        (bit_width_of[DType.uint32]() - 1) ^ count_leading_zeros(n | 1)
-    )
+    var log2 = Int((DType.uint32.bit_width() - 1) ^ count_leading_zeros(n | 1))
     return (n0 + lookup_table[Int(log2)]) >> 32
 
 
@@ -2364,7 +2373,7 @@ fn _calc_initial_buffer_size[dtype: DType](n0: Scalar[dtype]) -> Int:
         var sign = 0 if n0 > 0 else 1
 
         @parameter
-        if is_32bit() or bit_width_of[dtype]() <= 32:
+        if is_32bit() or dtype.bit_width() <= 32:
             return sign + _calc_initial_buffer_size_int32(Int(n)) + 1
         else:
             return (

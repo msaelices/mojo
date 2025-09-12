@@ -337,7 +337,7 @@ def test_next_power_of_two():
     assert_equal(next_power_of_two(UInt(2)), 2)
     assert_equal(next_power_of_two(UInt(4)), 4)
     assert_equal(next_power_of_two(UInt(5)), 8)
-    assert_equal(next_power_of_two(UInt(2**59 - 3)), 2**59)
+    assert_equal(next_power_of_two(UInt(2**59 - 3)), UInt(2) ** 59)
 
 
 def test_next_power_of_two_simd():
@@ -483,7 +483,7 @@ fn _log2_ceil(n: Int) -> Int:
 
 @always_inline
 fn _log2_ceil(n: Scalar) -> __type_of(n):
-    return __type_of(n)(ceil(log2(Float64(n))))
+    return {ceil(log2(Float64(n)))}
 
 
 def test_log2_floor():

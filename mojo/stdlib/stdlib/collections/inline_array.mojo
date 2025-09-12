@@ -54,9 +54,9 @@ fn _inline_array_construction_checks[size: Int]():
 
 
 struct InlineArray[
-    ElementType: ExplicitlyCopyable & Movable,
+    ElementType: Copyable & Movable,
     size: Int,
-](Copyable, Defaultable, ExplicitlyCopyable, Movable, Sized):
+](Defaultable, ImplicitlyCopyable, Movable, Sized):
     """A fixed-size sequence of homogeneous elements where size is a constant
     expression.
 
@@ -279,11 +279,11 @@ struct InlineArray[
         # FIXME: Why doesn't consume_elements work here?
         storage^._anihilate()
 
-    fn copy(self, out copy: Self):
-        """Creates a deep copy of the array.
+    fn __copyinit__(out self, other: Self):
+        """Copy constructs the array from another array.
 
-        Returns:
-            A new array containing copies of all elements.
+        Args:
+            other: The array to copy from.
 
         Examples:
 
@@ -293,23 +293,11 @@ struct InlineArray[
         ```
         """
 
-        copy = Self(uninitialized=True)
+        self = Self(uninitialized=True)
 
         for idx in range(size):
-            var ptr = copy.unsafe_ptr() + idx
-            ptr.init_pointee_copy(self.unsafe_get(idx))
-
-    fn __copyinit__(out self, other: Self):
-        """Copy constructs the array from another array.
-
-        Args:
-            other: The array to copy from.
-
-        Notes:
-            Creates a deep copy by copying each element individually.
-        """
-
-        self = other.copy()
+            var ptr = self.unsafe_ptr() + idx
+            ptr.init_pointee_copy(other.unsafe_get(idx))
 
     fn __moveinit__(out self, deinit other: Self):
         """Move constructs the array from another array.
@@ -415,7 +403,7 @@ struct InlineArray[
             counting backwards from the end of the array.
         """
         constrained[
-            -size <= Int(index(idx)) < size, "Index must be within bounds."
+            -size <= index(idx) < size, "Index must be within bounds."
         ]()
         alias normalized_index = normalize_index["InlineArray"](idx, size)
         return self.unsafe_get(normalized_index)
@@ -481,15 +469,15 @@ struct InlineArray[
         """
         var i = index(idx)
         debug_assert(
-            0 <= Int(i) < size,
+            0 <= i < size,
             " InlineArray.unsafe_get() index out of bounds: ",
-            Int(i),
+            i,
             " should be greater than or equal to 0 and less than ",
             size,
         )
         var ptr = __mlir_op.`pop.array.gep`(
             UnsafePointer(to=self._array).address,
-            i,
+            i._mlir_value,
         )
         return UnsafePointer(ptr)[]
 

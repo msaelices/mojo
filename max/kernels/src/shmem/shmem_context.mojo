@@ -57,9 +57,10 @@ from .shmem_api import (
     shmem_barrier_all_on_stream,
     shmem_module_init,
 )
+from os import abort
 
 
-struct SHMEMContext(Copyable, Movable):
+struct SHMEMContext(ImplicitlyCopyable, Movable):
     """Usable as a context manager to run kernels on a GPU with SHMEM support,
     on exit it will finalize SHMEM and clean up resources.
 
@@ -135,9 +136,12 @@ struct SHMEMContext(Copyable, Movable):
 
         Automatically finalizes SHMEM when exiting the context.
         """
-        self.finalize()
+        try:
+            self.finalize()
+        except e:
+            abort(String(e))
 
-    fn finalize(mut self):
+    fn finalize(mut self) raises:
         """Finalizes the SHMEM runtime environment.
 
         Cleans up SHMEM and MPI resources.

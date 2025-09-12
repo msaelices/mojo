@@ -85,7 +85,7 @@ struct CodepointSliceIter[
     mut: Bool, //,
     origin: Origin[mut],
     forward: Bool = True,
-](Copyable, Iterator, Movable, Sized):
+](ImplicitlyCopyable, Iterator, Movable, Sized):
     """Iterator for `StringSlice` over substring slices containing a single
     Unicode codepoint.
 
@@ -117,7 +117,7 @@ struct CodepointSliceIter[
 
     @doc_private
     fn __iter__(self) -> Self:
-        return self
+        return self.copy()
 
     @always_inline
     fn __has_next__(self) -> Bool:
@@ -307,7 +307,7 @@ struct CodepointSliceIter[
 
 
 struct CodepointsIter[mut: Bool, //, origin: Origin[mut]](
-    Copyable, Movable, Sized
+    ImplicitlyCopyable, Movable, Sized
 ):
     """Iterator over the `Codepoint`s in a string slice, constructed by
     `StringSlice.codepoints()`.
@@ -340,7 +340,7 @@ struct CodepointsIter[mut: Bool, //, origin: Origin[mut]](
 
     @doc_private
     fn __iter__(self) -> Self:
-        return self
+        return self.copy()
 
     @always_inline
     fn __has_next__(self) -> Bool:
@@ -452,12 +452,11 @@ struct CodepointsIter[mut: Bool, //, origin: Origin[mut]](
 struct StringSlice[mut: Bool, //, origin: Origin[mut]](
     Boolable,
     ConvertibleToPython,
-    Copyable,
     Defaultable,
     EqualityComparable,
-    ExplicitlyCopyable,
     FloatableRaising,
     Hashable,
+    ImplicitlyCopyable,
     IntableRaising,
     KeyElement,
     Movable,
@@ -522,7 +521,7 @@ struct StringSlice[mut: Bool, //, origin: Origin[mut]](
     fn __init__(out self: StaticString, _kgen: __mlir_type.`!kgen.string`):
         # FIXME(MSTDL-160): !kgen.string's are not guaranteed to be UTF-8
         # encoded, they can be arbitrary binary data.
-        var length: Int = __mlir_op.`pop.string.size`(_kgen)
+        var length: Int = Int(mlir_value=__mlir_op.`pop.string.size`(_kgen))
         var ptr = UnsafePointer(__mlir_op.`pop.string.address`(_kgen)).bitcast[
             Byte
         ]()
@@ -735,9 +734,9 @@ struct StringSlice[mut: Bool, //, origin: Origin[mut]](
                     result += s
 
         if use_dquote:
-            return '"' + result + '"'
+            return String('"', result, '"')
         else:
-            return "'" + result + "'"
+            return String("'", result, "'")
 
     @always_inline
     fn __len__(self) -> Int:
@@ -1140,10 +1139,10 @@ struct StringSlice[mut: Bool, //, origin: Origin[mut]](
         Returns:
             A StringSlice merged with the other origin.
         """
-        return __type_of(result)(
-            ptr=self.unsafe_ptr().origin_cast[result.mut, result.origin](),
-            length=UInt(len(self)),
-        )
+        return {
+            ptr = self.unsafe_ptr().origin_cast[result.mut, result.origin](),
+            length = UInt(len(self)),
+        }
 
     # ===------------------------------------------------------------------===#
     # Methods
@@ -2674,12 +2673,12 @@ fn _split[
     out output: List[__type_of(src_str).Immutable],
 ):
     alias S = __type_of(src_str).Immutable
-    var ptr = src_str.unsafe_ptr().origin_cast[mut=False]()
+    var ptr = src_str.unsafe_ptr().origin_cast[False]()
     var sep_len = sep.byte_length()
     if sep_len == 0:
         var iterator = src_str.codepoint_slices()
         var i_len = len(iterator) + 2
-        output = __type_of(output)(capacity=i_len)
+        output = {capacity = i_len}
         output.append(S(ptr=ptr, length=0))
         for s in iterator:
             output.append(s)
@@ -2692,7 +2691,7 @@ fn _split[
     @parameter
     if has_maxsplit:
         amnt = maxsplit + 1 if maxsplit < prealloc else prealloc
-    output = __type_of(output)(capacity=amnt)
+    output = {capacity = amnt}
     var str_byte_len = src_str.byte_length()
     var lhs = 0
     var rhs: Int
@@ -2730,12 +2729,12 @@ fn _split[
     @parameter
     if has_maxsplit:
         amnt = maxsplit + 1 if maxsplit < prealloc else prealloc
-    output = __type_of(output)(capacity=amnt)
+    output = {capacity = amnt}
     var str_byte_len = src_str.byte_length()
     var lhs = 0
     var rhs: Int
     var items = 0
-    var ptr = src_str.unsafe_ptr().origin_cast[mut=False]()
+    var ptr = src_str.unsafe_ptr().origin_cast[False]()
 
     @always_inline("nodebug")
     fn _build_slice(p: __type_of(ptr), start: Int, end: Int) -> S:

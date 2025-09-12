@@ -129,7 +129,9 @@ from builtin.value import (
     Copyable,
     Defaultable,
     ExplicitlyCopyable,
+    ImplicitlyCopyable,
     Movable,
+    materialize,
 )
 from builtin.variadics import VariadicList, VariadicListMem, VariadicPack
 from documentation import doc_private
@@ -137,4 +139,4 @@ from memory import AddressSpace, Pointer, Span, UnsafePointer, OpaquePointer
 
 from io import Writable, Writer
 
-from iter import Iterator, Iterable, iter, next, enumerate
+from iter import Iterator, Iterable, iter, next, enumerate, zip

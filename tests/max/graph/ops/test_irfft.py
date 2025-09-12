@@ -12,8 +12,10 @@
 # ===----------------------------------------------------------------------=== #
 """ops.irfft tests."""
 
+from __future__ import annotations
+
 import pytest
-from conftest import static_axes, tensor_types
+from conftest import GraphBuilder, static_axes, tensor_types
 from hypothesis import assume, example, given
 from hypothesis import strategies as st
 from max.dtype import DType
@@ -67,7 +69,7 @@ def expected_output_shape(shape: Shape, n: int | None, axis: int) -> Shape:
     normalization=Normalization.FORWARD,
 )
 def test_irfft(
-    graph_builder,  # noqa: ANN001
+    graph_builder: GraphBuilder,
     input_type: TensorType,
     n: int | None,
     axis: int,

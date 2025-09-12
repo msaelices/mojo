@@ -83,7 +83,7 @@ fn _block_swizzle_by_scale[
     bx = bx + by // grid_dim.data[1] * (grid_dim.data[0] >> scale)
     by = by % grid_dim.data[1]
 
-    return __type_of(block_idx)(Int(bx), Int(by))
+    return {Int(bx), Int(by)}
 
 
 # ===------------------------------------------------------------------===#
@@ -97,7 +97,7 @@ struct MatmulConfig[
     b_type: DType,
     c_type: DType,
     transpose_b: Bool = False,
-](Copyable, Movable, Stringable, Writable):
+](ImplicitlyCopyable, Movable, Stringable, Writable):
     """Static configuration of GPU matmul."""
 
     var block_tile_shape: IndexList[3]
@@ -167,13 +167,13 @@ struct MatmulConfig[
         self._pdl_level = pdl_level
 
     fn num_warps_m(self) -> UInt:
-        return self.block_tile_shape[0] // self.warp_tile_shape[0]
+        return UInt(self.block_tile_shape[0] // self.warp_tile_shape[0])
 
     fn num_warps_n(self) -> UInt:
-        return self.block_tile_shape[1] // self.warp_tile_shape[1]
+        return UInt(self.block_tile_shape[1] // self.warp_tile_shape[1])
 
     fn num_threads(self) -> UInt:
-        return (
+        return UInt(
             self.num_warps_m()
             * self.num_warps_n()
             * self.num_warp_k_partitions
@@ -191,8 +191,8 @@ struct MatmulConfig[
 
     fn grid_dim(self, m: UInt, n: UInt) -> IndexList[3]:
         return Index(
-            Int(ceildiv(n, self.block_tile_shape[1])),
-            Int(ceildiv(m, self.block_tile_shape[0])),
+            Int(ceildiv(n, UInt(self.block_tile_shape[1]))),
+            Int(ceildiv(m, UInt(self.block_tile_shape[0]))),
             Int(self.num_k_partitions),
         )
 
@@ -299,14 +299,14 @@ fn _shared_memory_usage[
     var c_usage = block_mnk[0] * block_mnk[1] * \
                   size_of[c_type]() if c_type.is_half_float() else 0
     # fmt: on
-    return max(max(a_usage + b_usage, c_usage), slice_k_reduction)
+    return UInt(max(max(a_usage + b_usage, c_usage), slice_k_reduction))
 
 
 @fieldwise_init
 @register_passable("trivial")
 struct MatmulKernels[
     a_type: DType, b_type: DType, c_type: DType, transpose_b: Bool = False
-](Copyable, Movable):
+](ImplicitlyCopyable, Movable):
     """Supported matmul kernels.
 
     The configurations are named as: <arch>_<BNxBM>_<stages>.
@@ -348,9 +348,11 @@ struct MatmulKernels[
             env_get_int["TUNE_WN", 64](),
             env_get_int["TUNE_BK", 32](),
         ),
-        num_pipeline_stages=env_get_int["TUNE_NUM_STAGES", 4](),
-        num_k_partitions=env_get_int["TUNE_NUM_K_PARTITIONS", 1](),
-        num_warp_k_partitions=env_get_int["TUNE_NUM_WARP_K_PARTITIONS", 1](),
+        num_pipeline_stages=UInt(env_get_int["TUNE_NUM_STAGES", 4]()),
+        num_k_partitions=UInt(env_get_int["TUNE_NUM_K_PARTITIONS", 1]()),
+        num_warp_k_partitions=UInt(
+            env_get_int["TUNE_NUM_WARP_K_PARTITIONS", 1]()
+        ),
     )
 
 
@@ -397,7 +399,7 @@ fn select_config[
 
     alias opt_list = [_128x128_4, _256x64_4, _256x128_3]
 
-    for bmnk_stage in opt_list:
+    for bmnk_stage in materialize[opt_list]():
         var bm = bmnk_stage[0]
         var bn = bmnk_stage[1]
         var bk = bmnk_stage[2]
@@ -406,12 +408,9 @@ fn select_config[
         var num_waves_base = ceildiv(num_blocks, A100.sm_count)
 
         # Skip if it requires more shared memory than the GPU supports.
-        if (
-            _shared_memory_usage[a_type, b_type, c_type](
-                Index(bm, bn, bk), num_stages
-            )
-            > gpu_info.shared_memory_per_multiprocessor
-        ):
+        if _shared_memory_usage[a_type, b_type, c_type](
+            Index(bm, bn, bk), num_stages
+        ) > UInt(gpu_info.shared_memory_per_multiprocessor):
             continue
 
         var allowed_num_k_partitions = (
@@ -459,8 +458,8 @@ fn select_config[
     return MatmulConfig[a_type, b_type, c_type, transpose_b](
         block_tile_shape=best_bmnk,
         warp_tile_shape=Index(64, 64, best_bmnk[2]),
-        num_pipeline_stages=best_num_stages,
-        num_k_partitions=best_num_k_partitions,
+        num_pipeline_stages=UInt(best_num_stages),
+        num_k_partitions=UInt(best_num_k_partitions),
     )
 
 

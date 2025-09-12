@@ -17,7 +17,6 @@ These are Mojo built-ins, so you don't need to import them.
 
 from hashlib.hasher import Hasher
 from math import CeilDivable
-from sys import bit_width_of
 
 from builtin.math import Absable, DivModable
 
@@ -31,11 +30,10 @@ struct UInt(
     Boolable,
     CeilDivable,
     Comparable,
-    Copyable,
     Defaultable,
     DivModable,
-    ExplicitlyCopyable,
     Hashable,
+    ImplicitlyCopyable,
     Indexer,
     Intable,
     KeyElement,
@@ -70,7 +68,7 @@ struct UInt(
     # Aliases
     # ===-------------------------------------------------------------------===#
 
-    alias BITWIDTH = Int(bit_width_of[DType.index]())
+    alias BITWIDTH = UInt(DType.index.bit_width())
     """The bit width of the integer type."""
 
     alias MAX = UInt((1 << Self.BITWIDTH) - 1)
@@ -726,7 +724,7 @@ struct UInt(
         Returns:
             The value as an integer.
         """
-        return self._mlir_value
+        return Int(mlir_value=self._mlir_value)
 
     @always_inline("builtin")
     fn __abs__(self) -> Self:

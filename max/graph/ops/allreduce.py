@@ -81,20 +81,31 @@ def sum(
             raise ValueError(msg)
         devices.append(input.device)
 
-    in_chain = Graph.current._current_chain
-    *results, out_chain = Graph.current._add_op(
-        mo.distributed_allreduce_sum,
-        # Types for 2 outputs: chain, list of tensors
-        [x.type.to_mlir() for x in inputs],
-        _ChainType().to_mlir(),
-        inputs,
-        signal_buffers,
-        in_chain,
-    )
+    # Per-device execution model:
+    # Create one allreduce op per device, each threading the destination
+    # device's chain independently.
+    # Do not merge device chains.
+    results = []
+    for input_tensor, device in zip(inputs, devices):
+        in_chain = Graph.current.device_chains[device]
+        # Each op takes all inputs but only produces output for its device.
+        (result, out_chain), _ = Graph.current._add_op_get_op_with_results(
+            mo.distributed_allreduce_sum,
+            # Single output tensor type.
+            input_tensor.type.to_mlir(),
+            # Output chain type.
+            _ChainType().to_mlir(),
+            inputs,
+            signal_buffers,
+            in_chain,
+            device.to_mlir(),
+        )
 
-    Graph.current._update_chain(out_chain)
+        results.append(result.tensor)
+        # Advance only this device's chain.
+        Graph.current.device_chains[device] = out_chain
 
-    return [res.tensor for res in results]
+    return results
 
 
 def matmul_allreduce(

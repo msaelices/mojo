@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import ctypes
 import itertools
 import json
 import logging
 import os
+import platform
 import random
 import resource
 import sys
@@ -65,7 +67,46 @@ from transformers import (
 # 30 minute timeout per request session
 AIOHTTP_TIMEOUT = aiohttp.ClientTimeout(total=30 * 60)
 
+BENCHMARK_SERVING_ARGPARSER_DESCRIPTION = (
+    "This command runs comprehensive benchmark tests on a model server to measure "
+    "performance metrics including throughput, latency, and resource utilization. "
+    "Make sure that the MAX server is running and hosting a model before running "
+    "this command."
+)
+
 logger = logging.getLogger("benchmark_serving")
+
+
+# TODO: This should be refactored into a common utility lib so it can be reused
+# in other internal benchmarking tools.
+def is_nvml_available() -> bool:
+    """Check if NVML (NVIDIA Management Library) is available on the system.
+
+    Returns:
+        bool: True if NVML is available, False otherwise.
+    """
+    try:
+        if platform.system() == "Linux":
+            # Try to load libnvidia-ml.so.1
+            try:
+                ctypes.CDLL("libnvidia-ml.so.1")
+                return True
+            except OSError:
+                return False
+        elif platform.system() == "Windows":
+            # Try to load nvml.dll
+            try:
+                ctypes.CDLL("nvml.dll")
+                return True
+            except OSError:
+                return False
+        elif platform.system() == "Darwin":
+            # macOS doesn't support NVML
+            return False
+        else:
+            return False
+    except Exception:
+        return False
 
 
 @dataclass
@@ -431,10 +472,14 @@ def remove_prefix(text: str, prefix: str) -> str:
 
 
 def get_tokenizer(
-    pretrained_model_name_or_path: str, trust_remote_code: bool
+    pretrained_model_name_or_path: str,
+    model_max_length: Optional[int],
+    trust_remote_code: bool,
 ) -> Union[PreTrainedTokenizer, PreTrainedTokenizerFast]:
     return AutoTokenizer.from_pretrained(
-        pretrained_model_name_or_path, trust_remote_code=trust_remote_code
+        pretrained_model_name_or_path,
+        model_max_length=model_max_length,
+        trust_remote_code=trust_remote_code,
     )
 
 
@@ -465,6 +510,7 @@ def set_ulimit(target_soft_limit: int = 65535) -> None:
 async def get_request(
     input_requests: Sequence[SampledRequest],
     request_rate: float,
+    timing_data: dict[str, list[float]],
     burstiness: float = 1.0,
 ) -> AsyncGenerator[SampledRequest, None]:
     """
@@ -484,6 +530,9 @@ async def get_request(
             A lower burstiness value (0 < burstiness < 1) results
             in more bursty requests, while a higher burstiness value
             (burstiness > 1) results in a more uniform arrival of requests.
+        timing_data:
+            Dictionary where timing data will be collected with keys:
+            - 'intervals': List of actual time intervals between requests
     """
 
     # Calculate scale parameter theta to maintain the desired request_rate.
@@ -492,8 +541,26 @@ async def get_request(
     )
     theta = 1.0 / (request_rate * burstiness)
 
+    # Initialize timing data collection - always enabled
+    if timing_data is None:
+        timing_data = {}
+    timing_data.setdefault("intervals", [])
+
+    start_time = time.perf_counter()
+    last_request_time = start_time
+
     for request in input_requests:
+        current_time = time.perf_counter()
+
+        # Record timestamp when request is yielded
+        if last_request_time != start_time:
+            actual_interval = current_time - last_request_time
+            timing_data["intervals"].append(actual_interval)
+
         yield request
+
+        # Update last_request_time for next iteration
+        last_request_time = current_time
 
         if request_rate == float("inf"):
             # If the request rate is infinity, then we don't need to wait.
@@ -516,7 +583,7 @@ def calculate_metrics(
     dur_s: float,
     tokenizer: PreTrainedTokenizerBase,
     gpu_metrics: dict[str, Any],
-    ttft_skip_requests: int,
+    skip_first_n_requests: int,
     max_concurrency: Optional[int],
     collect_gpu_stats: bool,
 ) -> tuple[BenchmarkMetrics, list[int]]:
@@ -541,36 +608,40 @@ def calculate_metrics(
         if outputs[i].cancelled:
             continue
         if outputs[i].success:
+            completed += 1
             # We use the tokenizer to count the number of output tokens for all
             # serving backends instead of looking at len(outputs[i].itl) since
             # multiple output tokens may be bundled together
             # Note : this may inflate the output token count slightly
+            total_input += outputs[i].prompt_len
             output_len = compute_output_len(tokenizer, outputs[i])
             actual_output_lens.append(output_len)
             nonempty_response_chunks += 1 if outputs[i].ttft != 0 else 0
             nonempty_response_chunks += len(outputs[i].itl)
 
-            total_input += outputs[i].prompt_len
+            max_input = max(max_input, outputs[i].prompt_len)
+            max_output = max(max_output, output_len)
+            max_total = max(max_total, outputs[i].prompt_len + output_len)
+
+            # We only skip these requests for client experience metrics like
+            # TTFT, ITL, TPOT, E2E. They are still considered for overall token
+            # counts and throughputs.
+            if i < skip_first_n_requests:
+                continue
+
             if output_len > 1:
                 tpots.append(
                     (outputs[i].latency - outputs[i].ttft) / (output_len - 1)
                 )
             itls += outputs[i].itl
-            if i >= ttft_skip_requests:
-                ttfts.append(outputs[i].ttft)
-                # Input throughput is fully calculated once we reach the first output token.
-                input_throughputs.append(
-                    outputs[i].prompt_len / outputs[i].ttft
-                )
-                # output throughput ignores the first token.
-                # It is just timing for the chain of output tokens.
-                output_throughputs.append(
-                    (output_len - 1) / (outputs[i].latency - outputs[i].ttft)
-                )
-            completed += 1
-            max_input = max(max_input, outputs[i].prompt_len)
-            max_output = max(max_output, output_len)
-            max_total = max(max_total, outputs[i].prompt_len + output_len)
+            ttfts.append(outputs[i].ttft)
+            # Input throughput is fully calculated once we reach the first output token.
+            input_throughputs.append(outputs[i].prompt_len / outputs[i].ttft)
+            # output throughput ignores the first token.
+            # It is just timing for the chain of output tokens.
+            output_throughputs.append(
+                (output_len - 1) / (outputs[i].latency - outputs[i].ttft)
+            )
             latencies.append(outputs[i].latency)
         else:
             actual_output_lens.append(0)
@@ -606,16 +677,12 @@ def calculate_metrics(
     available_gpu_memory_mib = []
     gpu_utilization = []
     if collect_gpu_stats:
-        from nvitop import Device
-        from nvitop.libnvml import NVMLError  # type: ignore
+        if is_nvml_available():
+            from nvitop import Device
 
-        try:
             device_count = Device.count()
-        except NVMLError as e:
-            logging.warning(f"Failed to get GPU device count: {e}")
-            logging.warning(
-                "GPU stats collection is only supported on NVIDIA GPUs."
-            )
+        else:
+            logger.warning("NVML not available, skipping GPU stats collection")
             device_count = 0
 
         for i in range(device_count):
@@ -783,19 +850,20 @@ async def benchmark(
     max_requests: int,
     num_chat_sessions: Optional[int],
     delay_between_chat_turns: Optional[int],
-    ttft_skip_requests: int,
+    skip_first_n_requests: int,
     max_output_len: Optional[int],
     temperature: float,
     top_p: float,
     max_benchmark_duration_s: Optional[int],
     warmup_delay_ms: float = 0,
     ignore_first_turn_stats: bool = False,
+    timing_data: Optional[dict[str, list[float]]] = None,
 ):
-    if ignore_first_turn_stats and ttft_skip_requests:
+    if ignore_first_turn_stats and skip_first_n_requests:
         logger.warning(
-            "--ignore-first-turn-stats and --ttft-skip-requests both set. Ignoring --ttft-skip-requests due to first turn in each chat already being ignored."
+            "--ignore-first-turn-stats and --skip-first-n-requests both set. Ignoring --skip-first-n-requests due to first turn in each chat already being ignored."
         )
-        ttft_skip_requests = 0
+        skip_first_n_requests = 0
 
     full_backend = backend + ("-chat" if chat else "")
     if full_backend in ASYNC_REQUEST_FUNCS:
@@ -806,7 +874,7 @@ async def benchmark(
     if do_test_prompt:
         logger.info("Starting initial single prompt test run...")
         test_prompt: Union[str, list[dict]]
-        if args.num_chat_sessions:
+        if num_chat_sessions:
             test_question = chat_sessions[0].messages[0]
             test_answer = chat_sessions[0].messages[1]
             test_prompt = [
@@ -871,10 +939,14 @@ async def benchmark(
     semaphore = asyncio.Semaphore(max_concurrency) if max_concurrency else None
 
     if collect_gpu_stats:
-        from nvitop import ResourceMetricCollector
+        if is_nvml_available():
+            from nvitop import ResourceMetricCollector
 
-        collector = ResourceMetricCollector()
-        collector.start("benchmark")
+            collector = ResourceMetricCollector()
+            collector.start("benchmark")
+        else:
+            logger.warning("NVML not available, skipping GPU stats collection")
+            collector = None
 
     benchmark_start_time = time.perf_counter_ns()
     if max_benchmark_duration_s is None:
@@ -887,6 +959,8 @@ async def benchmark(
     outputs: list[RequestFuncOutput] = []
     if not num_chat_sessions:
         # single-turn chat scenario
+        if timing_data is None:
+            timing_data = {}
         pbar = None if disable_tqdm else tqdm(total=len(input_requests))
 
         async def limited_request_func(
@@ -905,7 +979,7 @@ async def benchmark(
                 )
 
         async for request in get_request(
-            input_requests, request_rate, burstiness
+            input_requests, request_rate, timing_data, burstiness
         ):
             # If the request length is pinned, then we use ignore_eos+max_tokens
             # to force the model's hand into the given request length. Otherwise,
@@ -978,7 +1052,7 @@ async def benchmark(
                     chat_session,
                     tokenizer.model_max_length,
                     delay_between_chat_turns,
-                    ttft_skip_requests,
+                    skip_first_n_requests,
                     ignore_first_turn_stats,
                 )
             async with semaphore:
@@ -991,7 +1065,7 @@ async def benchmark(
                     chat_session,
                     tokenizer.model_max_length,
                     delay_between_chat_turns,
-                    ttft_skip_requests,
+                    skip_first_n_requests,
                     ignore_first_turn_stats,
                 )
 
@@ -1026,9 +1100,12 @@ async def benchmark(
                 }
             )
 
-    if collect_gpu_stats:
+    if collect_gpu_stats and collector is not None:
         gpu_metrics = collector.collect()
         collector.stop()
+        # Delete the collector.
+        # Leaving it to be cleaned up later can lead to segfaults.
+        del collector
     else:
         gpu_metrics = {}
 
@@ -1037,10 +1114,18 @@ async def benchmark(
         dur_s=benchmark_duration,
         tokenizer=tokenizer,
         gpu_metrics=gpu_metrics,
-        ttft_skip_requests=ttft_skip_requests,
+        skip_first_n_requests=skip_first_n_requests,
         max_concurrency=max_concurrency,
         collect_gpu_stats=collect_gpu_stats,
     )
+    achieved_request_rate = 0.0
+    if timing_data and timing_data.get("intervals"):
+        mean_interval = sum(timing_data["intervals"]) / len(
+            timing_data["intervals"]
+        )
+        achieved_request_rate = (
+            round(1.0 / mean_interval, 3) if mean_interval > 0 else 0.0
+        )
 
     print_section(title=" Serving Benchmark Result ", char="=")
     print("{:<40} {:<10}".format("Successful requests:", metrics.completed))
@@ -1061,6 +1146,11 @@ async def benchmark(
         "{:<40} {:<10}".format(
             "Total nonempty serving response chunks:",
             metrics.nonempty_response_chunks,
+        )
+    )
+    print(
+        "{:<40} {:<10.5f}".format(
+            "Request rate (req/s):", achieved_request_rate
         )
     )
     print(
@@ -1205,14 +1295,14 @@ def main(args: argparse.Namespace) -> None:
 
     if args.base_url is not None:
         api_url = f"{args.base_url}{args.endpoint}"
-        base_url = f"{args.base_url}"
     else:
         api_url = f"http://{args.host}:{args.port}{args.endpoint}"
-        base_url = f"http://{args.host}:{args.port}"
 
     logger.info(f"getting tokenizer. api url: {api_url}")
     tokenizer = get_tokenizer(
-        tokenizer_id, trust_remote_code=args.trust_remote_code
+        tokenizer_id,
+        args.model_max_length,
+        trust_remote_code=args.trust_remote_code,
     )
 
     benchmark_dataset = BenchmarkDataset.from_flags(
@@ -1413,7 +1503,7 @@ def main(args: argparse.Namespace) -> None:
             max_requests=args.num_prompts,
             num_chat_sessions=args.num_chat_sessions,
             delay_between_chat_turns=args.delay_between_chat_turns,
-            ttft_skip_requests=args.ttft_skip_requests,
+            skip_first_n_requests=args.skip_first_n_requests,
             max_output_len=args.max_output_len,
             temperature=args.temperature,
             top_p=args.top_p,
@@ -1533,43 +1623,49 @@ def main(args: argparse.Namespace) -> None:
         output_lens_dict = {}
         output_lens_dict["args"] = {x: vars(args)[x] for x in args_to_save}
         output_lens_dict["output_lengths"] = benchmark_result["output_lens"]
-        with args.record_output_lengths as f:
+        with open(args.record_output_lengths, "w") as f:
             yaml.dump(output_lens_dict, f)
 
     logger.info("finished benchmark run: Success.")
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(
+    config_file_path: Path | None = None, args: Sequence[str] | None = None
+) -> argparse.Namespace:
     """Parse command line arguments using ServingBenchmarkConfig with enhanced cli_parse_args().
 
     This function leverages the enhanced ServingBenchmarkConfig.cli_parse_args() method
     to eliminate code duplication while providing proper CLI argument parsing
     with choices and help text.
+
+    Args:
+        config_file_path: Path to the configuration file.
+        args: Command line arguments to parse. If None, parse from sys.argv.
     """
+
     # Load configuration from YAML file to get defaults
-    # Use __file__ to get the directory of this module and construct the path
-    config_file_path = Path(__file__).parent / "serving_config.yaml"
+
+    if config_file_path is None:
+        logger.info(
+            "No benchmark serving configuration file path provided, using default serving_config.yaml file"
+        )
+        # Use __file__ to get the directory of this module and construct the path
+        config_file_path = Path(__file__).parent / "serving_config.yaml"
+
+    logger.info(
+        f"Using benchmark serving configuration file: {config_file_path}"
+    )
+
     benchmark_config = ServingBenchmarkConfig.from_config_file(config_file_path)
 
     # Create parser using the enhanced MAXConfig functionality with required model field
     parser = benchmark_config.cli_arg_parsers(
-        description=(
-            "Benchmark the online serving throughput. "
-            "Make sure that the MAX server is running and hosting a model "
-            "before running this script."
-        ),
+        description=BENCHMARK_SERVING_ARGPARSER_DESCRIPTION,
     )
 
-    # Additional arguments
-    parser.add_argument(
-        "--record-output-lengths",
-        type=argparse.FileType("w"),
-        default=None,
-        metavar="/path/to/save/outputs",
-        help="Save output lengths to given file in YAML format",
-    )
-
-    return parser.parse_args()
+    if args is None:
+        return parser.parse_args()
+    return parser.parse_args(args)
 
 
 if __name__ == "__main__":

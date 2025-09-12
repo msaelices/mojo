@@ -23,7 +23,7 @@ struct PyObjectFunction[
     func_type: AnyTrivialRegType,
     self_type: AnyType = NoneType,
     has_kwargs: Bool = False,
-]:
+](ImplicitlyCopyable):
     """Wrapper to hide the binding logic for functions taking a variadic number
     of PythonObject arguments.
 
@@ -1120,7 +1120,7 @@ struct PyObjectFunction[
 
         # Handle the case where kwargs is None or empty
         if not py_kwargs._obj_ptr:
-            return result
+            return result^
 
         # Iterate through the Python dictionary and populate OwnedKwargsDict
         var items = py_kwargs.items()
@@ -1130,7 +1130,7 @@ struct PyObjectFunction[
             var key_str = String(key)
             result[key_str] = value
 
-        return result
+        return result^
 
     # ===-------------------------------------------------------------------===#
     # Compile-time check utilities
