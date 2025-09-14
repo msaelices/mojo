@@ -353,7 +353,6 @@ struct LayoutTensor[
     var ptr: UnsafePointer[
         Scalar[dtype],
         address_space=address_space,
-        alignment2=alignment,
         mut=mut,
         origin=origin,
     ]
@@ -840,23 +839,27 @@ struct LayoutTensor[
     fn bitcast[
         new_dtype: DType,
         /,
-        address_space: AddressSpace = Self.address_space,
+        target_address_space: AddressSpace = Self.address_space,
         element_layout: Layout = Self.element_layout,
-    ](self) -> Self.BitcastType[new_dtype, address_space, element_layout]:
+    ](self) -> Self.BitcastType[
+        new_dtype, target_address_space, element_layout
+    ]:
         """Bitcast the underlying pointer to a new data type.
 
         Parameters:
             new_dtype: The new data type it is casting to.
-            address_space: The address space of the returned `LayoutTensor`.
+            target_address_space: The address space of the returned `LayoutTensor`.
             element_layout: The element layout of the returned `LayoutTensor`.
 
         Returns:
             A new `LayoutTensor` with the same memory location but with the
             specified data type, address space, and element layout.
         """
-        return Self.BitcastType[new_dtype, address_space, element_layout](
+        return Self.BitcastType[
+            new_dtype, target_address_space, element_layout
+        ](
             self.ptr.bitcast[Scalar[new_dtype]]().address_space_cast[
-                address_space
+                target_address_space
             ](),
             self.runtime_layout,
         )
@@ -916,19 +919,19 @@ struct LayoutTensor[
 
     @always_inline("nodebug")
     fn address_space_cast[
-        address_space: AddressSpace = Self.address_space,
-    ](self) -> Self.AddressSpaceCastType[address_space]:
+        target_address_space: AddressSpace = Self.address_space,
+    ](self) -> Self.AddressSpaceCastType[target_address_space]:
         """Changes the origin or mutability of a pointer.
 
         Parameters:
-            address_space: The new address space.
+            target_address_space: The new address space.
 
         Returns:
             A new `LayoutTensor` object with the same type and origin
             as the original `LayoutTensor`, and the new specified address_space.
         """
-        return Self.AddressSpaceCastType[address_space](
-            self.ptr.address_space_cast[address_space](),
+        return Self.AddressSpaceCastType[target_address_space](
+            self.ptr.address_space_cast[target_address_space](),
             self.runtime_layout,
             self.runtime_element_layout,
         )
@@ -2175,7 +2178,7 @@ struct LayoutTensor[
     @staticmethod
     @always_inline("nodebug")
     fn stack_allocation[
-        *, alignment: Int = Self.alignment
+        *, stack_alignment: Int = Self.alignment
     ]() -> Self.StackTensorType:
         """Allocates stack memory for a `LayoutTensor` with a fully static
         layout.
@@ -2192,7 +2195,7 @@ struct LayoutTensor[
                 alignment.
 
         Parameters:
-            alignment: Memory alignment value for the allocation in bytes. Must
+             stack_alignment: Memory alignment value for the allocation in bytes. Must
                 be a multiple of the tensor's minimum required alignment.
                 Default is the tensor's natural alignment based on its data type
                 and layout.
@@ -2218,9 +2221,9 @@ struct LayoutTensor[
 
         constrained[layout.all_dims_known(), "Requires fully static layout"]()
         constrained[
-            alignment % Self.alignment == 0,
+            stack_alignment % Self.alignment == 0,
             "Stack allocation alignment ",
-            String(alignment),
+            String(stack_alignment),
             " must be multiple of tensor alignment ",
             String(Self.alignment),
         ]()
@@ -2229,7 +2232,7 @@ struct LayoutTensor[
             stack_allocation[
                 layout.size() * element_layout.size(),
                 dtype,
-                alignment=alignment,
+                alignment=stack_alignment,
                 address_space=address_space,
             ]()
         )
@@ -3226,7 +3229,7 @@ struct LayoutTensor[
     @always_inline
     fn split[
         axis: Int = 0,
-        alignment: Int = 1,
+        split_alignment: Int = 1,
     ](self, count: Int, idx: Int) -> Self.DynamicSplitType[axis]:
         """Retrieve a specific partition of the tensor after splitting along a
         specified axis.
@@ -3247,7 +3250,7 @@ struct LayoutTensor[
         Parameters:
             axis: The axis along which to split the tensor. Defaults to 0 (first
                 dimension).
-            alignment: Memory alignment value for the partition size. Defaults
+            split_alignment: Memory alignment value for the partition size. Defaults
                 to 1.
 
         Args:
@@ -3294,7 +3297,7 @@ struct LayoutTensor[
         var runtime_shape = Self.DynamicSplitType[
             axis
         ].RuntimeLayoutType.ShapeType()
-        var axis_partition_dim = align_up(axis_dim // count, alignment)
+        var axis_partition_dim = align_up(axis_dim // count, split_alignment)
 
         @parameter
         for i in range(flatten_rank):
@@ -7518,7 +7521,6 @@ struct LayoutTensorIter[
     var ptr: UnsafePointer[
         Scalar[dtype],
         address_space=address_space,
-        alignment2=alignment,
         mut=mut,
         origin=origin,
     ]
@@ -7575,7 +7577,6 @@ struct LayoutTensorIter[
         ptr: UnsafePointer[
             Scalar[dtype],
             address_space=address_space,
-            alignment2=alignment,
             mut=mut,
             origin=origin,
         ],
@@ -7622,7 +7623,6 @@ struct LayoutTensorIter[
         ptr: UnsafePointer[
             Scalar[dtype],
             address_space=address_space,
-            alignment2=alignment,
             mut=mut,
             origin=origin,
         ],
@@ -7991,8 +7991,8 @@ struct LayoutTensorIter[
     fn bitcast[
         new_type: DType,
         *,
-        address_space: AddressSpace = Self.address_space,
-        alignment: Int = Self.alignment,
+        target_address_space: AddressSpace = Self.address_space,
+        target_alignment: Int = Self.alignment,
     ](self) -> Self.BitcasType[
         new_type, address_space=address_space, alignment=alignment
     ]:
@@ -8005,9 +8005,9 @@ struct LayoutTensorIter[
 
         Parameters:
             new_type: The target data type to cast to.
-            address_space: The memory address space for the new
+            target_address_space: The memory address space for the new
                 iterator (defaults to current).
-            alignment: Memory alignment requirement for the new
+            target_alignment: Memory alignment requirement for the new
                 iterator (defaults to current).
 
         Returns:
@@ -8016,9 +8016,9 @@ struct LayoutTensorIter[
         return Self.BitcasType[
             new_type, address_space=address_space, alignment=alignment
         ](
-            self.ptr.bitcast[Scalar[new_type]]()
-            .address_space_cast[address_space]()
-            .static_alignment_cast[alignment](),
+            self.ptr.bitcast[Scalar[new_type]]().address_space_cast[
+                address_space
+            ](),
             Int(self.bound),
             self.runtime_layout,
             Int(self.stride),

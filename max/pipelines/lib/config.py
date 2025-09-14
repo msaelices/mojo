@@ -16,11 +16,13 @@
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 import os
 import sys
 from dataclasses import MISSING, dataclass, field, fields
 from enum import Enum
+from pathlib import Path
 from typing import Any, Optional, get_type_hints
 
 from max.driver import DeviceSpec, load_devices
@@ -121,6 +123,16 @@ class PipelineConfig(MAXConfig):
 
     pool_embeddings: bool = True
     """Whether to pool embedding outputs."""
+
+    chat_template: Optional[Path] = None
+    """Optional custom chat template to override the one shipped with the
+    HuggingFace model config. Can be either:
+    - A Path pointing to a file containing the template
+
+    If a Path is provided, the file will be read during config resolution and
+    the content will be stored as a string. This allows customizing the prompt
+    formatting for different use cases. If None, the model's default chat
+    template will be used."""
 
     use_experimental_kernels: str = os.environ.get(
         "USE_EXPERIMENTAL_KERNELS", "false"
@@ -348,6 +360,82 @@ class PipelineConfig(MAXConfig):
 
         self.resolve()
 
+    def retrieve_chat_template(self) -> Optional[str]:
+        # Read the file content
+        if self.chat_template is None:
+            return None
+
+        try:
+            with open(self.chat_template, encoding="utf-8") as f:
+                template_content = f.read()
+
+            # Try to parse as JSON and extract chat_template if present
+            try:
+                template_json = json.loads(template_content)
+                if (
+                    isinstance(template_json, dict)
+                    and "chat_template" in template_json
+                ):
+                    logger.info(
+                        f"Successfully loaded chat_template from JSON in {self.chat_template} "
+                        f"({len(template_json['chat_template'])} characters)"
+                    )
+                    return template_json["chat_template"]
+                else:
+                    # JSON but no chat_template key, use entire content
+                    logger.info(
+                        f"Successfully loaded custom prompt template from {self.chat_template} "
+                        f"({len(template_content)} characters, JSON without chat_template key)"
+                    )
+                    return template_content
+            except json.JSONDecodeError:
+                # Not valid JSON, use entire content as template
+                logger.info(
+                    f"Successfully loaded custom prompt template from {self.chat_template} "
+                    f"({len(template_content)} characters)"
+                )
+                return template_content
+
+        except (OSError, UnicodeDecodeError) as e:
+            raise ValueError(
+                f"Failed to read prompt template file {self.chat_template}: {str(e)}. "
+                f"Please ensure the file is readable and contains valid UTF-8 text."
+            ) from e
+
+    def _resolve_chat_template(self) -> None:
+        """
+        Resolve chat_template if it's a Path object by reading the file content.
+
+        This method handles the case where chat_template is a Path object,
+        validates that the file exists, reads its content, and stores the content
+        as a string in the chat_template field.
+
+        Raises:
+            FileNotFoundError: If the specified template file does not exist
+            ValueError: If there's an error reading the template file
+        """
+        if self.chat_template is None:
+            return
+
+        # Expand user home directory if present (e.g., ~/templates/custom.jinja)
+        self.chat_template = self.chat_template.expanduser()
+
+        # Convert relative paths to absolute paths
+        if not self.chat_template.is_absolute():
+            self.chat_template = Path.cwd() / self.chat_template
+
+        # Verify the file exists
+        if not self.chat_template.exists():
+            raise ValueError(
+                f"--chat-template path ({self.chat_template}) does not exist."
+            )
+
+        if not self.chat_template.is_file():
+            raise ValueError(
+                f"Prompt template path is not a file: {self.chat_template}. "
+                f"Please provide a path to a valid template file."
+            )
+
     def _import_custom_architectures(self) -> None:
         """
         Import custom model modules to add them to the registry.
@@ -387,6 +475,9 @@ class PipelineConfig(MAXConfig):
         """
         # Before anything else, import custom model modules to add them to the registry.
         self._import_custom_architectures()
+
+        # Resolve chat_template if it's a Path
+        self._resolve_chat_template()
 
         self.model_config.resolve()
         # Validate if a provided max_length is non-negative.
@@ -605,16 +696,6 @@ class PipelineConfig(MAXConfig):
         pipeline_class = get_pipeline_for_task(task, self)
         devices = load_devices(self.model_config.device_specs)
 
-        # Prepare logging information
-        if len(self.model_config.weight_path) == 1:
-            # Single weight path - keep it inline
-            weight_path = f" {self.model_config.weight_path[0]} "
-        else:
-            # Multiple weight paths - format each on a new line with proper indentation
-            weight_path = ",\n                                ".join(
-                f"{path}" for path in self.model_config.weight_path
-            )
-
         weights_repo_str = (
             f"\n            weights_repo_id:        {self.model_config._weights_repo_id}"
             if self.model_config._weights_repo_id
@@ -679,14 +760,19 @@ class PipelineConfig(MAXConfig):
             f"    huggingface_revision:   {self.model_config.huggingface_model_revision}"
         )
         logger.info(f"    quantization_encoding:  {quantization_encoding_str}")
+
         if len(self.model_config.weight_path) == 1:
             # Single weight path - format inline
-            logger.info(f"    weight_path:            [{weight_path}]")
+            logger.info(
+                f"    weight_path:             {self.model_config.weight_path[0]}"
+            )
         else:
             # Multiple weight paths - format on multiple lines
             logger.info("    weight_path:            [")
-            logger.info(f"                                {weight_path}")
-            logger.info("                                ]")
+            for path in self.model_config.weight_path:
+                logger.info(f"                              {path}")
+            logger.info("                            ]")
+
         logger.info("")
         logger.info("Pipeline Runtime Configuration:")
         logger.info("-" * 40)
@@ -740,16 +826,6 @@ class PipelineConfig(MAXConfig):
         # Get pipeline task
         task = PIPELINE_REGISTRY.retrieve_pipeline_task(self)
 
-        # Format weight_path the same way as log_pipeline_info
-        if len(self.model_config.weight_path) == 1:
-            # Single weight path - keep it inline
-            weight_path = f"{self.model_config.weight_path[0]}"
-        else:
-            # Multiple weight paths - format as comma-separated list
-            weight_path = ", ".join(
-                f"{path}" for path in self.model_config.weight_path
-            )
-
         # Get reserved memory info from KVCache config
         kv_config = self.model_config._kv_cache_config
         memory_str = "Not calculated"
@@ -763,9 +839,8 @@ class PipelineConfig(MAXConfig):
             "Pipeline Configuration (use --pretty-print-config to print full config)"
         )
         logger.info("=" * 70)
-        logger.info(f"    model_name:         {arch.name}")
+        logger.info(f"    model:              {self.model_config.model_path}")
         logger.info(f"    task:               {task}")
-        logger.info(f"    weight_path:        {weight_path}")
         logger.info(f"    max_batch_size:     {self.max_batch_size}")
         logger.info(f"    max_seq_len:        {self.max_length}")
         logger.info(f"    cache_memory:       {memory_str}")

@@ -22,6 +22,7 @@ import queue
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, Sequence
+from dataclasses import dataclass, field
 from datetime import datetime
 from json.decoder import JSONDecodeError
 from pathlib import Path
@@ -52,15 +53,14 @@ from max.interfaces import (
 )
 from max.profiler import Tracer, traced
 from max.serve.config import Settings
+from max.serve.parser import LlamaToolParser, parse_json_from_text
 from max.serve.pipelines.llm import (
     AudioGeneratorPipeline,
     TokenGeneratorOutput,
     TokenGeneratorPipeline,
 )
-from max.serve.router.json_utils import parse_json_from_text
 from max.serve.schemas.openai import (
     ChatCompletionMessageToolCall,
-    ChatCompletionMessageToolCalls,
     ChatCompletionResponseMessage,
     ChatCompletionStreamOptions,
     ChatCompletionStreamResponseDelta,
@@ -133,7 +133,7 @@ def record_request_end(
 
 
 class OpenAIResponseGenerator(ABC, Generic[_T]):
-    def __init__(self, pipeline: TokenGeneratorPipeline[InputContext]) -> None:
+    def __init__(self, pipeline: TokenGeneratorPipeline) -> None:
         self.logger = logging.getLogger(
             "max.serve.router.OpenAIResponseGenerator"
         )
@@ -152,14 +152,10 @@ class OpenAIResponseGenerator(ABC, Generic[_T]):
 
 async def get_pipeline(
     request: Request, model_name: str
-) -> (
-    TokenGeneratorPipeline[InputContext]
-    | AudioGeneratorPipeline[AudioGeneratorContext]
-):
+) -> TokenGeneratorPipeline | AudioGeneratorPipeline[AudioGeneratorContext]:
     app_state: State = request.app.state
     pipeline: (
-        TokenGeneratorPipeline[InputContext]
-        | AudioGeneratorPipeline[AudioGeneratorContext]
+        TokenGeneratorPipeline | AudioGeneratorPipeline[AudioGeneratorContext]
     ) = app_state.pipeline
 
     models = [pipeline.model_name]
@@ -181,16 +177,19 @@ async def get_pipeline(
     return pipeline
 
 
+@dataclass
 class OpenAIChatResponseGenerator(
     OpenAIResponseGenerator[CreateChatCompletionResponse]
 ):
     def __init__(
         self,
-        pipeline: TokenGeneratorPipeline[InputContext],
+        pipeline: TokenGeneratorPipeline,
         stream_options: ChatCompletionStreamOptions | None = None,
+        parser: LlamaToolParser = field(default_factory=LlamaToolParser),
     ) -> None:
         super().__init__(pipeline)
         self.stream_options = stream_options
+        self.parser = parser
 
     async def stream(self, request: TextGenerationRequest):
         self.logger.debug("Streaming: Start: %s", request)
@@ -321,38 +320,20 @@ class OpenAIChatResponseGenerator(
                 response_message = response_message[:idx]
 
             response_choices: list[Choice1] = []
-            if tool_use:
-                # Try to parse and handle tool calls if tool_use is enabled
-                tool_calls_resp = self._parse_resp_to_json(response_message)
-
-                if tool_calls_resp:
-                    tool_calls: list[ChatCompletionMessageToolCall] = []
-                    for tool_data in tool_calls_resp:
-                        self._handle_tool_calls_response(tool_data, tool_calls)
-
-                    response_choices.append(
-                        Choice1(
-                            index=0,
-                            message=ChatCompletionResponseMessage(
-                                content="",
-                                role="assistant",
-                                tool_calls=ChatCompletionMessageToolCalls(
-                                    root=tool_calls
-                                ),
-                                function_call=None,
-                                refusal=None,
-                            ),
-                            finish_reason="tool_calls",
-                            logprobs=Logprobs2(content=[], refusal=[]),
-                        )
+            if tool_use and request.response_format is None:
+                try:
+                    response_choices = self.parser(response_message)
+                except Exception as e:
+                    # If parser fails, handle as traditional text
+                    logging.warning(
+                        f"Parsing for tool use failed, handling as general text response. Original error: {e}"
                     )
-                else:
-                    # Handle as regular text response if JSON cannot be parsed
                     self._handle_text_response(
                         response_message, response_choices
                     )
+
             else:
-                # Handle as regular text response if tool_use is disabled
+                # Handle as regular text response if JSON cannot be parsed
                 self._handle_text_response(response_message, response_choices)
 
             usage = None
@@ -433,7 +414,7 @@ class OpenAIChatResponseGenerator(
 
 
 class OpenAIEmbeddingsResponseGenerator:
-    def __init__(self, pipeline: TokenGeneratorPipeline[InputContext]) -> None:
+    def __init__(self, pipeline: TokenGeneratorPipeline) -> None:
         self.pipeline = pipeline
 
     async def encode(
@@ -687,8 +668,7 @@ async def openai_create_chat_completion(
             request_json
         )
         pipeline: (
-            TokenGeneratorPipeline[InputContext]
-            | AudioGeneratorPipeline[InputContext]
+            TokenGeneratorPipeline | AudioGeneratorPipeline[InputContext]
         ) = await get_pipeline(request, completion_request.model)
         assert isinstance(pipeline, TokenGeneratorPipeline)
 
@@ -861,8 +841,7 @@ async def openai_create_embeddings(
             request_json = await request.json()
         embeddings_request = CreateEmbeddingRequest.model_validate(request_json)
         pipeline: (
-            TokenGeneratorPipeline[InputContext]
-            | AudioGeneratorPipeline[InputContext]
+            TokenGeneratorPipeline | AudioGeneratorPipeline[InputContext]
         ) = await get_pipeline(request, embeddings_request.model)
         assert isinstance(pipeline, TokenGeneratorPipeline)
 
@@ -1157,8 +1136,7 @@ async def openai_create_completion(
             ) / 1e6
 
         pipeline: (
-            TokenGeneratorPipeline[InputContext]
-            | AudioGeneratorPipeline[InputContext]
+            TokenGeneratorPipeline | AudioGeneratorPipeline[InputContext]
         ) = await get_pipeline(request, completion_request.model)
         assert isinstance(pipeline, TokenGeneratorPipeline)
 
@@ -1250,7 +1228,7 @@ async def health() -> Response:
 
 @router.get("/models", response_model=None)
 async def openai_get_models(request: Request) -> ListModelsResponse:
-    pipeline: TokenGeneratorPipeline[InputContext] = request.app.state.pipeline
+    pipeline: TokenGeneratorPipeline = request.app.state.pipeline
     model_list = [
         Model(id=pipeline.model_name, object="model", created=None, owned_by="")
     ]
@@ -1269,7 +1247,7 @@ async def openai_get_models(request: Request) -> ListModelsResponse:
 
 @router.get("/models/{model_id}", response_model=None)
 async def openai_get_model(model_id: str, request: Request) -> Model:
-    pipeline: TokenGeneratorPipeline[InputContext] = request.app.state.pipeline
+    pipeline: TokenGeneratorPipeline = request.app.state.pipeline
     pipeline_model = Model(
         id=pipeline.model_name, object="model", created=None, owned_by=""
     )
@@ -1300,8 +1278,7 @@ async def create_streaming_audio_speech(
             request_json
         )
         pipeline: (
-            TokenGeneratorPipeline[InputContext]
-            | AudioGeneratorPipeline[InputContext]
+            TokenGeneratorPipeline | AudioGeneratorPipeline[InputContext]
         ) = await get_pipeline(request, audio_generation_request.model)
         assert isinstance(pipeline, AudioGeneratorPipeline)
         sampling_params = SamplingParams(

@@ -156,6 +156,16 @@ class TextContext(msgspec.Struct, tag=True, kw_only=True, omit_defaults=True):
                 f"min_tokens ({self.min_tokens}) + prompt_len ({self._prompt_len}) must be less than or equal to max_length ({self.max_length})"
             )
 
+        if self.target_endpoint is not None:
+            if not self.target_endpoint.startswith(("tcp://", "ipc://")):
+                raise ValueError(
+                    f"target_endpoint must be prefixed with 'tcp://' or 'ipc://': {self.target_endpoint}"
+                )
+            if ":" not in self.target_endpoint.split("://")[-1]:
+                raise ValueError(
+                    f"target_endpoint must contain a port: {self.target_endpoint}"
+                )
+
         # Resize Data Up
         # Ensure the tokens array is at least self._size
         if self._end_idx < self._size:
@@ -342,6 +352,18 @@ class TextContext(msgspec.Struct, tag=True, kw_only=True, omit_defaults=True):
             np.ndarray: Array of generated tokens from prompt_len to end_idx.
         """
         return self.tokens[self._prompt_len : self._end_idx]
+
+    @property
+    def last_generated_token(self) -> int:
+        """Returns the most recently generated token. If no tokens have been generated, raises an error.
+        Returns:
+            int: The most recently generated token.
+        """
+        if self._end_idx == self._prompt_len:
+            raise ValueError("No tokens have been generated")
+        # The `int(...)` is needed or else the returned value is a numpy.int64
+        # which is not serializable by msgspec!
+        return int(self.tokens[self._end_idx - 1])
 
     def _upsize(self) -> None:
         """Increases the size of the token array if needed.

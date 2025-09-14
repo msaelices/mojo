@@ -152,11 +152,10 @@ language across multiple phases.
   qualified references (prepended with `Self.`), making it consistent with how
   accesses to member aliases and methods in a struct require `self.`.
 
-- The Mojo compiler now warns about implicitly materialization of a
+- The Mojo compiler now raises error on implicitly materialization of a
   non-`ImplicitlyCopyable` object, please either mark the type to be
   `ImplicitlyCopyable` or using `materialize[value: T]()` to explicitly
-  materialize the parameter into a dynamic value. We are planning to upgrade the
-  warning to error in the future.
+  materialize the parameter into a dynamic value.
 
 ### Standard library changes
 
@@ -472,6 +471,10 @@ added for AMD Radeon 860M, 880M, and 8060S GPUs.
   any `Span[Scalar[D]]` e.g. `Span[Byte]`. PR
   [#3792](https://github.com/modularml/mojo/pull/3792) by [@martinvuyk](https://github.com/martinvuyk).
 
+- Removed `alignment` and `static_alignment_cast` from `UnsafePointer`.
+
+- Added `alignment` parameter to `UnsafePointer.alloc`.
+
 ### Tooling changes
 
 - `mojo test` now ignores folders with a leading `.` in the name. This will
@@ -523,6 +526,10 @@ as the version for these packages.
   docs.
 - Fixed <https://github.com/modular/modular/issues/5239> - Contextual type not
   detected inside an inline if-else.
+- Fixed <https://github.com/modular/modular/issues/5305> - Parser Segfaults on
+  `LayoutTensor[layout]` with no `layout` in scope.
 - Error messages involving types using implicit parameters from
   auto-parameterized types now include context information to solve a class of
   incorrect "T != T" error messages common in kernel code.
+- Parameter inference failures now refer to parameters by their user-provided
+  name, rather than complaining about a mysterious "parameter #4".
