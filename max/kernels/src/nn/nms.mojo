@@ -85,6 +85,7 @@ struct BoundingBox[dtype: DType](ImplicitlyCopyable, Movable):
         var nw = min(self.nw, other.nw)
         var se = max(self.se, other.se)
 
+        # Check if boxes don't overlap (invalid intersection)
         if nw[1] < se[1] or nw[0] < se[0]:
             return 0
 
@@ -274,18 +275,18 @@ fn non_max_suppression[
 
     for b in range(batch_size):
         for c in range(num_classes):
-            # entries of per_class_scores_ptr are set to neginf when they no longer
+            # Entries of per_class_scores_ptr are set to neginf when they no longer
             # correspond to an eligible box
             # this happens when:
-            #   1. score does not meet score threshold
-            #   2. iou with an existing prediction is above the IOU threshold
+            #   1. Score does not meet score threshold (filtered out initially)
+            #   2. IoU with an already-selected boc is above IOU threshold (suppressed)
             var offset = scores.runtime_layout(
                 RuntimeTuple[scores.layout.shape](b, c, 0)
             )
             var per_class_scores_ptr = scores.ptr.offset(offset)
 
-            # filter so that we only consider scores above the threshold
-            # reduces the number of box_idxs to sort
+            # Filter boxes by score threshold
+            # This reduces the number of boxes to sort and process
             var num_boxes_remaining = 0
             for i in range(num_boxes):
                 var score = per_class_scores_ptr.load(i)
@@ -293,33 +294,40 @@ fn non_max_suppression[
                     per_class_scores[i] = score
                     num_boxes_remaining += 1
                 else:
-                    per_class_scores[i] = Scalar[dtype].MIN
+                    per_class_scores[i] = Scalar[dtype].MIN  # ~ -inf
 
+            # Initialize box indices [0, 1, 2, ..., num_boxes-1]
             iota(box_idxs)
 
             @parameter
             @always_inline
             fn _greater_than(lhs: Int64, rhs: Int64) -> Bool:
+                """Compare boxes by their scores in descending order."""
                 return per_class_scores[Int(lhs)] > per_class_scores[Int(rhs)]
 
-            # sort box_idxs based on corresponding scores
+            # Sort box indices by descending score
             sort[_greater_than](box_idxs)
 
+            # Iteratively select boxes and suppress overlapping ones
             var pred_idx = 0
             while (
                 pred_idx < max_output_boxes_per_class
                 and num_boxes_remaining > 0
             ):
+                # Select the highest-scoring remaining box
                 var pred = _get_bounding_box(b, Int(box_idxs[pred_idx]), boxes)
                 num_boxes_remaining -= 1
-                # each output prediction contains 3 values: [batch_index, class_index, box_index]
+
+                # Each output prediction contains 3 values: [batch_index, class_index, box_index]
                 func(b, c, box_idxs[pred_idx])
 
-                # at the beginning of this loop box_idxs are sorted such that scores[box_idxs] looks like this:
+                # At the beginning of this loop box_idxs are sorted such that scores[box_idxs] looks like this:
                 # [1st best score, 2nd best score, ..., num_boxes_remaining'th best score, -inf, ..., -inf]
                 var num_boxes_curr_pred = num_boxes_remaining
-                # iterate over remaining boxes and set the scores of any whose
-                # iou is above the threshold to neginf
+
+                # Suppress boxes with high IoU overlap
+                # Iterate over remaining candidate boxes and mark those with IoU > threshold
+                # as suppressed by setting their scores to MIN
                 for i in range(
                     pred_idx + 1, pred_idx + 1 + num_boxes_curr_pred
                 ):
@@ -328,12 +336,14 @@ fn non_max_suppression[
                     if pred.iou(next_box) > iou_threshold.cast[dtype]():
                         per_class_scores[Int(box_idxs[i])] = Scalar[dtype].MIN
                         num_boxes_remaining -= 1
+
                 pred_idx += 1
-                # don't need to sort all of box_idxs because:
-                #   1. the start of the array contains already outputted predictions whose order cannot change
-                #   2. the end of the array contains neginf values
-                # note we need to use num_boxes_curr_pred instead of num_boxes_remaining
-                # because num_boxes_remaining has been adjusted for the high IOU boxes above
+
+                # We don't need to sort the entire array because:
+                #   1. The start contains already-selected boxes (order doesn't matter)
+                #   2. The end contains suppressed boxes with score=-inf (order doesn't matter)
+                # Note: Use num_boxes_curr_pred (not num_boxes_remaining) because it
+                # represents the count before we marked boxes as suppressed above
                 sort[_greater_than](
                     Span[box_idxs.T, __origin_of(box_idxs)](
                         ptr=box_idxs.unsafe_ptr() + pred_idx,
