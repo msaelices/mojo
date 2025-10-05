@@ -107,6 +107,19 @@ fn moe_create_indices_kernel[
         stage: Int,
         i: Int,
     ) -> None:
+        """Perform one step of bitonic sort.
+
+        Bitonic sort works by comparing elements at distance 'step' apart and
+        swapping them based on the direction of the current stage.
+
+        Args:
+            indices: Token indices to be sorted alongside input values.
+            input: Expert IDs to sort.
+            n: Total number of elements.
+            step: Distance between elements to compare.
+            stage: Current stage size (power of 2), determines sort direction.
+            i: Index of the current element.
+        """
         if i >= n:
             return
 
