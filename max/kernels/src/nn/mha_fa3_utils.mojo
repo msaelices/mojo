@@ -68,6 +68,12 @@ from utils.index import Index, IndexList
 
 @register_passable("trivial")
 trait OptionalPointer(Copyable):
+    """Trait for optional pointer types that may be null or non-null.
+
+    Provides a unified interface for handling pointers that may or may not
+    point to valid memory, used for optional kernel parameters.
+    """
+
     alias dtype: DType
     alias is_null: Bool
 
@@ -78,6 +84,12 @@ trait OptionalPointer(Copyable):
 
 @register_passable("trivial")
 struct NonNullPointer[dtype_: DType](OptionalPointer):
+    """Non-null pointer wrapper providing compile-time null-safety guarantees.
+
+    Wraps a pointer that is guaranteed to be non-null at compile time,
+    avoiding runtime null checks in performance-critical code.
+    """
+
     alias dtype: DType = dtype_
     alias is_null: Bool = False
 
@@ -101,6 +113,12 @@ struct NonNullPointer[dtype_: DType](OptionalPointer):
 
 @register_passable("trivial")
 struct NullPointer[dtype_: DType](OptionalPointer):
+    """Null pointer implementation for optional kernel parameters.
+
+    Represents the absence of a pointer, used when optional kernel
+    parameters are not provided.
+    """
+
     alias dtype: DType = dtype_
     alias is_null: Bool = True
 
@@ -124,6 +142,13 @@ struct Pack[
     MaxSeqLenType: OptionallyStaticInt,
     PartitionType: MHAPartitionScheme,
 ]:
+    """Parameter pack for Flash Attention 3 kernel specializations.
+
+    Bundles all kernel parameters into a single struct for efficient
+    passing and specialization, including masks, score modifiers,
+    schedulers, and optional parameters.
+    """
+
     var mask: MaskType
     var score_mod: ScoreModType
     var scheduler: SchedulerType
