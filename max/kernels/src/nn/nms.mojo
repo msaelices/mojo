@@ -20,6 +20,19 @@ from utils import IndexList
 
 @fieldwise_init
 struct BoundingBox[dtype: DType](ImplicitlyCopyable, Movable):
+    """Represents a 2D bounding box for object detection.
+
+    The box is stored using two corner points: northwest (nw) and southeast (se).
+    This representation allows efficient computation of intersection and union areas.
+
+    Parameters:
+        dtype: The data type for coordinate values.
+
+    Fields:
+        nw: Northwest corner coordinates (max y, max x).
+        se: Southeast corner coordinates (min y, min x).
+    """
+
     var nw: SIMD[dtype, 2]
     var se: SIMD[dtype, 2]
 
@@ -30,10 +43,30 @@ struct BoundingBox[dtype: DType](ImplicitlyCopyable, Movable):
         y2: Scalar[dtype],
         x2: Scalar[dtype],
     ):
+        """Initialize a bounding box from two diagonal corner coordinates.
+
+        Args:
+            y1: Y-coordinate of first corner.
+            x1: X-coordinate of first corner.
+            y2: Y-coordinate of second corner.
+            x2: X-coordinate of second corner.
+
+        Note:
+            The corners are automatically ordered to ensure nw contains the
+            maximum coordinates and se contains the minimum coordinates.
+        """
         self.nw = SIMD[dtype, 2](max(y1, y2), max(x1, x2))
         self.se = SIMD[dtype, 2](min(y1, y2), min(x1, x2))
 
     fn iou(self, other: BoundingBox[dtype]) -> Scalar[dtype]:
+        """Calculate Intersection over Union (IoU) with another bounding box.
+
+        Args:
+            other: The other bounding box to compare with.
+
+        Returns:
+            The IoU value, ranging from 0 (no overlap) to 1 (perfect overlap).
+        """
         var intersection_area = self.intersection_area(other)
 
         var union_area = self.area() + other.area() - intersection_area
@@ -41,6 +74,14 @@ struct BoundingBox[dtype: DType](ImplicitlyCopyable, Movable):
         return iou_val
 
     fn intersection_area(self, other: BoundingBox[dtype]) -> Scalar[dtype]:
+        """Calculate the area of intersection with another bounding box.
+
+        Args:
+            other: The other bounding box to intersect with.
+
+        Returns:
+            The intersection area, or 0 if boxes don't overlap.
+        """
         var nw = min(self.nw, other.nw)
         var se = max(self.se, other.se)
 
@@ -50,6 +91,11 @@ struct BoundingBox[dtype: DType](ImplicitlyCopyable, Movable):
         return Self(nw, se).area()
 
     fn area(self) -> Scalar[dtype]:
+        """Calculate the area of this bounding box.
+
+        Returns:
+            The area of the box.
+        """
         return (self.se[0] - self.nw[0]) * (self.se[1] - self.nw[1])
 
 
@@ -61,6 +107,17 @@ fn _get_bounding_box[
     box_idx: Int,
     boxes: LayoutTensor[dtype, **_],
 ) -> BoundingBox[dtype]:
+    """Extract a bounding box from a tensor of boxes.
+
+    Args:
+        batch_size: The batch index to extract from.
+        box_idx: The box index within the batch.
+        boxes: A rank-3 tensor containing boxes with shape (batch, num_boxes, 4).
+               The last dimension contains [y1, x1, y2, x2] coordinates.
+
+    Returns:
+        A BoundingBox instance constructed from the extracted coordinates.
+    """
     constrained[boxes.rank == 3, "boxes must be of rank 3"]()
     var y1 = boxes[batch_size, box_idx, 0][0]
     var x1 = boxes[batch_size, box_idx, 1][0]
@@ -79,7 +136,27 @@ fn non_max_suppression[
     iou_threshold: Float32,
     score_threshold: Float32,
 ):
-    """Buffer semantic overload."""
+    """Perform Non-Maximum Suppression (NMS) on bounding boxes.
+
+    This is a buffer semantic overload that writes results directly to an output tensor.
+    NMS iteratively selects boxes with highest scores while suppressing nearby boxes
+    with high overlap (IoU).
+
+    Parameters:
+        dtype: The data type for box coordinates and scores.
+
+    Args:
+        boxes: Rank-3 tensor of bounding boxes with shape (batch, num_boxes, 4).
+               Each box is [y1, x1, y2, x2].
+        scores: Rank-3 tensor of scores with shape (batch, num_classes, num_boxes).
+        output: Rank-2 output tensor to store selected boxes as (N, 3) where each
+                row is [batch_idx, class_idx, box_idx].
+        max_output_boxes_per_class: Maximum number of boxes to select per class.
+        iou_threshold: IoU threshold for suppression. Boxes with IoU > threshold
+                       are suppressed.
+        score_threshold: Minimum score threshold. Boxes with score < threshold
+                        are filtered out.
+    """
     constrained[boxes.rank == 3, "boxes must be of rank 3"]()
     constrained[scores.rank == 3, "scores must be of rank 3"]()
     constrained[output.rank == 2, "output must be of rank 2"]()
@@ -89,6 +166,7 @@ fn non_max_suppression[
     @parameter
     @always_inline
     fn store_to_outputs(batch_idx: Int64, class_idx: Int64, box_idx: Int64):
+        """Store selected box indices to output tensor."""
         output[pred_count, 0] = batch_idx
         output[pred_count, 1] = class_idx
         output[pred_count, 2] = box_idx
@@ -112,8 +190,22 @@ fn non_max_suppression_shape_func[
     iou_threshold: Float32,
     score_threshold: Float32,
 ) -> IndexList[2]:
-    """Overload to compute the output shape. Can be removed once the graph compiler
-    supports value semantic kernels that allocate their own output."""
+    """Compute the output shape for NMS without allocating the output buffer.
+
+    This function performs a dry-run of NMS to determine how many boxes will be
+    selected, allowing proper output buffer allocation. Can be removed once the
+    graph compiler supports value semantic kernels that allocate their own output.
+
+    Args:
+        boxes: Rank-3 tensor of bounding boxes with shape (batch, num_boxes, 4).
+        scores: Rank-3 tensor of scores with shape (batch, num_classes, num_boxes).
+        max_output_boxes_per_class: Maximum number of boxes to select per class.
+        iou_threshold: IoU threshold for suppression.
+        score_threshold: Minimum score threshold.
+
+    Returns:
+        A 2-element IndexList specifying the output shape (num_selected_boxes, 3).
+    """
     constrained[boxes.rank == 3, "boxes must be of rank 3"]()
     constrained[scores.rank == 3, "scores must be of rank 3"]()
 
@@ -122,6 +214,7 @@ fn non_max_suppression_shape_func[
     @parameter
     @always_inline
     fn incr_pred_count(batch_idx: Int64, class_idx: Int64, box_idx: Int64):
+        """Count selected boxes without storing them."""
         box_pred_count += 1
 
     non_max_suppression[dtype, incr_pred_count](
