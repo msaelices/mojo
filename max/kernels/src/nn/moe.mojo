@@ -112,6 +112,10 @@ fn moe_create_indices_kernel[
         Bitonic sort works by comparing elements at distance 'step' apart and
         swapping them based on the direction of the current stage.
 
+        Parameters:
+            indices_layout: Layout of the indices tensor.
+            input_layout: Layout of the input tensor.
+
         Args:
             indices: Token indices to be sorted alongside input values.
             input: Expert IDs to sort.
