@@ -152,6 +152,12 @@ struct KBuffer[
     BK: Int,
     num_threads: Int,
 ]:
+    """Buffer manager for K (key) matrix in AMD GPU MHA kernels.
+
+    Manages shared memory layout and data movement for key tensors during
+    matrix multiplication operations in attention computation.
+    """
+
     alias MMA_N = mma_shape[1]
     alias MMA_K = mma_shape[2]
     alias num_mmas = ceildiv(WN, Self.MMA_N)
@@ -364,6 +370,13 @@ struct VBuffer[
     depth: Int,
     num_threads: Int,
 ]:
+    """Buffer manager for V (value) matrix in AMD GPU MHA kernels.
+
+    Manages shared memory layout and data movement for value tensors during
+    matrix multiplication operations in attention computation, with padding
+    to avoid bank conflicts.
+    """
+
     alias simd_width = simd_width_of[dtype]()
     alias num_repeats = BK // Self.simd_width
 
@@ -679,6 +692,12 @@ struct QRegisterBuffer[
     depth: Int,
     thread_layout: Layout,
 ]:
+    """Buffer manager for Q (query) matrix in AMD GPU MHA kernels.
+
+    Manages register-level storage and data loading for query tensors
+    during attention computation.
+    """
+
     alias simd_width = simd_width_of[dtype]()
     alias MMA_M = mma_shape[0]
     alias MMA_K = mma_shape[2]
@@ -782,6 +801,12 @@ struct PRegisterBuffer[
     num_n_mmas: Int,
     output_frag_size: Int,
 ]:
+    """Buffer manager for attention probability matrix P in AMD GPU MHA kernels.
+
+    Manages register storage for attention weights and provides interleaving
+    functionality for efficient matrix multiplication.
+    """
+
     alias RegisterTileType = LayoutTensor[
         accum_type,
         Layout.row_major(num_m_mmas * num_n_mmas, output_frag_size),
@@ -989,6 +1014,12 @@ struct SharedMemoryManager[
     num_rowwise_warps: Int,
     token_gen: Bool,
 ](Defaultable):
+    """Manager for shared memory allocation in AMD GPU MHA kernels.
+
+    Allocates and manages shared memory buffers for attention matrices
+    (Q, K, V, P) and provides iterators for efficient data access.
+    """
+
     var p_smem: UnsafePointer[
         Scalar[dtype], address_space = AddressSpace.SHARED
     ]
@@ -1107,6 +1138,12 @@ struct GlobalMemoryManager[
     group: UInt32,
     token_gen: Bool,
 ]:
+    """Manager for global memory access patterns in AMD GPU MHA kernels.
+
+    Handles tensor layout transformations and provides utilities for
+    accessing Q, K, V tensors from global memory with proper head grouping.
+    """
+
     alias kv_num_heads = num_heads // group
     # BHSD layout for q and kv cache
     alias q_gmem_layout = Layout(
