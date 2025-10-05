@@ -126,7 +126,9 @@ trait MHAMask(Copyable, DevicePassable):
     Defines the interface for various attention masking strategies including
     causal, sliding window, chunked, and materialized masks. Implementations
     provide methods for applying masks to attention scores and determining
-    tile masking status for computational optimization.
+    tile masking status for computational optimization. Masks can skip entire
+    tiles (FULL_MASK), partially mask tiles (PARTIAL_MASK), or indicate no
+    masking is needed (NO_MASK) for performance optimization.
     """
 
     alias apply_log2e_after_mask: Bool
@@ -338,15 +340,13 @@ struct NullMask(ImplicitlyCopyable, MHAMask, Movable):
 struct ChunkedMask[local_window_size: Int](
     ImplicitlyCopyable, MHAMask, Movable
 ):
-    """Mask implementing Chunked attention.
+    """Mask implementing Chunked attention for block-sparse patterns.
 
-    This groups the mask into chunks of size `local_window_size`.
-    Considering the following case:
-    - Q_len = 7
-    - K_len = 10
-    - local_window_size = 4
+    Groups the attention mask into non-overlapping chunks of size
+    `local_window_size`. Each query token attends only to keys within its
+    corresponding chunk, enabling efficient sparse attention patterns.
 
-    The mask will be applied as follows:
+    Example with Q_len=7, K_len=10, local_window_size=4:
         K > 0 1 2 3 4 5 6 7 8 9
         Q v x--------------------x
         0 | 1 1 1 1 0 0 0 0 0 0
@@ -466,14 +466,14 @@ struct ChunkedMask[local_window_size: Int](
 struct SlidingWindowCausalMask[window_size: Int](
     ImplicitlyCopyable, MHAMask, Movable
 ):
-    """Mask implementing Sliding Window attention.
+    """Mask implementing Sliding Window Causal attention.
 
-    Considering the following case:
-    - Q_len = 7
-    - K_len = 7
-    - window_size = 3
+    Combines causal masking (tokens attend only to previous tokens) with a
+    sliding window constraint (tokens attend only to the most recent
+    `window_size` tokens). This reduces memory and compute for long sequences
+    while maintaining local context.
 
-    The mask will be applied as follows:
+    Example with Q_len=7, K_len=7, window_size=3:
         K > 0 1 2 3 4 5 6
         Q v x------------x
         0 | 1 0 0 0 0 0 0

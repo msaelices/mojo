@@ -71,7 +71,8 @@ trait OptionalPointer(Copyable):
     """Trait for optional pointer types that may be null or non-null.
 
     Provides a unified interface for handling pointers that may or may not
-    point to valid memory, used for optional kernel parameters.
+    point to valid memory, used for optional kernel parameters. Implementations
+    provide compile-time null-safety guarantees through the `is_null` alias.
     """
 
     alias dtype: DType
@@ -146,7 +147,9 @@ struct Pack[
 
     Bundles all kernel parameters into a single struct for efficient
     passing and specialization, including masks, score modifiers,
-    schedulers, and optional parameters.
+    schedulers, and optional parameters. This design enables compile-time
+    specialization of kernels for different configurations while minimizing
+    runtime overhead.
     """
 
     var mask: MaskType
@@ -190,10 +193,13 @@ struct MHAPosition[
     group: Int,
     decoding: Bool,
 ](ImplicitlyCopyable, Movable):
-    """
-    Position of the MHA-kernel.
-    When `decoding=False`, `q_head_stride == q_num_heads`.
-    When `decoding=True`, `q_head_stride == 1`.
+    """Position information for Multi-Head Attention kernel computation.
+
+    Encapsulates the current position in the attention computation space,
+    including query/key coordinates, sequence bounds, and head indices.
+    Memory layout differs between decoding and prefill modes:
+    - When `decoding=False`: prefill mode with multiple query tokens per batch
+    - When `decoding=True`: single token generation per batch (group tokens per head)
     """
 
     var q_row: UInt32

@@ -25,7 +25,9 @@ trait ScoreModTrait(Copyable, DevicePassable):
 
     Defines the interface for various attention score modification strategies,
     such as ALiBi (Attention with Linear Biases) and other positional biases
-    that can be applied to attention scores.
+    that can be applied to attention scores before softmax. These modifications
+    are applied element-wise to the attention score matrix and can encode
+    positional information or other biases.
     """
 
     alias name_str: String
@@ -58,7 +60,9 @@ struct AlibiScoreMod[
 
     Implements ALiBi bias that decays attention scores based on the distance
     between query and key positions, providing better extrapolation for
-    longer sequences compared to traditional positional embeddings.
+    longer sequences compared to traditional positional embeddings. The bias
+    is computed as: score + scale * (q_idx - k_idx), where scale varies per
+    head using geometric progression for better representation learning.
     """
 
     alias name_str: String = "alibi"

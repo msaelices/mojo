@@ -155,7 +155,8 @@ struct KBuffer[
     """Buffer manager for K (key) matrix in AMD GPU MHA kernels.
 
     Manages shared memory layout and data movement for key tensors during
-    matrix multiplication operations in attention computation.
+    matrix multiplication operations in attention computation. Uses a tiled
+    blocked layout with swizzling for efficient memory access patterns.
     """
 
     alias MMA_N = mma_shape[1]
@@ -373,8 +374,9 @@ struct VBuffer[
     """Buffer manager for V (value) matrix in AMD GPU MHA kernels.
 
     Manages shared memory layout and data movement for value tensors during
-    matrix multiplication operations in attention computation, with padding
-    to avoid bank conflicts.
+    matrix multiplication operations in attention computation. Includes
+    padding (depth//8) to avoid shared memory bank conflicts and uses
+    transposed access patterns for optimal performance.
     """
 
     alias simd_width = simd_width_of[dtype]()
@@ -695,7 +697,8 @@ struct QRegisterBuffer[
     """Buffer manager for Q (query) matrix in AMD GPU MHA kernels.
 
     Manages register-level storage and data loading for query tensors
-    during attention computation.
+    during attention computation. Loads query data directly from global
+    memory into registers and provides tiles for matrix multiplication.
     """
 
     alias simd_width = simd_width_of[dtype]()
@@ -803,8 +806,9 @@ struct PRegisterBuffer[
 ]:
     """Buffer manager for attention probability matrix P in AMD GPU MHA kernels.
 
-    Manages register storage for attention weights and provides interleaving
-    functionality for efficient matrix multiplication.
+    Manages register storage for attention weights (QK^T scores) and provides
+    interleaving functionality for efficient matrix multiplication with V matrix.
+    Stores values in accumulator type for precision during softmax computation.
     """
 
     alias RegisterTileType = LayoutTensor[
@@ -1017,7 +1021,9 @@ struct SharedMemoryManager[
     """Manager for shared memory allocation in AMD GPU MHA kernels.
 
     Allocates and manages shared memory buffers for attention matrices
-    (Q, K, V, P) and provides iterators for efficient data access.
+    (Q, K, V, P) and provides iterators for efficient data access. Memory
+    layout differs between decoding (token_gen=True) and prefill modes
+    to optimize for different access patterns.
     """
 
     var p_smem: UnsafePointer[
@@ -1141,7 +1147,9 @@ struct GlobalMemoryManager[
     """Manager for global memory access patterns in AMD GPU MHA kernels.
 
     Handles tensor layout transformations and provides utilities for
-    accessing Q, K, V tensors from global memory with proper head grouping.
+    accessing Q, K, V tensors from global memory with proper head grouping
+    (GQA/MQA support). Manages different memory layouts for decoding vs
+    prefill modes and handles runtime bounds checking.
     """
 
     alias kv_num_heads = num_heads // group

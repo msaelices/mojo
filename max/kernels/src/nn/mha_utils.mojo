@@ -67,7 +67,10 @@ struct FlashAttentionAlgorithm(
     """Configuration for Flash Attention algorithm versions.
 
     Supports different versions of the Flash Attention algorithm optimized
-    for various hardware architectures and data types.
+    for various hardware architectures and data types:
+    - FA1: Original Flash Attention
+    - FA2: Improved parallelization and reduced shared memory usage
+    - FA3: TMA-based implementation for NVIDIA Hopper (SM90+) architecture
     """
 
     var _value: Int32
@@ -131,7 +134,9 @@ struct MHAConfig(ImplicitlyCopyable, Movable, Writable):
     """Configuration parameters for Multi-Head Attention (MHA) kernels.
 
     Defines tile sizes, thread configurations, and algorithm parameters
-    for optimized MHA computation on GPU architectures.
+    for optimized MHA computation on GPU architectures. Tile sizes are
+    automatically tuned based on hardware capabilities, data type, and
+    selected algorithm to maximize performance and memory efficiency.
     """
 
     var dtype: DType
@@ -739,6 +744,9 @@ trait OptionallyStaticInt(Copyable, Intable):
     """Trait for integers that may be compile-time constants or runtime values.
 
     Used to avoid generating code for unused arguments in kernel specializations.
+    When a value is known at compile time (StaticInt), no runtime argument is
+    passed, reducing kernel launch overhead. When the value is dynamic (DynamicInt),
+    it is passed as a runtime argument.
     """
 
     alias static_value: OptionalReg[Int]
@@ -804,7 +812,10 @@ trait MHAPartitionScheme(Copyable):
     """Partitioning scheme for Multi-Head Attention computation.
 
     Defines how attention computation is split across multiple partitions
-    for memory efficiency and parallelization.
+    for memory efficiency and parallelization. Partitioning enables split-K
+    parallelization where the K/V sequence dimension is divided across multiple
+    thread blocks, with results combined via reduction. This is particularly
+    useful for decoding with long context lengths.
     """
 
     alias do_partition: Bool
