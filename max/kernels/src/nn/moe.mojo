@@ -239,7 +239,12 @@ fn moe_create_indices_bucket_sort_kernel[
 ):
     """
     The main goal of this kernel is to group tokens that use the same expert together.
-    This allows for efficent batching when used by other kernels such as grouped matmul.
+    This allows for efficient batching when used by other kernels such as grouped matmul.
+
+    This is a GPU-optimized bucket sort implementation that uses:
+    - Warp-level voting to count matching tokens
+    - Shared memory for temporary storage
+    - Atomic operations for thread-safe global memory updates
 
     topk_ids: a 1D tensor of expert ids, the index of each expert_id cooresponds to a token.
     For example if topk_ids is [1, 0, 1, 3, 4, 2], then the cooresponding tokens are [0, 1, 2, 3, 4, 5]
