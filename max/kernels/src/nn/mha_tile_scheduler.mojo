@@ -27,6 +27,12 @@ from nn.mha_fa3_utils import NullPointer, OptionalPointer
 @fieldwise_init
 @register_passable("trivial")
 struct WorkInfo(ImplicitlyCopyable, Movable, Stringable, Writable):
+    """Work tile information for MHA computation scheduling.
+
+    Defines the coordinates and validity of a work tile in the attention
+    computation space, including query offset, head index, and batch sequence index.
+    """
+
     # (query_offset, head_idx, sequence idx in batch)
     var prompt_offset: UInt32
     var head_idx: UInt32
@@ -63,6 +69,12 @@ struct WorkInfo(ImplicitlyCopyable, Movable, Stringable, Writable):
 
 @register_passable("trivial")
 struct SeqInfo(ImplicitlyCopyable, Movable):
+    """Sequence information for MHA tile scheduling.
+
+    Contains sequence length, position information, and work coordinates
+    for managing attention computation across different sequences in a batch.
+    """
+
     var seq_len: UInt32
     var start_of_seq: UInt32
     var prompt_offset: UInt32
