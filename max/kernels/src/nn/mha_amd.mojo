@@ -192,6 +192,12 @@ struct KBuffer[
     # │1016 1017 1018 1019 1020 1021 1022 1023     │ 2040 2041 2042 2043 2044 2045 2046 2047    │                                 │
     # └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
     # stride between blocks = BN x simd_width = 128 x 8 = 1024
+    #
+    # Memory access pattern: Element at (row r, col c) maps to linear index:
+    #   block_id = c // simd_width
+    #   offset_in_block = (r * simd_width) + (c % simd_width)
+    #   linear_index = (block_id * BN * simd_width) + offset_in_block
+    # This layout enables coalesced 128-bit loads (8 bf16 elements) per thread
 
     alias base_layout = Layout.row_major(BN, Self.simd_width)
     alias tiler_layout = Layout.row_major(1, Self.num_repeats)
