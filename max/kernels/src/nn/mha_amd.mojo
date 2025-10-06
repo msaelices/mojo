@@ -1563,7 +1563,11 @@ fn mha_single_batch_amd[
         alias reg_layout_by_mma_unit = Layout.row_major(
             num_m_mmas * num_n_mmas, output_frag_size
         )
-        # don't know why we need this barrier but i get random failures without it
+        # Barrier ensures P (attention scores) are fully written to registers before
+        # online softmax reads them. Without this, compiler may reorder memory operations,
+        # causing softmax to read stale values from previous KV tile iterations.
+        # This synchronization is critical for numerical correctness of the online softmax
+        # running max/sum updates across KV tiles.
         barrier()
         _online_softmax_iter_for_mma_output[
             accum_type,
@@ -2122,7 +2126,11 @@ fn mha_decoding_single_batch_amd[
             num_m_mmas * num_n_mmas, output_frag_size
         )
 
-        # Not sure why we need this barrier here, but the code hangs without it
+        # Barrier prevents deadlock in online softmax warp shuffle operations.
+        # The warp_scratch tensor in shared memory requires all warps to complete
+        # their previous writes before softmax reduction begins. Without this sync,
+        # warps may attempt shuffle operations on incomplete/garbage data, causing
+        # hangs due to data dependency violations in the reduction tree.
         barrier()
 
         _online_softmax_iter_for_mma_output[
