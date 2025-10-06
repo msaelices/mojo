@@ -412,6 +412,11 @@ struct VBuffer[
     # │1144 1145 1146 1147 1148 1149 1150 1151     │ 2296 2297 2298 2299 2300 2301 2302 2303    │                                 │
     # └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
     # stride between blocks = (depth + padding) x simd_width = 144 x 8 = 1152
+    #
+    # Padding rationale: Shared memory is organized in 32 banks (4 bytes each)
+    # Without padding, depth=128 (256 bytes) creates conflicts: threads accessing
+    # row[i] and row[i+32] hit same bank. Adding depth//8 padding (16 rows = 32 bytes)
+    # breaks this stride pattern, ensuring consecutive threads access different banks.
 
     alias base_layout = Layout.row_major(
         Self.pad[depth](),
