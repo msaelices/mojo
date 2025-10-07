@@ -3955,7 +3955,7 @@ struct ResizeBicubic:
         size: InputTensor[rank=1],
         ctx: DeviceContextPtr,
     ) raises:
-        resize_bicubic[target](
+        resize_bicubic[dtype=dtype, target=target](
             output.to_layout_tensor(), input.to_layout_tensor(), ctx
         )
 

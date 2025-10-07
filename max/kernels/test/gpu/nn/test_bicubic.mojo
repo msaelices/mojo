@@ -143,7 +143,7 @@ fn test_bicubic_kernel[
         " upsampling kernel--------------------------------"
     )
     # Call the bicubic upsampling kernel.
-    resize_bicubic[target="cpu"](output_host.tensor, input_host.tensor, ctx)
+    resize_bicubic[dtype, target="cpu"](output_host.tensor, input_host.tensor, ctx)
     print(
         "--------------------------------after calling the bicubic upsampling"
         " kernel--------------------------------"
@@ -607,7 +607,7 @@ fn test_bicubic_kernel[
     var H = output_shape[2]
     var W = output_shape[3]
 
-    resize_bicubic[target="gpu"](output_dev.tensor, input_dev.tensor, ctx)
+    resize_bicubic[dtype, target="gpu"](output_dev.tensor, input_dev.tensor, ctx)
 
     ctx.enqueue_copy(output_ref_host.tensor.ptr, output_dev.buffer)
     ctx.synchronize()

@@ -276,10 +276,11 @@ fn gpu_bicubic_kernel[
 
 
 fn resize_bicubic[
-    target: StaticString, //,
+    dtype: DType, //,
+    target: StaticString,
 ](
-    output: LayoutTensor[mut=True, **_],
-    input: LayoutTensor[**_],
+    output: LayoutTensor[mut=True, dtype, **_],
+    input: LayoutTensor[dtype, **_],
     ctx: DeviceContextPtr,
 ) raises:
     """Perform bicubic interpolation.
@@ -293,7 +294,6 @@ fn resize_bicubic[
         output.rank == 4 and input.rank == 4,
         "bicubic resize only supports rank 4 tensors",
     ]()
-    constrained[output.dtype == input.dtype]()
 
     @parameter
     if is_gpu[target]():
