@@ -30,11 +30,11 @@ import sys
 import time
 import traceback
 import warnings
-from collections.abc import AsyncGenerator, Awaitable, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import aiohttp
@@ -2017,6 +2017,21 @@ def main(args: argparse.Namespace) -> None:
             args.lora_output_dir,
             args.lora_server_path,
         )
+
+    if args.max_concurrency is not None:
+        try:
+            args.max_concurrency = int(args.max_concurrency)
+        except ValueError as e:
+            raise ValueError(
+                f"Expected a single integer value for max_concurrency, got {args.max_concurrency}"
+            ) from e
+    if args.request_rate is not None:
+        try:
+            args.request_rate = float(args.request_rate)
+        except ValueError as e:
+            raise ValueError(
+                f"Expected a single float value for request_rate, got {args.request_rate}"
+            ) from e
 
     logger.info("starting benchmark run")
     benchmark_result = asyncio.run(

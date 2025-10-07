@@ -169,7 +169,6 @@ single_version_override(
 DEFAULT_PYTHON_VERSION = "3.12"
 
 PYTHON_VERSIONS = [
-    "3_9",
     "3_10",
     "3_11",
     "3_12",
@@ -185,7 +184,7 @@ python.defaults(python_version = DEFAULT_PYTHON_VERSION)
 ]
 
 # Only the lowest version is used explicitly, everything else is indirect
-use_repo(python, "python_3_9")
+use_repo(python, "python_" + PYTHON_VERSIONS[0])
 
 environments = use_extension("@rules_pycross//pycross/extensions:environments.bzl", "environments")
 environments.create_for_python_toolchains(
@@ -277,6 +276,7 @@ mojo.gpu_toolchains(
         "RTX 4090": "rtx4090",
         "NVIDIA GeForce RTX 3090": "rtx3090",
         "NVIDIA GeForce GTX 1080 Ti": "gtx1080ti",
+        "NVIDIA GeForce GTX 970": "gtx970",
         "MI300X": "mi300x",
         "MI325": "mi325",
         "MI355": "mi355",
@@ -303,6 +303,7 @@ mojo.gpu_toolchains(
         "mi325": "amdgpu:gfx942",
         "mi355": "amdgpu:gfx950",
         "rtx3090": "nvidia:86",
+        "gtx970": "nvidia:52",
         "gtx1080ti": "nvidia:61",
         "rtx4090": "nvidia:89",
         "rtx5090": "nvidia:120a",
