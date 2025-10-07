@@ -30,6 +30,10 @@ All builds use the `./bazelw` wrapper from the repository root:
 # Run tests
 ./bazelw test //...
 ./bazelw test //max/kernels/test/linalg:test_matmul
+
+# Find targets
+./bazelw query 'kind(".*", //max/...)'
+./bazelw query 'tests(//...)' 
 ```
 
 ### Pixi Environment Management
