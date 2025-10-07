@@ -13,17 +13,18 @@
 
 from math import isclose
 
-from buffer.dimlist import DimList
 from gpu.host import DeviceContext
 from internal_utils import (
-    DeviceNDBuffer,
-    HostNDBuffer,
+    DeviceLayoutTensor,
+    HostLayoutTensor,
     fill,
-    ndbuffer_to_str,
+    layout_tensor_to_str,
     zero,
 )
+from layout import Layout, RuntimeLayout
 from nn.bicubic import cpu_bicubic_kernel, gpu_bicubic_kernel, resize_bicubic
 from testing import assert_almost_equal
+from utils import Index, IndexList
 
 alias num_elements = 20
 
@@ -40,26 +41,31 @@ test assertions.
 
 
 fn test_bicubic_kernel[
-    input_dim: DimList,
-    output_dim: DimList,
     dtype: DType,
-](ctx: DeviceContext) raises:
-    var input_dim_flattened = input_dim.product().get()
-    var output_dim_flattened = output_dim.product().get()
-    var input_host = HostNDBuffer[dtype, 4, input_dim](input_dim)
-    var output_host = HostNDBuffer[dtype, 4, output_dim](output_dim)
-    var output_ref_host = HostNDBuffer[dtype, 4, output_dim](output_dim)
+](ctx: DeviceContext, input_shape: IndexList, output_shape: IndexList) raises:
+    alias layout_4d = Layout.row_major[4]()
+    var input_dim_flattened = input_shape.product()
+    var output_dim_flattened = output_shape.product()
+    var input_host = HostLayoutTensor[dtype, layout_4d](
+        RuntimeLayout[layout_4d].row_major(input_shape)
+    )
+    var output_host = HostLayoutTensor[dtype, layout_4d](
+        RuntimeLayout[layout_4d].row_major(output_shape)
+    )
+    var output_ref_host = HostLayoutTensor[dtype, layout_4d](
+        RuntimeLayout[layout_4d].row_major(output_shape)
+    )
     print("input_dim_flattened: ", input_dim_flattened)
     print("output_dim_flattened: ", output_dim_flattened)
-    print("input_dim: ", input_dim)
-    print("output_dim: ", output_dim)
+    print("input_shape: ", input_shape)
+    print("output_shape: ", output_shape)
 
     zero(input_host.tensor)
     zero(output_host.tensor)
     zero(output_ref_host.tensor)
 
-    print("input_host (zeroed): ", ndbuffer_to_str(input_host.tensor))
-    print("output_host (zeroed): ", ndbuffer_to_str(output_host.tensor))
+    print("input_host (zeroed): ", layout_tensor_to_str(input_host.tensor))
+    print("output_host (zeroed): ", layout_tensor_to_str(output_host.tensor))
 
     print(
         "--------------------------------now we want to fill the input tensor"
@@ -122,15 +128,15 @@ fn test_bicubic_kernel[
     for c in range(3):  # 3 channels
         for h in range(5):
             for w in range(5):
-                input_host.tensor[0, c, h, w] = Scalar[dtype](
-                    channel_values[c][h][w]
+                input_host.tensor.store[width=1](
+                    Index(0, c, h, w), Scalar[dtype](channel_values[c][h][w])
                 )
 
     print(
         "--------------------------------after filling the input tensor"
         " --------------------------------"
     )
-    print("input_host (filled): \n", ndbuffer_to_str(input_host.tensor))
+    print("input_host (filled): \n", layout_tensor_to_str(input_host.tensor))
 
     print(
         "--------------------------------now we want to call the bicubic"
@@ -143,7 +149,7 @@ fn test_bicubic_kernel[
         " kernel--------------------------------"
     )
     print(
-        "output_host (after operation): \n", ndbuffer_to_str(output_host.tensor)
+        "output_host (after operation): \n", layout_tensor_to_str(output_host.tensor)
     )
 
     # Define expected values for each channel
@@ -533,7 +539,9 @@ fn test_bicubic_kernel[
     for c in range(3):  # 3 channels
         for h in range(10):  # 10 rows in output
             for w in range(10):  # 10 columns in output
-                var actual = Float64(output_host.tensor[0, c, h, w])
+                var actual = Float64(
+                    output_host.tensor.load[width=1](Index(0, c, h, w))
+                )
                 var expected = Float64(expected_values[c][h][w])
 
                 # Check if values are close within tolerance using isclose from math module
@@ -585,31 +593,35 @@ fn test_bicubic_kernel[
         "--------------------------------now we want to call the gpu bicubic"
         " upsampling kernel--------------------------------"
     )
-    var input_dev = DeviceNDBuffer[dtype, 4, input_dim](input_dim, ctx=ctx)
-    var output_dev = DeviceNDBuffer[dtype, 4, output_dim](output_dim, ctx=ctx)
+    var input_dev = DeviceLayoutTensor[dtype, layout_4d](
+        RuntimeLayout[layout_4d].row_major(input_shape), ctx=ctx
+    )
+    var output_dev = DeviceLayoutTensor[dtype, layout_4d](
+        RuntimeLayout[layout_4d].row_major(output_shape), ctx=ctx
+    )
 
-    ctx.enqueue_copy(input_dev.buffer, input_host.tensor.data)
+    ctx.enqueue_copy(input_dev.buffer, input_host.tensor.ptr)
 
-    alias N = output_dim.get[0]()
-    alias C = output_dim.get[1]()
-    alias H = output_dim.get[2]()
-    alias W = output_dim.get[3]()
+    var N = output_shape[0]
+    var C = output_shape[1]
+    var H = output_shape[2]
+    var W = output_shape[3]
 
     resize_bicubic[target="gpu"](output_dev.tensor, input_dev.tensor, ctx)
 
-    ctx.enqueue_copy(output_ref_host.tensor.data, output_dev.buffer)
+    ctx.enqueue_copy(output_ref_host.tensor.ptr, output_dev.buffer)
     ctx.synchronize()
 
     print(
         "--------------------------------device"
         " output--------------------------------"
     )
-    print("output_ref_host: ", ndbuffer_to_str(output_ref_host.tensor))
+    print("output_ref_host: ", layout_tensor_to_str(output_ref_host.tensor))
     print(
         "--------------------------------cpu"
         " output--------------------------------"
     )
-    print("output_host: ", ndbuffer_to_str(output_host.tensor))
+    print("output_host: ", layout_tensor_to_str(output_host.tensor))
     print(
         "--------------------------------asserting--------------------------------"
     )
@@ -618,8 +630,8 @@ fn test_bicubic_kernel[
             for h in range(H):
                 for w in range(W):
                     assert_almost_equal(
-                        output_host.tensor[n, c, h, w],
-                        output_ref_host.tensor[n, c, h, w],
+                        output_host.tensor.load[width=1](Index(n, c, h, w)),
+                        output_ref_host.tensor.load[width=1](Index(n, c, h, w)),
                         rtol=0.0001,
                     )
     print(
@@ -631,32 +643,44 @@ fn test_large_image_gpu_launch[dtype: DType](ctx: DeviceContext) raises:
     """Test that GPU kernel can handle large images without exceeding thread limits.
     """
     # Test with 64x64 output which would exceed 1024 threads/block limit.
-    alias input_dim = DimList(1, 3, 32, 32)
-    alias output_dim = DimList(1, 3, 64, 64)
+    alias layout_4d = Layout.row_major[4]()
+    var input_shape = IndexList(1, 3, 32, 32)
+    var output_shape = IndexList(1, 3, 64, 64)
 
-    var input_host = HostNDBuffer[dtype, 4, input_dim](input_dim)
-    var output_host = HostNDBuffer[dtype, 4, output_dim](output_dim)
-    var output_gpu_host = HostNDBuffer[dtype, 4, output_dim](output_dim)
+    var input_host = HostLayoutTensor[dtype, layout_4d](
+        RuntimeLayout[layout_4d].row_major(input_shape)
+    )
+    var output_host = HostLayoutTensor[dtype, layout_4d](
+        RuntimeLayout[layout_4d].row_major(output_shape)
+    )
+    var output_gpu_host = HostLayoutTensor[dtype, layout_4d](
+        RuntimeLayout[layout_4d].row_major(output_shape)
+    )
 
     # Fill input with simple pattern
     for n in range(1):
         for c in range(3):
             for h in range(32):
                 for w in range(32):
-                    input_host.tensor[n, c, h, w] = Scalar[dtype](
-                        Float32(h * 32 + w) / 1024.0
+                    input_host.tensor.store[width=1](
+                        Index(n, c, h, w),
+                        Scalar[dtype](Float32(h * 32 + w) / 1024.0),
                     )
 
     # Run CPU version.
     cpu_bicubic_kernel(output_host.tensor, input_host.tensor)
 
     # Run GPU version.
-    var input_dev = DeviceNDBuffer[dtype, 4, input_dim](input_dim, ctx=ctx)
-    var output_dev = DeviceNDBuffer[dtype, 4, output_dim](output_dim, ctx=ctx)
+    var input_dev = DeviceLayoutTensor[dtype, layout_4d](
+        RuntimeLayout[layout_4d].row_major(input_shape), ctx=ctx
+    )
+    var output_dev = DeviceLayoutTensor[dtype, layout_4d](
+        RuntimeLayout[layout_4d].row_major(output_shape), ctx=ctx
+    )
 
-    ctx.enqueue_copy(input_dev.buffer, input_host.tensor.data)
+    ctx.enqueue_copy(input_dev.buffer, input_host.tensor.ptr)
     alias kernel = gpu_bicubic_kernel[
-        dtype, rank=4, output_shape=output_dim, input_shape=input_dim
+        dtype, layout_4d, output_dev.tensor.address_space
     ]
 
     # This would fail with block_dim=(64, 64) = 4096 threads.
@@ -667,7 +691,7 @@ fn test_large_image_gpu_launch[dtype: DType](ctx: DeviceContext) raises:
         block_dim=(256,),
     )
 
-    ctx.enqueue_copy(output_gpu_host.tensor.data, output_dev.buffer)
+    ctx.enqueue_copy(output_gpu_host.tensor.ptr, output_dev.buffer)
 
     ctx.synchronize()
 
@@ -678,8 +702,14 @@ fn test_large_image_gpu_launch[dtype: DType](ctx: DeviceContext) raises:
             for h in range(64):
                 for w in range(64):
                     var diff = abs(
-                        Float32(output_host.tensor[n, c, h, w])
-                        - Float32(output_gpu_host.tensor[n, c, h, w])
+                        Float32(
+                            output_host.tensor.load[width=1](Index(n, c, h, w))
+                        )
+                        - Float32(
+                            output_gpu_host.tensor.load[width=1](
+                                Index(n, c, h, w)
+                            )
+                        )
                     )
                     if diff > max_diff:
                         max_diff = diff
@@ -691,10 +721,10 @@ fn test_large_image_gpu_launch[dtype: DType](ctx: DeviceContext) raises:
 
 def main():
     with DeviceContext() as ctx:
-        test_bicubic_kernel[
-            DimList(1, 3, 5, 5),  # input  (NCHW)
-            DimList(1, 3, 10, 10),  # output (NCHW)
-            DType.float32,  # data_type
-        ](ctx)
+        test_bicubic_kernel[DType.float32](
+            ctx,
+            IndexList(1, 3, 5, 5),  # input  (NCHW)
+            IndexList(1, 3, 10, 10),  # output (NCHW)
+        )
 
         test_large_image_gpu_launch[DType.float32](ctx)
