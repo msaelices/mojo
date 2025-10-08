@@ -414,8 +414,7 @@ fn test_conv_transpose_shape_basic() raises:
     output_pads_ptr.free()
 
 
-fn main() raises:
-    # Test full conv transposed operations
+def main():
     test_conv_transposed[DType.float32, 2](
         1,  # N
         Index(3, 3),

@@ -1623,6 +1623,9 @@ fn _elementwise_impl_gpu[
     var unpacked_tail_length = length % simd_width
     var packed_region_length = length - unpacked_tail_length
 
+    if length == 0:
+        return
+
     alias block_size_unrounded = registers_per_block // registers_per_thread
 
     # when testing other elementwise kernels, they appear to also use 128 as the block size on blackwell specifcally
@@ -1633,7 +1636,7 @@ fn _elementwise_impl_gpu[
     var num_blocks = clamp(
         ceildiv(num_packed_elems, UInt(block_size)),
         1,
-        sm_count * threads_per_sm // block_size * num_waves,
+        sm_count * threads_per_sm // UInt(block_size) * num_waves,
     )
 
     @__copy_capture(
@@ -1672,7 +1675,7 @@ fn _elementwise_impl_gpu[
                     for off in range(Int(simd_width)):
                         func[1, rank](
                             _get_start_indices_of_nth_subvolume_uint[0](
-                                UInt(idx * simd_width + off),
+                                UInt(idx * simd_width + UInt(off)),
                                 shape,
                             ).canonicalize()
                         )
@@ -2006,8 +2009,8 @@ fn _stencil_impl_gpu[
         var y = bid_y * block_dim.y + tid_y
 
         # Calculate batch and channel from bid_z
-        var batch_idx = bid_z // shape[3]
-        var channel = bid_z % shape[3]
+        var batch_idx = bid_z // UInt(shape[3])
+        var channel = bid_z % UInt(shape[3])
 
         # Early exit if outside bounds
         if x >= UInt(shape[2]) or y >= UInt(shape[1]):

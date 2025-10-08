@@ -170,7 +170,7 @@ class MultiPagedKVCacheManager(PagedKVCacheManager):
                 are adjacent in the batch, and the replica must be in order).
 
         returns:
-            A Tensor with shape (len(self.devices) + 1) that contains the
+            An int64 Tensor with shape (len(self.devices) + 1) that contains the
             number of requests on each device:
                 [0, num_requests_on_replica_0, num_requests_on_replica_1, ...]
         """
@@ -178,7 +178,7 @@ class MultiPagedKVCacheManager(PagedKVCacheManager):
         for ctx in context_batch:
             replica_index = self._request_to_replica_idx[ctx.request_id]
             splits[replica_index + 1] += 1
-        splits = np.cumsum(splits)
+        splits = np.cumsum(splits)  # type: ignore
 
         return Tensor.from_numpy(splits)
 
@@ -376,6 +376,7 @@ class MultiPagedKVCacheManager(PagedKVCacheManager):
         else:
             # Standard case: single tensor
             row_offsets = prev_model_inputs.input_row_offsets
+        row_offsets = row_offsets.to(self.devices[0])
 
         updated_cache_lengths = self.increment_cache_lengths_model.execute(
             row_offsets, prev_model_inputs.data_parallel_splits, *cache_lengths

@@ -676,9 +676,9 @@ fn batched_matmul_kernel_gpu[
     n: Int,
     k: Int,
 ):
-    var a_ptr = a_tensor.ptr + block_idx.z * (m * k)
-    var b_ptr = b_tensor.ptr + block_idx.z * (n * k)
-    var c_ptr = c_tensor.ptr + block_idx.z * (m * n)
+    var a_ptr = a_tensor.ptr + block_idx.z * UInt(m * k)
+    var b_ptr = b_tensor.ptr + block_idx.z * UInt(n * k)
+    var c_ptr = c_tensor.ptr + block_idx.z * UInt(m * n)
 
     alias static_n = b_tensor.shape[1]() if transpose_b else b_tensor.shape[2]()
     alias static_k = b_tensor.shape[2]() if transpose_b else b_tensor.shape[1]()
@@ -799,6 +799,9 @@ fn _batched_matmul_gpu[
     var m = c_tensor_reshaped.dim(1)
     var n = c_tensor_reshaped.dim(2)
     var k = a_tensor_reshaped.dim(2)
+
+    if batch_size == 0 or m == 0 or n == 0 or k == 0:
+        return
 
     alias has_static_NK = b_tensor_reshaped.shape[
         1
@@ -1103,9 +1106,11 @@ fn _bmm_sm100_blockwise_scaled_fp8_kernel[
     var M = c_tensor.dim(1)
     var N = c_tensor.dim(2)
 
-    var c_ptr = c_tensor.ptr + (block_idx.z * M * N)
+    var c_ptr = c_tensor.ptr + (block_idx.z * UInt(M) * UInt(N))
     var b_scales_ptr = b_scales_tensor.ptr + (
-        block_idx.z * b_scales_tensor.dim(1) * b_scales_tensor.dim(2)
+        block_idx.z
+        * UInt(b_scales_tensor.dim(1))
+        * UInt(b_scales_tensor.dim(2))
     )
 
     var c = LayoutTensor[c_type, c_2d_layout, MutableAnyOrigin](
@@ -1232,6 +1237,9 @@ fn bmm_sm100_blockwise_scaled_fp8[
     var M = c.dim(1)
     var N = c.dim(2)
     var K = a.dim(2)
+
+    if batch_size == 0 or M == 0 or N == 0 or K == 0:
+        return
 
     var a_scales_dim0 = a_scales.dim(1)
     var a_scales_dim1 = a_scales.dim(2)
