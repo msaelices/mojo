@@ -540,7 +540,7 @@ fn test_3d_multi_channel() raises:
     )
 
 
-fn main() raises:
+def main():
     var suite = TestSuite()
 
     # Test conv_transpose_shape function
