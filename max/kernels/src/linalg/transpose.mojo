@@ -1461,6 +1461,40 @@ fn transpose_trivial_memcpy[
         )
 
 
+fn transpose_trivial_memcpy[
+    dtype: DType,
+](
+    output: LayoutTensor[mut=True, dtype, **_],
+    input: LayoutTensor[dtype, **_],
+):
+    # TODO: Review pointer rebinding - needed because memcpy/parallel_memcpy
+    # cannot infer origin/address_space from LayoutTensor.ptr
+    var src_ptr = rebind[UnsafePointer[Scalar[dtype]]](input.ptr.offset(0))
+    var dst_ptr = rebind[UnsafePointer[Scalar[dtype]]](output.ptr.offset(0))
+
+    alias KB = 1024
+    alias min_work_per_task = 1 * KB
+    alias min_work_for_parallel = 4 * min_work_per_task
+
+    var total_size = output.size()
+
+    if total_size <= min_work_for_parallel:
+        memcpy(dest=dst_ptr, src=src_ptr, count=total_size)
+
+    else:
+        var work_units = ceildiv(total_size, min_work_per_task)
+        var num_tasks = min(work_units, parallelism_level())
+        var work_block_size = ceildiv(work_units, num_tasks)
+
+        parallel_memcpy(
+            dest=dst_ptr,
+            src=src_ptr,
+            count=total_size,
+            count_per_task=work_block_size * min_work_per_task,
+            num_tasks=num_tasks,
+        )
+
+
 # ===------------------------------------------------------------------=== #
 #  Transpose generic strided implementation
 # ===------------------------------------------------------------------=== #
