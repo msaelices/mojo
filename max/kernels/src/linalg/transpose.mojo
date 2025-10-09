@@ -1145,6 +1145,52 @@ fn _transpose_2d_serial_tiled[
     ](0, 0, M, N)
 
 
+fn _transpose_2d_serial_tiled[
+    dtype: DType, //
+](
+    output: LayoutTensor[mut=True, dtype, **_],
+    input: LayoutTensor[dtype, **_],
+    perms: UnsafePointer[Scalar[DType.int]],
+    simplified_input_shape: IndexList,
+    simplified_rank: Int,
+    offset: Int,
+):
+    alias simd_width = simd_width_of[dtype]()
+
+    if simplified_rank < 2:
+        return
+    # The input tile is MxN, the output tile is NxM.
+    # We want to do:
+    #   output[m, n] = input[n, m]
+    # This is equivalent to:
+    #   output[n*M + m] = input[m*N + n]
+    # And we also have a global offset which needs to be added to both output
+    # and input pointers.
+    var N = simplified_input_shape[simplified_rank - 2]
+    var M = simplified_input_shape[simplified_rank - 1]
+
+    # TODO: Review pointer rebinding for _process_tile compatibility
+    var out_ptr = rebind[UnsafePointer[Scalar[dtype]]](
+        output.ptr.offset(offset)
+    )
+    var in_ptr = rebind[UnsafePointer[Scalar[dtype]]](input.ptr.offset(offset))
+
+    @parameter
+    @__copy_capture(N, M, out_ptr, in_ptr)
+    @always_inline
+    fn process_tile[tile_size_m: Int, tile_size_n: Int](m: Int, n: Int):
+        _process_tile[tile_size_m, tile_size_n, dtype](
+            m, n, M, N, out_ptr, in_ptr
+        )
+
+    alias tile_size = simd_width if simd_width <= 16 else 1
+    tile[
+        process_tile,
+        VariadicList[Int](tile_size, 1),
+        VariadicList[Int](tile_size, 1),
+    ](0, 0, M, N)
+
+
 @always_inline
 fn _should_run_parallel(
     M: Int, N: Int, simd_width: Int, min_work_per_task: Int
@@ -1232,6 +1278,75 @@ fn _transpose_2d_parallel_tiled[
     sync_parallelize[_parallel_tile](num_tasks)
 
 
+fn _transpose_2d_parallel_tiled[
+    dtype: DType, //
+](
+    output: LayoutTensor[mut=True, dtype, **_],
+    input: LayoutTensor[dtype, **_],
+    perms: UnsafePointer[Scalar[DType.int]],
+    simplified_input_shape: IndexList,
+    simplified_rank: Int,
+    offset: Int,
+):
+    if simplified_rank < 2:
+        return
+
+    alias simd_width = simd_width_of[dtype]()
+    var N = simplified_input_shape[simplified_rank - 2]
+    var M = simplified_input_shape[simplified_rank - 1]
+    alias min_work_per_task = 1024
+    alias tile_size_m = simd_width if simd_width <= 16 else 1
+    alias tile_size_n = simd_width if simd_width <= 16 else 1
+
+    var n_unit_size = simd_width
+    var m_unit_size = simd_width
+
+    var n_tiles = N // n_unit_size
+    var m_tiles = M // m_unit_size
+
+    var rows_per_worker = (
+        1  # Row in terms of tiles, i.e. we still take simd_width elements
+    )
+    if min_work_per_task > M * simd_width:
+        rows_per_worker = min_work_per_task // (M * simd_width)
+
+    var work = ceildiv(n_tiles, rows_per_worker)
+
+    var num_threads = parallelism_level()
+
+    var num_tasks = min(work, num_threads)
+
+    var work_block_size = ceildiv(work, num_tasks)
+
+    # TODO: Review pointer rebinding for _process_tile compatibility
+    var out_ptr = rebind[UnsafePointer[Scalar[dtype]]](
+        output.ptr.offset(offset)
+    )
+    var in_ptr = rebind[UnsafePointer[Scalar[dtype]]](input.ptr.offset(offset))
+
+    @parameter
+    @__copy_capture(work_block_size, m_tiles, N, M, out_ptr, in_ptr)
+    @always_inline
+    fn _parallel_tile(thread_id: Int):
+        var n_tile_begin = work_block_size * thread_id
+        var n_tile_end = min(work_block_size * (thread_id + 1), work)
+
+        for n_tile in range(n_tile_begin, n_tile_end):
+            for m_tile in range(m_tiles):
+                var m = tile_size_m * m_tile
+                var n = tile_size_n * n_tile
+                _process_tile[tile_size_m, tile_size_n, dtype](
+                    m,
+                    n,
+                    M,
+                    N,
+                    out_ptr,
+                    in_ptr,
+                )
+
+    sync_parallelize[_parallel_tile](num_tasks)
+
+
 fn transpose_2d[
     rank: Int,
     output_shape: DimList,
@@ -1247,6 +1362,46 @@ fn transpose_2d[
 ):
     @parameter
     if rank < 2:
+        return
+
+    alias simd_width = simd_width_of[dtype]()
+    var N = simplified_input_shape[simplified_rank - 2]
+    var M = simplified_input_shape[simplified_rank - 1]
+    alias min_work_per_task = 1024
+
+    if _should_run_parallel(M, N, simd_width, min_work_per_task):
+        _transpose_2d_parallel_tiled(
+            output,
+            input,
+            perms,
+            simplified_input_shape,
+            simplified_rank,
+            offset,
+        )
+    else:
+        _transpose_2d_serial_tiled(
+            output,
+            input,
+            perms,
+            simplified_input_shape,
+            simplified_rank,
+            offset,
+        )
+
+        return
+
+
+fn transpose_2d[
+    dtype: DType,
+](
+    output: LayoutTensor[mut=True, dtype, **_],
+    input: LayoutTensor[dtype, **_],
+    perms: UnsafePointer[Scalar[DType.int]],
+    simplified_input_shape: IndexList,
+    simplified_rank: Int,
+    offset: Int,
+):
+    if simplified_rank < 2:
         return
 
     alias simd_width = simd_width_of[dtype]()
@@ -1367,6 +1522,30 @@ fn transpose_4d_swap_middle[
     _transpose_4d_swap_middle_helper(dst_ptr, src_ptr, L, M, N, K)
 
 
+fn transpose_4d_swap_middle[
+    dtype: DType, //
+](
+    output: LayoutTensor[mut=True, dtype, **_],
+    input: LayoutTensor[dtype, **_],
+    perms: UnsafePointer[Scalar[DType.int]],
+    simplified_input_shape: IndexList,
+    simplified_rank: Int,
+):
+    if simplified_rank < 4:
+        return
+    # The input tile is LxMxNxK, the output tile is LxNxMxK.
+    # We want to do:
+    #   output[l, n, m, k] = input[l, m, n, k]
+    var L = simplified_input_shape[simplified_rank - 4]
+    var M = simplified_input_shape[simplified_rank - 3]
+    var N = simplified_input_shape[simplified_rank - 2]
+    var K = simplified_input_shape[simplified_rank - 1]
+    # TODO: Review pointer rebinding for _transpose_4d_swap_middle_helper compatibility
+    var src_ptr = rebind[UnsafePointer[Scalar[dtype]]](input.ptr.offset(0))
+    var dst_ptr = rebind[UnsafePointer[Scalar[dtype]]](output.ptr.offset(0))
+    _transpose_4d_swap_middle_helper(dst_ptr, src_ptr, L, M, N, K)
+
+
 fn transpose_3d_swap_outer[
     rank: Int,
     output_shape: DimList,
@@ -1395,6 +1574,31 @@ fn transpose_3d_swap_outer[
     _transpose_4d_swap_middle_helper(dst_ptr, src_ptr, 1, M, N, K)
 
 
+fn transpose_3d_swap_outer[
+    dtype: DType,
+](
+    output: LayoutTensor[mut=True, dtype, **_],
+    input: LayoutTensor[dtype, **_],
+    perms: UnsafePointer[Scalar[DType.int]],
+    simplified_input_shape: IndexList,
+    simplified_rank: Int,
+):
+    if simplified_rank < 3:
+        return
+    # The input tile is MxNxK, the output tile is NxMxK.
+    # We want to do:
+    #   output[n, m, k] = input[m, n, k]
+    # We use a 4d helper function for this, pretending that we have an outer
+    # dimensions L=1.
+    var M = simplified_input_shape[simplified_rank - 3]
+    var N = simplified_input_shape[simplified_rank - 2]
+    var K = simplified_input_shape[simplified_rank - 1]
+    # TODO: Review pointer rebinding for _transpose_4d_swap_middle_helper compatibility
+    var src_ptr = rebind[UnsafePointer[Scalar[dtype]]](input.ptr.offset(0))
+    var dst_ptr = rebind[UnsafePointer[Scalar[dtype]]](output.ptr.offset(0))
+    _transpose_4d_swap_middle_helper(dst_ptr, src_ptr, 1, M, N, K)
+
+
 fn transpose_3d_swap_inner[
     rank: Int, dtype: DType, //
 ](
@@ -1406,6 +1610,36 @@ fn transpose_3d_swap_inner[
 ):
     @parameter
     if rank < 3:
+        return
+    # simplified perms must be 0, 2, 1
+    var offset = 0
+    var step = (
+        simplified_input_shape[simplified_rank - 2]
+        * simplified_input_shape[simplified_rank - 1]
+    )
+    # TODO: parallelize this loop
+    for i in range(simplified_input_shape[0]):
+        _transpose_2d_serial_tiled(
+            output,
+            input,
+            perms,
+            simplified_input_shape,
+            simplified_rank,
+            offset,
+        )
+        offset += step
+
+
+fn transpose_3d_swap_inner[
+    dtype: DType, //
+](
+    output: LayoutTensor[mut=True, dtype, **_],
+    input: LayoutTensor[dtype, **_],
+    perms: UnsafePointer[Scalar[DType.int]],
+    simplified_input_shape: IndexList,
+    simplified_rank: Int,
+):
+    if simplified_rank < 3:
         return
     # simplified perms must be 0, 2, 1
     var offset = 0
@@ -1463,10 +1697,7 @@ fn transpose_trivial_memcpy[
 
 fn transpose_trivial_memcpy[
     dtype: DType,
-](
-    output: LayoutTensor[mut=True, dtype, **_],
-    input: LayoutTensor[dtype, **_],
-):
+](output: LayoutTensor[mut=True, dtype, **_], input: LayoutTensor[dtype, **_],):
     # TODO: Review pointer rebinding - needed because memcpy/parallel_memcpy
     # cannot infer origin/address_space from LayoutTensor.ptr
     var src_ptr = rebind[UnsafePointer[Scalar[dtype]]](input.ptr.offset(0))
@@ -1623,6 +1854,142 @@ fn _copy_with_strides[
         sync_parallelize[_parallel_copy](num_tasks)
 
 
+fn _copy_with_strides[
+    dtype: DType, //
+](
+    rank: Int,
+    axis: Int,
+    output: LayoutTensor[mut=True, dtype, **_],
+    input: UnsafePointer[Scalar[dtype]],
+    input_strides: UnsafePointer[Scalar[DType.int]],
+    output_strides: UnsafePointer[Scalar[DType.int]],
+    input_offset: Int,
+    output_offset: Int,
+) raises:
+    """
+    Copy data from `input` to `output`, starting at corresponding offsets,
+    based on given strides.
+
+    Args:
+        rank: The runtime rank of the output tensor.
+        axis: The axis value.
+        output: The output buffer.
+        input: The input buffer.
+        input_strides: The stride at each input axis.
+        output_strides: The stride at each output axis.
+        input_offset: The offset at which input data starts.
+        output_offset: The offset at which output data starts.
+    """
+    if axis + 1 > rank:
+        raise Error("out of range")
+
+    var output_shape = output.runtime_layout.shape.value.canonicalize()
+    var axis_dim = output_shape[axis]
+    var input_axis_stride: Int = Int(input_strides.load(axis)[0]._mlir_value)
+    var output_axis_stride: Int = Int(output_strides.load(axis)[0]._mlir_value)
+
+    if axis + 1 == rank:
+        var src_ptr = input.offset(input_offset)
+        # TODO: Review pointer rebinding for memcpy/strided_store compatibility
+        var dst_ptr = rebind[UnsafePointer[Scalar[dtype]]](
+            output.ptr.offset(output_offset)
+        )
+        if input_axis_stride == 1 and output_axis_stride == 1:
+            memcpy(dest=dst_ptr, src=src_ptr, count=axis_dim)
+        else:
+
+            @always_inline
+            @__copy_capture(input_axis_stride, output_axis_stride)
+            @parameter
+            fn _copy[simd_width: Int](offset: Int):
+                strided_store(
+                    strided_load[simd_width](src_ptr, input_axis_stride),
+                    dst_ptr,
+                    output_axis_stride,
+                )
+                src_ptr = src_ptr.offset(simd_width * input_axis_stride)
+                dst_ptr = dst_ptr.offset(simd_width * output_axis_stride)
+
+            vectorize[_copy, simd_width_of[dtype]()](axis_dim)
+
+        return
+
+    var next_axis = axis + 1
+
+    alias KB = 1024
+
+    # TODO: These parameters might be tuned
+    alias min_work_per_task = 1 * KB
+    alias min_work_for_parallel = 4 * min_work_per_task
+
+    # Use element count for size estimation (similar to bytecount in NDBuffer)
+    var element_count = output.size()
+    if element_count <= min_work_for_parallel or axis_dim == 1:
+        var next_input_offset = input_offset
+        var next_output_offset = output_offset
+        for _ in range(axis_dim):
+            _copy_with_strides(
+                rank,
+                next_axis,
+                output,
+                input,
+                input_strides,
+                output_strides,
+                next_input_offset,
+                next_output_offset,
+            )
+            next_input_offset += input_axis_stride
+            next_output_offset += output_axis_stride
+
+    else:
+        var num_threads = parallelism_level()
+        var num_tasks = min(
+            ceildiv(element_count, min_work_per_task), num_threads
+        )
+
+        var work = axis_dim
+        var work_block_size = ceildiv(work, num_tasks)
+
+        @always_inline
+        @__copy_capture(
+            rank,
+            work_block_size,
+            work,
+            next_axis,
+            input_axis_stride,
+            output_axis_stride,
+        )
+        @parameter
+        fn _parallel_copy(thread_id: Int) raises:
+            var next_input_offset = (
+                thread_id * work_block_size * input_axis_stride + input_offset
+            )
+            var next_output_offset = (
+                thread_id * work_block_size * output_axis_stride + output_offset
+            )
+
+            for _ in range(
+                work_block_size * thread_id,
+                min(work_block_size * (thread_id + 1), work),
+            ):
+                _copy_with_strides(
+                    rank,
+                    next_axis,
+                    output,
+                    input,
+                    input_strides,
+                    output_strides,
+                    next_input_offset,
+                    next_output_offset,
+                )
+                next_input_offset += input_axis_stride
+                next_output_offset += output_axis_stride
+
+        # TODO: transpose_strided is using stack allocated structueres and
+        # so depends on us being synchronous. We need a better way to do this.
+        sync_parallelize[_parallel_copy](num_tasks)
+
+
 fn transpose_strided[
     rank: Int, dtype: DType, //
 ](
@@ -1654,6 +2021,75 @@ fn transpose_strided[
         init_axis,
         output,
         input.data,
+        permuted_input_strides,
+        output_strides,
+        0,  # input_offset
+        0,  # output_offset
+    )
+    input_strides.free()
+    permuted_input_strides.free()
+    output_strides.free()
+
+
+fn transpose_strided[
+    dtype: DType, //
+](
+    output: LayoutTensor[mut=True, dtype, **_],
+    input: LayoutTensor[dtype, **_],
+    perms: UnsafePointer[Scalar[DType.int]],
+) raises:
+    # Get runtime rank
+    var rank = output.rank
+    # Compute `permuted_input_strides`
+    var input_strides = UnsafePointer[Scalar[DType.int]].alloc(rank)
+    var permuted_input_strides = UnsafePointer[Scalar[DType.int]].alloc(rank)
+
+    # Manually fill input strides (row-major)
+    input_strides[rank - 1] = 1
+    for idx in range(rank - 1):
+        var axis = rank - idx - 2
+        var input_shape = input.runtime_layout.shape.value.canonicalize()
+        var next_axis_stride = input_strides[axis + 1]
+        var next_axis_dim = input_shape[axis + 1]
+        input_strides[axis] = next_axis_stride * next_axis_dim
+
+    # Manually permute input strides
+    for idx in range(rank):
+        var perm_axis = perms.load(idx)[0]
+        var perm_data = input_strides.load(perm_axis)
+        permuted_input_strides[idx] = perm_data
+
+    # Compute `output_strides`
+    var output_strides = UnsafePointer[Scalar[DType.int]].alloc(rank)
+
+    # Manually fill output strides (row-major)
+    output_strides[rank - 1] = 1
+    for idx in range(rank - 1):
+        var axis = rank - idx - 2
+        var output_shape = output.runtime_layout.shape.value.canonicalize()
+        var next_axis_stride = output_strides[axis + 1]
+        var next_axis_dim = output_shape[axis + 1]
+        output_strides[axis] = next_axis_stride * next_axis_dim
+
+    # Kickoff; for intuition on permuted input strides, note that
+    #   transpose(output, input, [2, 0, 1])
+    # guarantees
+    #   (var isx denote input_stride_x, etc.)
+    #   output[x, y, z] = input[z, x, y]
+    # ~ output.at(offset(x*isx + y*isy + z*isz)) = input.at(offset(z*osx + x*osy + y*osz))
+    # ~ output.at(offset(x*isx + y*isy + z*isz)) = input.at(offset(x*osy + y*osz + z*osx))
+    # ~ output.at(offset([x, y, z], output_strides)) = input.at(offset([x, y, z], permuted_input_strides))
+    # ~ output.at(offset(index, output_strides)) = input.at(offset(index, permuted_input_strides))
+    alias init_axis = 0
+    # NOTE: Synchronous, so the stack allocated input_strides, permuted_input_strings
+    # and output_strides are safe to use.
+    # TODO: Review pointer rebinding for _copy_with_strides compatibility
+    var input_ptr = rebind[UnsafePointer[Scalar[dtype]]](input.ptr)
+    _copy_with_strides(
+        rank,
+        init_axis,
+        output,
+        input_ptr,
         permuted_input_strides,
         output_strides,
         0,  # input_offset
@@ -1723,6 +2159,118 @@ fn transpose[
     # elif simplified_rank == 2:
     #     # tiled transpose
     #     return transpose_2d[rank, output_shape, input_shape, dtype](
+    #         output,
+    #         input,
+    #         perms,
+    #         simplified_shape,
+    #         simplified_rank,
+    #         0,
+    #     )
+    elif rank >= 3 and simplified_rank == 3:
+        if (
+            simplified_perms[0] == 0
+            and simplified_perms[1] == 2
+            and simplified_perms[2] == 1
+        ):
+            # batched tiled transpose
+            return transpose_3d_swap_inner(
+                output,
+                input,
+                perms,
+                simplified_shape,
+                simplified_rank,
+            )
+        elif (
+            simplified_perms[0] == 1
+            and simplified_perms[1] == 0
+            and simplified_perms[2] == 2
+        ):
+            return transpose_3d_swap_outer(
+                output,
+                input,
+                perms,
+                simplified_shape,
+                simplified_rank,
+            )
+    elif rank >= 4 and simplified_rank == 4:
+        if (
+            simplified_perms[0] == 0
+            and simplified_perms[1] == 2
+            and simplified_perms[2] == 1
+            and simplified_perms[3] == 3
+        ):
+            return transpose_4d_swap_middle(
+                output,
+                input,
+                perms,
+                simplified_shape,
+                simplified_rank,
+            )
+    transpose_strided(output, input, perms)
+
+
+fn transpose[
+    dtype: DType, //
+](
+    output: LayoutTensor[mut=True, dtype, **_],
+    input: LayoutTensor[dtype, **_],
+    perms: UnsafePointer[Scalar[DType.int]],
+) raises:
+    """
+    Permute the axis of `input` based on `perms`, and place the result in
+    `output`.
+
+    Example:
+        ```mojo
+        transpose(output, input, [2, 0, 1])
+        # guarantees output[x, y, z] = input[z, x, y]
+        ```
+
+    Parameters:
+        dtype: The dtype of buffer elements.
+
+    Args:
+        output: The output buffer.
+        input: The input buffer.
+        perms: Permutation of the input axes.
+    """
+    var rank = output.rank
+
+    # Check if buffers are contiguous (stride of last dimension should be 1)
+    var output_strides = output.runtime_layout.stride.value.canonicalize()
+    var input_strides = input.runtime_layout.stride.value.canonicalize()
+    var output_contiguous = output_strides[rank - 1] == 1
+    var input_contiguous = input_strides[rank - 1] == 1
+
+    # If either input or output is not-contiguous, we need to use a general
+    # strided implementation of transpose
+    if not output_contiguous or not input_contiguous:
+        return transpose_strided(output, input, perms)
+
+    # If they are contiguous, we can try to recognize common special cases in
+    # the desired permutation.
+    # E.g.
+    #   shape=[1,3,200,200], perm = [0, 2, 3, 1]
+    # is equivalent to
+    #   shape=[1,3,40000], perm = [0, 2, 1]
+    #
+    # And that just swaps two inner dimensions.
+    var simplified_perms = _convert_transpose_perms_to_static_int_tuple_runtime(
+        rank, perms
+    )
+    var simplified_shape = input.runtime_layout.shape.value.canonicalize()
+    var simplified_rank = rank
+    _simplify_transpose_perms_runtime(
+        simplified_rank, simplified_shape, simplified_perms
+    )
+
+    if simplified_rank == 1:
+        # memcpy
+        return transpose_trivial_memcpy(output, input)
+    # TODO: Re-enable once #15947 is fixed.
+    # elif simplified_rank == 2:
+    #     # tiled transpose
+    #     return transpose_2d(
     #         output,
     #         input,
     #         perms,
