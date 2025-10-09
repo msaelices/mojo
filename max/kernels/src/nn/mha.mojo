@@ -23,8 +23,9 @@ from sys import (
     is_nvidia_gpu,
     simd_width_of,
     size_of,
+    env_get_bool,
 )
-
+from sys.info import _cdna_4_or_newer
 import gpu.warp as warp
 from algorithm import elementwise
 from algorithm.functional import tile_and_unswitch, unswitch, vectorize
@@ -71,12 +72,16 @@ from linalg.bmm import batched_matmul
 from linalg.matmul.gpu._multistage_gemm_gpu import multistage_mma
 from linalg.transpose import transpose
 from memory import stack_allocation
-from nn.mha_amd import mha_decoding_single_batch_amd, mha_single_batch_amd
+from nn.mha_gfx942 import (
+    mha_decoding_single_batch_gfx942,
+    mha_single_batch_gfx942,
+)
+from nn.mha_gfx950 import mha_single_batch_gfx950
 from nn.mha_mask import MaterializedMask, MHAMask, TileMaskStatus
 from nn.mha_operand import (
     KVCacheMHAOperand,
     MHAOperand,
-    NDBufferMHAOperand,
+    LayoutTensorMHAOperand,
     RaggedMHAOperand,
 )
 from nn.mha_score_mod import IdentityScoreMod, ScoreModTrait
@@ -490,6 +495,45 @@ fn flash_attention_dispatch[
                     decoding=False, depth=depth
                 ](q)
 
+                var sink_weights_lt: OptionalReg[
+                    LayoutTensor[
+                        q.type,
+                        Layout.row_major(UNKNOWN_VALUE),
+                        MutableAnyOrigin,
+                    ]
+                ] = None
+                if sink_weights:
+                    sink_weights_lt = LayoutTensor[
+                        q.type,
+                        Layout.row_major(UNKNOWN_VALUE),
+                        MutableAnyOrigin,
+                    ](
+                        sink_weights.value().data,
+                        RuntimeLayout[
+                            Layout.row_major(UNKNOWN_VALUE)
+                        ].row_major(IndexList[1](sink_weights.value().size())),
+                    )
+                var kv_input_row_offsets_lt: OptionalReg[
+                    LayoutTensor[
+                        DType.uint32,
+                        Layout.row_major(UNKNOWN_VALUE),
+                        MutableAnyOrigin,
+                    ]
+                ] = None
+                if kv_input_row_offsets:
+                    kv_input_row_offsets_lt = LayoutTensor[
+                        DType.uint32,
+                        Layout.row_major(UNKNOWN_VALUE),
+                        MutableAnyOrigin,
+                    ](
+                        kv_input_row_offsets.value().data,
+                        RuntimeLayout[
+                            Layout.row_major(UNKNOWN_VALUE)
+                        ].row_major(
+                            IndexList[1](kv_input_row_offsets.value().size())
+                        ),
+                    )
+
                 @parameter
                 if is_sm90:
                     mha_sm90_dispatch[
@@ -513,11 +557,11 @@ fn flash_attention_dispatch[
                         DynamicInt(max_prompt_len),
                         max_cache_valid_length,
                         scale,
-                        kv_input_row_offsets,
+                        kv_input_row_offsets_lt,
                         batch_size,
                         NoPartition[get_accum_type[q.dtype]()](),
                         ctx,
-                        sink_weights,
+                        sink_weights_lt,
                     )
                 else:
                     constrained[is_sm100]()
@@ -542,11 +586,11 @@ fn flash_attention_dispatch[
                         DynamicInt(max_prompt_len),
                         max_cache_valid_length,
                         scale,
-                        kv_input_row_offsets,
+                        kv_input_row_offsets_lt,
                         batch_size,
                         NoPartition[get_accum_type[q.dtype]()](),
                         ctx,
-                        sink_weights,
+                        sink_weights_lt,
                     )
 
             else:
@@ -706,6 +750,48 @@ fn flash_attention_dispatch[
                 ]
 
                 if num_partitions_value == 1:
+                    var sink_weights_lt: OptionalReg[
+                        LayoutTensor[
+                            q.type,
+                            Layout.row_major(UNKNOWN_VALUE),
+                            MutableAnyOrigin,
+                        ]
+                    ] = None
+                    if sink_weights:
+                        sink_weights_lt = LayoutTensor[
+                            q.type,
+                            Layout.row_major(UNKNOWN_VALUE),
+                            MutableAnyOrigin,
+                        ](
+                            sink_weights.value().data,
+                            RuntimeLayout[
+                                Layout.row_major(UNKNOWN_VALUE)
+                            ].row_major(
+                                IndexList[1](sink_weights.value().size())
+                            ),
+                        )
+                    var kv_input_row_offsets_lt: OptionalReg[
+                        LayoutTensor[
+                            DType.uint32,
+                            Layout.row_major(UNKNOWN_VALUE),
+                            MutableAnyOrigin,
+                        ]
+                    ] = None
+                    if kv_input_row_offsets:
+                        kv_input_row_offsets_lt = LayoutTensor[
+                            DType.uint32,
+                            Layout.row_major(UNKNOWN_VALUE),
+                            MutableAnyOrigin,
+                        ](
+                            kv_input_row_offsets.value().data,
+                            RuntimeLayout[
+                                Layout.row_major(UNKNOWN_VALUE)
+                            ].row_major(
+                                IndexList[1](
+                                    kv_input_row_offsets.value().size()
+                                )
+                            ),
+                        )
 
                     @parameter
                     if use_fa3_kernel:
@@ -736,11 +822,11 @@ fn flash_attention_dispatch[
                                 StaticInt[1](),
                                 max_cache_valid_length,
                                 scale,
-                                kv_input_row_offsets,
+                                kv_input_row_offsets_lt,
                                 batch_size,
                                 NoPartition[accum_type](),
                                 ctx,
-                                sink_weights,
+                                sink_weights_lt,
                             )
                         else:
                             mha_sm100_dispatch[
@@ -764,11 +850,11 @@ fn flash_attention_dispatch[
                                 StaticInt[1](),
                                 max_cache_valid_length,
                                 scale,
-                                kv_input_row_offsets,
+                                kv_input_row_offsets_lt,
                                 batch_size,
                                 NoPartition[accum_type](),
                                 ctx,
-                                sink_weights,
+                                sink_weights_lt,
                             )
                     else:
                         alias nullptr = UnsafePointer[Scalar[accum_type]]()
@@ -865,6 +951,48 @@ fn flash_attention_dispatch[
                         num_rows_q = q_num_matrix_view_rows[
                             decoding=True, depth=depth
                         ](q)
+                        var sink_weights_lt: OptionalReg[
+                            LayoutTensor[
+                                q.type,
+                                Layout.row_major(UNKNOWN_VALUE),
+                                MutableAnyOrigin,
+                            ]
+                        ] = None
+                        if sink_weights:
+                            sink_weights_lt = LayoutTensor[
+                                q.type,
+                                Layout.row_major(UNKNOWN_VALUE),
+                                MutableAnyOrigin,
+                            ](
+                                sink_weights.value().data,
+                                RuntimeLayout[
+                                    Layout.row_major(UNKNOWN_VALUE)
+                                ].row_major(
+                                    IndexList[1](sink_weights.value().size())
+                                ),
+                            )
+                        var kv_input_row_offsets_lt: OptionalReg[
+                            LayoutTensor[
+                                DType.uint32,
+                                Layout.row_major(UNKNOWN_VALUE),
+                                MutableAnyOrigin,
+                            ]
+                        ] = None
+                        if kv_input_row_offsets:
+                            kv_input_row_offsets_lt = LayoutTensor[
+                                DType.uint32,
+                                Layout.row_major(UNKNOWN_VALUE),
+                                MutableAnyOrigin,
+                            ](
+                                kv_input_row_offsets.value().data,
+                                RuntimeLayout[
+                                    Layout.row_major(UNKNOWN_VALUE)
+                                ].row_major(
+                                    IndexList[1](
+                                        kv_input_row_offsets.value().size()
+                                    )
+                                ),
+                            )
 
                         @parameter
                         if is_sm90:
@@ -889,14 +1017,14 @@ fn flash_attention_dispatch[
                                 StaticInt[1](),
                                 max_cache_valid_length,
                                 scale,
-                                kv_input_row_offsets,
+                                kv_input_row_offsets_lt,
                                 batch_size,
                                 SplitKPartition(
                                     exp_sum_qk_max_data.unsafe_ptr(),
                                     num_partitions_value,
                                 ),
                                 ctx,
-                                sink_weights,
+                                sink_weights_lt,
                             )
                         else:
                             mha_sm100_dispatch[
@@ -920,14 +1048,14 @@ fn flash_attention_dispatch[
                                 StaticInt[1](),
                                 max_cache_valid_length,
                                 scale,
-                                kv_input_row_offsets,
+                                kv_input_row_offsets_lt,
                                 batch_size,
                                 SplitKPartition(
                                     exp_sum_qk_max_data.unsafe_ptr(),
                                     num_partitions_value,
                                 ),
                                 ctx,
-                                sink_weights,
+                                sink_weights_lt,
                             )
                     else:
                         ctx.enqueue_function_checked[kernel, kernel](
@@ -1094,8 +1222,26 @@ fn flash_attention[
 
     var is_token_generation = seq_len == 1 and num_keys > seq_len
 
-    var k_operand = NDBufferMHAOperand(k)
-    var v_operand = NDBufferMHAOperand(v)
+    var k_operand = LayoutTensorMHAOperand(
+        LayoutTensor[
+            k.type, Layout.row_major[k.rank](k.shape), MutableAnyOrigin
+        ](
+            k.data,
+            RuntimeLayout[Layout.row_major[k.rank](k.shape)].row_major(
+                k.get_shape().canonicalize()
+            ),
+        )
+    )
+    var v_operand = LayoutTensorMHAOperand(
+        LayoutTensor[
+            v.type, Layout.row_major[v.rank](v.shape), MutableAnyOrigin
+        ](
+            v.data,
+            RuntimeLayout[Layout.row_major[v.rank](v.shape)].row_major(
+                v.get_shape().canonicalize()
+            ),
+        )
+    )
 
     flash_attention_dispatch[
         kv_num_heads=kv_num_heads,
@@ -1184,12 +1330,32 @@ fn flash_attention_ragged[
 
     var is_token_generation = False
 
-    var cache_row_offsets: NDBuffer[
-        DType.uint32, 1, MutableAnyOrigin, *_
-    ] = managed_tensor_slice_to_ndbuffer(input_row_offsets)
+    var cache_row_offsets = input_row_offsets.to_layout_tensor().origin_cast[
+        True, MutableAnyOrigin
+    ]()
 
-    var k_operand = RaggedMHAOperand(k, cache_row_offsets)
-    var v_operand = RaggedMHAOperand(v, cache_row_offsets)
+    var k_operand = RaggedMHAOperand(
+        LayoutTensor[
+            k.type, Layout.row_major[k.rank](k.shape), MutableAnyOrigin
+        ](
+            k.data,
+            RuntimeLayout[Layout.row_major[k.rank](k.shape)].row_major(
+                k.get_shape().canonicalize()
+            ),
+        ),
+        cache_row_offsets,
+    )
+    var v_operand = RaggedMHAOperand(
+        LayoutTensor[
+            v.type, Layout.row_major[v.rank](v.shape), MutableAnyOrigin
+        ](
+            v.data,
+            RuntimeLayout[Layout.row_major[v.rank](v.shape)].row_major(
+                v.get_shape().canonicalize()
+            ),
+        ),
+        cache_row_offsets,
+    )
     flash_attention_dispatch[
         kv_num_heads=kv_num_heads,
         use_score_mod=use_score_mod,
@@ -1222,8 +1388,9 @@ fn flash_attention_ragged[
 
 
 # for depth = 128 we want waves_per_eu = 2 and for depth = 256 we want waves_per_eu = 1
+# for depth = 64 we want waves_per_eu = 2
 # this heuristic may not be valid for other depths
-@__llvm_metadata(`rocdl.waves_per_eu`=Int(256 // config.depth))
+@__llvm_metadata(`rocdl.waves_per_eu`=min(Int(256 // config.depth), 2))
 @__llvm_metadata(
     MAX_THREADS_PER_BLOCK_METADATA=StaticTuple[Int32, 1](config.num_threads())
 )
@@ -1397,19 +1564,58 @@ fn mha[
             use_score_mod == False,
             "use_score_mod must be False for AMD flash attention",
         ]()
-        mha_single_batch_amd[group=group, config=config, sink=sink](
-            output_ptr.offset(q_batch_offset),
-            q_ptr.offset(q_batch_offset),
-            k,
-            v,
-            seq_len,
-            num_keys,
-            scale,
-            batch_idx,
-            Int(start_pos),
-            mask,
-            sink_weights,
-        )
+
+        var sink_weights_lt: OptionalReg[
+            LayoutTensor[
+                q_ptr.type.dtype,
+                Layout.row_major(UNKNOWN_VALUE),
+                MutableAnyOrigin,
+            ]
+        ] = None
+        if sink_weights:
+            sink_weights_lt = LayoutTensor[
+                q_ptr.type.dtype,
+                Layout.row_major(UNKNOWN_VALUE),
+                MutableAnyOrigin,
+            ](
+                sink_weights.value().data,
+                RuntimeLayout[Layout.row_major(UNKNOWN_VALUE)].row_major(
+                    IndexList[1](sink_weights.value().size())
+                ),
+            )
+
+        @parameter
+        if (
+            _cdna_4_or_newer()
+            and env_get_bool["USE_EXPERIMENTAL_CDNA4_MHA_KERNEL", False]()
+        ):
+            mha_single_batch_gfx950[group=group, config=config, sink=sink](
+                output_ptr.offset(q_batch_offset),
+                q_ptr.offset(q_batch_offset),
+                k,
+                v,
+                seq_len,
+                num_keys,
+                scale,
+                batch_idx,
+                Int(start_pos),
+                mask,
+                sink_weights_lt,
+            )
+        else:
+            mha_single_batch_gfx942[group=group, config=config, sink=sink](
+                output_ptr.offset(q_batch_offset),
+                q_ptr.offset(q_batch_offset),
+                k,
+                v,
+                seq_len,
+                num_keys,
+                scale,
+                batch_idx,
+                Int(start_pos),
+                mask,
+                sink_weights_lt,
+            )
     else:
         return CompilationTarget.unsupported_target_error[operation="mha"]()
 
@@ -2997,7 +3203,29 @@ fn mha_decoding[
             use_score_mod == False,
             "use_score_mod must be False for AMD flash attention",
         ]()
-        mha_decoding_single_batch_amd[group=group, config=config, sink=sink,](
+        var sink_weights_lt: OptionalReg[
+            LayoutTensor[
+                q_ptr.type.dtype,
+                Layout.row_major(UNKNOWN_VALUE),
+                MutableAnyOrigin,
+            ]
+        ] = None
+        if sink_weights:
+            sink_weights_lt = LayoutTensor[
+                q_ptr.type.dtype,
+                Layout.row_major(UNKNOWN_VALUE),
+                MutableAnyOrigin,
+            ](
+                sink_weights.value().data,
+                RuntimeLayout[Layout.row_major(UNKNOWN_VALUE)].row_major(
+                    IndexList[1](sink_weights.value().size())
+                ),
+            )
+        mha_decoding_single_batch_gfx942[
+            group=group,
+            config=config,
+            sink=sink,
+        ](
             output_ptr.offset(output_batch_offset),
             q_ptr.offset(q_batch_offset),
             k,
@@ -3011,9 +3239,8 @@ fn mha_decoding[
             batch_idx,
             Int(0),
             mask,
-            sink_weights,
+            sink_weights_lt,
         )
-
     else:
         return CompilationTarget.unsupported_target_error[
             operation="mha_decoding"
@@ -4459,9 +4686,11 @@ fn mha_gpu_naive[
         batch_size * num_heads * max_prompt_len * num_keys
     )
     # FIXME: RUNP-356 Direct access to CUDA within DeviceContext
-    var p_buffer = NDBuffer[p_type, 3](
+    var p_buffer = LayoutTensor[p_type, Layout.row_major[3]()](
         p_device.unsafe_ptr(),
-        Index(batch_size * num_heads, max_prompt_len, num_keys),
+        RuntimeLayout[Layout.row_major[3]()].row_major(
+            Index(batch_size * num_heads, max_prompt_len, num_keys)
+        ),
     )
     var q_device = DeviceBuffer[q.dtype](ctx, q.data, q.size(), owning=False)
     var output_device = DeviceBuffer[output.dtype](
@@ -4506,16 +4735,34 @@ fn mha_gpu_naive[
     fn input_fn_device[
         _simd_width: Int, _rank: Int
     ](coords: IndexList[_rank]) -> SIMD[p_type, _simd_width]:
-        return p_buffer.load[width=_simd_width](rebind[IndexList[3]](coords))
+        return p_buffer.load[width=_simd_width](coords)
 
-    _softmax_gpu[
-        p_type, 1, 3, DimList.create_unknown[3](), input_fn_device, sink=sink
-    ](
+    var sink_weights_lt: OptionalReg[
+        LayoutTensor[
+            q.type,
+            Layout.row_major(UNKNOWN_VALUE),
+            MutableAnyOrigin,
+        ]
+    ] = None
+
+    if sink_weights:
+        sink_weights_lt = LayoutTensor[
+            q.type,
+            Layout.row_major(UNKNOWN_VALUE),
+            MutableAnyOrigin,
+        ](
+            sink_weights.value().data,
+            RuntimeLayout[Layout.row_major(UNKNOWN_VALUE)].row_major(
+                sink_weights.value().get_shape()
+            ),
+        )
+
+    _softmax_gpu[p_type, 1, 3, input_fn_device, sink=sink](
         Index(batch_size * num_heads, max_prompt_len, num_keys),
         p_buffer,
         2,
         ctx,
-        sink_weights=sink_weights,
+        sink_weights=sink_weights_lt,
     )
     alias kernel_1 = _bmm1_bs[
         output_type,
@@ -4820,8 +5067,26 @@ fn mha_gpu_naive[
     ctx: DeviceContext,
     sink_weights: OptionalReg[NDBuffer[q_type, 1, MutableAnyOrigin]] = None,
 ) raises:
-    var k_operand = NDBufferMHAOperand(k)
-    var v_operand = NDBufferMHAOperand(v)
+    var k_operand = LayoutTensorMHAOperand(
+        LayoutTensor[
+            k.type, Layout.row_major[k.rank](k.shape), MutableAnyOrigin
+        ](
+            k.data,
+            RuntimeLayout[Layout.row_major[k.rank](k.shape)].row_major(
+                k.get_shape().canonicalize()
+            ),
+        )
+    )
+    var v_operand = LayoutTensorMHAOperand(
+        LayoutTensor[
+            v.type, Layout.row_major[v.rank](v.shape), MutableAnyOrigin
+        ](
+            v.data,
+            RuntimeLayout[Layout.row_major[v.rank](v.shape)].row_major(
+                v.get_shape().canonicalize()
+            ),
+        )
+    )
     var null_valid_length = ManagedTensorSlice[
         IOUnknown,
         static_spec = StaticTensorSpec[DType.uint32, 1].create_unknown(),
@@ -5026,6 +5291,12 @@ fn _naive_attention[
     var score = NDBuffer[dtype, 4](
         score_ptr, Index(batch_size, num_heads, seq_len, num_keys)
     )
+    var score_lt = LayoutTensor[dtype, Layout.row_major[4]()](
+        score_ptr,
+        RuntimeLayout[Layout.row_major[4]()].row_major(
+            Index(batch_size, num_heads, seq_len, num_keys)
+        ),
+    )
 
     batched_matmul[transpose_b=transpose_k](score, q, k)
 
@@ -5045,8 +5316,8 @@ fn _naive_attention[
     elementwise[scale_and_mask, simd_size](score.get_shape())
 
     softmax[dtype, simd_size, 4](
-        score,
-        score,
+        score_lt,
+        score_lt,
         axis=3,
     )
 
