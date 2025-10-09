@@ -15,14 +15,13 @@
 from math import ceildiv
 from sys import align_of
 
-from buffer import DimList, NDBuffer
 from builtin.dtype import _uint_type_of_width
 from gpu import barrier, block_dim, block_idx, grid_dim, thread_idx
 from gpu.host import DeviceContext, DeviceBuffer
 from gpu.host.dim import Dim
 from gpu.memory import AddressSpace, external_memory
 from gpu.random import Random
-from layout import Layout, LayoutTensor, RuntimeTuple
+from layout import Layout, LayoutTensor, RuntimeTuple, RuntimeLayout
 from layout.int_tuple import UNKNOWN_VALUE, fill_like
 from memory import bitcast, stack_allocation
 from nn.softmax import _softmax_gpu
@@ -85,10 +84,10 @@ fn topk_wrapper[
     bid = block_idx.x
     block_size = block_dim.x
 
-    batch_id = bid // num_blocks_per_input
-    block_lane = bid % num_blocks_per_input
+    batch_id = bid // UInt(num_blocks_per_input)
+    block_lane = bid % UInt(num_blocks_per_input)
 
-    _in_buffer = in_buffer + batch_id * num_elements
+    _in_buffer = in_buffer + batch_id * UInt(num_elements)
 
     # # Allocate shared memory for the values and indices
     var topk_sram = external_memory[
@@ -99,7 +98,7 @@ fn topk_wrapper[
 
     # Pack the topk_vals and topk_idxs into shared memory
     var block_offset: UInt = UInt(block_lane * block_size)
-    var stride = block_size * num_blocks_per_input
+    var stride = block_size * UInt(num_blocks_per_input)
     topk_sram[tid] = TopK_2[T, largest]()
     for i in range(tid + block_offset, num_elements, stride):
         topk_sram[tid].insert(_in_buffer[i], i)
@@ -117,10 +116,10 @@ fn topk_wrapper[
         if tid == 0:
             # Store the local top-K values and indices in global memory
             var vector_idx: UInt = UInt(total.p)
-            local_topk_vals[bid * K + k] = total.u
-            local_topk_idxs[bid * K + k] = Scalar[DType.int](vector_idx).cast[
-                out_idx_type
-            ]()
+            local_topk_vals[bid * UInt(K) + UInt(k)] = total.u
+            local_topk_idxs[bid * UInt(K) + UInt(k)] = Scalar[DType.int](
+                vector_idx
+            ).cast[out_idx_type]()
 
             @parameter
             if is_top_p:
@@ -285,10 +284,10 @@ fn radix_sort_pairs_kernel[
     var elems_per_thread = ceildiv(num_keys, BLOCK_SIZE)
     alias NUM_BUCKETS = 2**NUM_BITS_PER_PASS
 
-    var input_keys = input_keys_ + batch_id * num_keys
-    var output_keys = output_keys_ + batch_id * num_keys
-    var input_key_ids = input_key_ids_ + batch_id * num_keys
-    var output_key_ids = output_key_ids_ + batch_id * num_keys
+    var input_keys = input_keys_ + batch_id * UInt(num_keys)
+    var output_keys = output_keys_ + batch_id * UInt(num_keys)
+    var input_key_ids = input_key_ids_ + batch_id * UInt(num_keys)
+    var output_key_ids = output_key_ids_ + batch_id * UInt(num_keys)
 
     if skip_sort[batch_id]:
         return
@@ -328,8 +327,10 @@ fn radix_sort_pairs_kernel[
     var counts = counts_buf.ptr
 
     # Process elements and compute counts for each thread
-    for index in range(tid * elems_per_thread, (tid + 1) * elems_per_thread):
-        if index < num_keys:
+    for index in range(
+        tid * UInt(elems_per_thread), (tid + 1) * UInt(elems_per_thread)
+    ):
+        if index < UInt(num_keys):
             var key = input_keys[index]
             var normalized_key = normalize(key)
             var radix = (normalized_key >> current_bit) & (NUM_BUCKETS - 1)
@@ -338,7 +339,7 @@ fn radix_sort_pairs_kernel[
     # Store counts[NUM_BUCKETS] per thread into shared memory s_counts
     @parameter
     for i in range(NUM_BUCKETS):
-        s_counts[tid * NUM_BUCKETS + i] = counts[i]
+        s_counts[tid * UInt(NUM_BUCKETS) + UInt(i)] = counts[i]
     barrier()
 
     # Compute total_counts[NUM_BUCKETS] by summing counts[NUM_BUCKETS] across threads
@@ -363,8 +364,8 @@ fn radix_sort_pairs_kernel[
     # Compute per-thread starting offsets per radix value
     @parameter
     for i in range(NUM_BUCKETS):
-        s_thread_offsets[tid * NUM_BUCKETS + i] = s_counts[
-            tid * NUM_BUCKETS + i
+        s_thread_offsets[tid * UInt(NUM_BUCKETS) + UInt(i)] = s_counts[
+            tid * UInt(NUM_BUCKETS) + UInt(i)
         ]
     barrier()
 
@@ -380,11 +381,13 @@ fn radix_sort_pairs_kernel[
             if tid >= UInt(offset):
                 # If the current thread ID is greater than or equal to the offset,
                 # fetch the value from the neighboring thread that is 'offset' positions behind.
-                val = s_thread_offsets[(tid - offset) * NUM_BUCKETS + radix]
+                val = s_thread_offsets[
+                    (tid - UInt(offset)) * UInt(NUM_BUCKETS) + UInt(radix)
+                ]
             # Synchronize all threads to ensure that the value fetching is complete.
             barrier()
             # Add the fetched value to the current thread's value.
-            s_thread_offsets[tid * NUM_BUCKETS + radix] += val
+            s_thread_offsets[tid * UInt(NUM_BUCKETS) + UInt(radix)] += val
             # Synchronize all threads to ensure that the addition is complete.
             barrier()
             # Double the offset for the next iteration to fetch values from farther threads.
@@ -392,12 +395,12 @@ fn radix_sort_pairs_kernel[
 
         # After the loop, set the first thread's offset to 0.
         if tid == 0:
-            s_thread_offsets[tid * NUM_BUCKETS + radix] = 0
+            s_thread_offsets[tid * UInt(NUM_BUCKETS) + UInt(radix)] = 0
         else:
             # For all other threads, set the offset to the value of the previous thread.
-            s_thread_offsets[tid * NUM_BUCKETS + radix] = s_thread_offsets[
-                (tid - 1) * NUM_BUCKETS + radix
-            ]
+            s_thread_offsets[
+                tid * UInt(NUM_BUCKETS) + UInt(radix)
+            ] = s_thread_offsets[(tid - 1) * UInt(NUM_BUCKETS) + UInt(radix)]
         # Synchronize all threads to ensure that the final offset values are set.
         barrier()
 
@@ -420,8 +423,10 @@ fn radix_sort_pairs_kernel[
     var local_offsets = local_offsets_buf.ptr
 
     # Now, each thread processes its elements, computes destination index, write to output
-    for index in range(tid * elems_per_thread, (tid + 1) * elems_per_thread):
-        if index < num_keys:
+    for index in range(
+        tid * UInt(elems_per_thread), (tid + 1) * UInt(elems_per_thread)
+    ):
+        if index < UInt(num_keys):
             var key = input_keys[index]
             var normalized_key = normalize(key)
             var radix = Int((normalized_key >> current_bit) & (NUM_BUCKETS - 1))
@@ -433,13 +438,13 @@ fn radix_sort_pairs_kernel[
             if ascending:
                 global_offset = Int(
                     total_offsets[radix]
-                    + s_thread_offsets[tid * NUM_BUCKETS + radix]
+                    + s_thread_offsets[tid * UInt(NUM_BUCKETS) + UInt(radix)]
                     + local_offsets[radix]
                 )
             else:
                 global_offset = Int(
                     total_offsets_descending[radix]
-                    + s_thread_offsets[tid * NUM_BUCKETS + radix]
+                    + s_thread_offsets[tid * UInt(NUM_BUCKETS) + UInt(radix)]
                     + local_offsets[radix]
                 )
 
@@ -577,8 +582,8 @@ fn topp_minp_sampling_kernel[
         return
 
     var p_threshold = p_thresholds_[batch_id]
-    var sorted_probs = sorted_probs_ + batch_id * vocab_size
-    var sorted_ids = sorted_ids_ + batch_id * vocab_size
+    var sorted_probs = sorted_probs_ + batch_id * UInt(vocab_size)
+    var sorted_ids = sorted_ids_ + batch_id * UInt(vocab_size)
 
     @parameter
     if is_top_p:
@@ -681,13 +686,13 @@ fn _topp_minp_sampling_gpu[
     Args:
         ctx: DeviceContext
             The context for GPU execution.
-        p_thresholds: NDBuffer[type, 1]
+        p_thresholds: LayoutTensor[type]
             Batch of p values (thresholds) for Top-P/Min-P sampling.
             For Top-P: cumulative probability threshold (e.g., 0.9 means sample from top 90%).
             For Min-P: min-p coefficients that determine the minimum probability threshold.
-        input_logits: NDBuffer[type, rank]
+        input_logits: LayoutTensor[type]
             Input logits tensor of shape [batch_size, vocab_size].
-        out_token_ids: NDBuffer[out_idx_type, rank]
+        out_token_ids: LayoutTensor[out_idx_type]
             Output buffer for sampled token indices of shape [batch_size, 1].
         temperature: Scalar[type]
             Temperature for softmax scaling of logits (default=1.0).
@@ -741,15 +746,19 @@ fn _topp_minp_sampling_gpu[
     var input_size = input_logits.size()
     # TODO: Should softmax be done in-place without needing this other buffer?
     var probs_buf = ctx.enqueue_create_buffer[dtype](input_size * 2)
-    var input_probs = NDBuffer[dtype, input_logits.rank](
-        probs_buf.unsafe_ptr(), DimList(batch_size, vocab_size)
+    var input_probs = LayoutTensor[
+        dtype, Layout.row_major[input_logits.rank]()
+    ](
+        probs_buf.unsafe_ptr(),
+        RuntimeLayout[Layout.row_major[input_logits.rank]()].row_major(
+            IndexList[2](batch_size, vocab_size)
+        ),
     )
 
     _softmax_gpu[
         dtype,
         1,
         input_logits.rank,
-        DimList.create_unknown[input_logits.rank](),
         apply_temperature,
     ](input_shape, input_probs, input_logits.rank - 1, ctx)
 
