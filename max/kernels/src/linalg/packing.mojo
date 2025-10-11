@@ -785,7 +785,7 @@ fn _pack_b_ndbuffer_impl[
                 perm[0] = 1
                 perm[1] = 0
 
-                transpose(output_buffer, b_input, perm.data)
+                transpose[b_type](output_buffer, b_input, perm.data)
 
             else:
                 memcpy(dest=output_buffer.data, src=b_input.data, count=n * k)

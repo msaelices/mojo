@@ -5249,13 +5249,13 @@ fn _naive_attention_with_transpose[
     o_perm[2] = 1
     o_perm[3] = 3
 
-    transpose(qt, q, q_perm.data)
-    transpose(kt, k, k_perm.data)
-    transpose(vt, v, q_perm.data)
+    transpose[dtype](qt, q, q_perm.data)
+    transpose[dtype](kt, k, k_perm.data)
+    transpose[dtype](vt, v, q_perm.data)
 
     _naive_attention[dtype, transpose_k](ot, qt, kt, vt, mask, scale)
 
-    transpose(output, ot, o_perm.data)
+    transpose[dtype](output, ot, o_perm.data)
 
     qt_ptr.free()
     kt_ptr.free()
