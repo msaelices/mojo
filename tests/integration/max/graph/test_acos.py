@@ -12,132 +12,184 @@
 # ===----------------------------------------------------------------------=== #
 """Tests for acos operation."""
 
+import platform
+
+import numpy as np
 import pytest
+import torch
+from max.driver import Tensor
 from max.dtype import DType
-from max.graph import Graph, TensorType, ops
-from max.graph.device import DeviceRef
+from max.engine.api import InferenceSession
+from max.graph import DeviceRef, Graph, TensorType, ops
 
 
-def test_acos_basic() -> None:
-    """Test acos basic functionality with values in valid domain [-1, 1]."""
+@pytest.mark.parametrize("dtype", [DType.float32, DType.bfloat16])
+def test_acos(session: InferenceSession, dtype: DType) -> None:
+    """Test acos with random values in the valid domain [-1, 1]."""
+    if dtype == DType.bfloat16 and platform.machine() in ["arm64", "aarch64"]:
+        pytest.skip("BF16 is not supported on ARM CPU architecture")
+
     input_type = TensorType(
-        dtype=DType.float32, shape=(5,), device=DeviceRef.CPU()
+        dtype, [1024], device=DeviceRef.from_device(session.devices[0])
     )
 
-    with Graph("acos_basic", input_types=(input_type,)) as graph:
-        x = graph.inputs[0]
-        out = ops.acos(x)
-        graph.output(out)
+    with Graph(f"acos_{dtype}", input_types=[input_type]) as graph:
+        out = ops.acos(graph.inputs[0].tensor)
+        graph.output(out.cast(DType.float32))
 
-    # Verify graph was created successfully
-    assert graph is not None
+    model = session.load(graph)
+
+    # Set fixed seed for reproducibility
+    torch.manual_seed(42)
+
+    torch_dtype = torch.float32 if dtype == DType.float32 else torch.bfloat16
+
+    # Generate random values in the valid domain [-1, 1]
+    input_data = torch.rand(1024, dtype=torch_dtype) * 2.0 - 1.0
+
+    output = model(Tensor.from_dlpack(input_data).to(model.input_devices[0]))[0]
+    assert isinstance(output, Tensor)
+    max_result = output.to_numpy()
+
+    torch_result = torch.acos(input_data).to(dtype=torch.float32).cpu().numpy()
+
+    np.testing.assert_allclose(
+        max_result,
+        torch_result,
+        rtol=1e-5,
+        atol=1e-5,
+        verbose=True,
+    )
 
 
-def test_acos_special_values() -> None:
+def test_acos_special_values(session: InferenceSession) -> None:
     """Test acos with special mathematical values."""
     input_type = TensorType(
-        dtype=DType.float32, shape=(3,), device=DeviceRef.CPU()
+        DType.float32, [5], device=DeviceRef.from_device(session.devices[0])
     )
 
-    with Graph("acos_special", input_types=(input_type,)) as graph:
-        x = graph.inputs[0]
-        out = ops.acos(x)
+    with Graph("acos_special", input_types=[input_type]) as graph:
+        out = ops.acos(graph.inputs[0].tensor)
         graph.output(out)
 
-    # Known mathematical values:
+    model = session.load(graph)
+
+    # Test known mathematical values:
     # acos(1.0) = 0.0
+    # acos(0.5) ≈ 1.0472 (π/3)
     # acos(0.0) = π/2 ≈ 1.5708
+    # acos(-0.5) ≈ 2.0944 (2π/3)
     # acos(-1.0) = π ≈ 3.1416
-    assert graph is not None
+    input_data = torch.tensor([1.0, 0.5, 0.0, -0.5, -1.0], dtype=torch.float32)
+
+    output = model(Tensor.from_dlpack(input_data).to(model.input_devices[0]))[0]
+    assert isinstance(output, Tensor)
+    max_result = output.to_numpy()
+
+    torch_result = torch.acos(input_data).cpu().numpy()
+
+    np.testing.assert_allclose(
+        max_result,
+        torch_result,
+        rtol=1e-6,
+        atol=1e-6,
+        verbose=True,
+    )
 
 
-def test_acos_2d_tensor() -> None:
+def test_acos_2d_tensor(session: InferenceSession) -> None:
     """Test acos with 2D tensor."""
     input_type = TensorType(
-        dtype=DType.float32, shape=(3, 2), device=DeviceRef.CPU()
+        DType.float32,
+        [10, 10],
+        device=DeviceRef.from_device(session.devices[0]),
     )
 
-    with Graph("acos_2d", input_types=(input_type,)) as graph:
-        x = graph.inputs[0]
-        out = ops.acos(x)
+    with Graph("acos_2d", input_types=[input_type]) as graph:
+        out = ops.acos(graph.inputs[0].tensor)
         graph.output(out)
 
-    assert graph is not None
-    assert out.shape == (3, 2)
+    model = session.load(graph)
 
+    torch.manual_seed(123)
+    input_data = torch.rand(10, 10, dtype=torch.float32) * 2.0 - 1.0
 
-def test_acos_3d_tensor() -> None:
-    """Test acos with 3D tensor."""
-    input_type = TensorType(
-        dtype=DType.float32, shape=(2, 3, 4), device=DeviceRef.CPU()
+    output = model(Tensor.from_dlpack(input_data).to(model.input_devices[0]))[0]
+    assert isinstance(output, Tensor)
+    max_result = output.to_numpy()
+
+    torch_result = torch.acos(input_data).cpu().numpy()
+
+    np.testing.assert_allclose(
+        max_result,
+        torch_result,
+        rtol=1e-6,
+        atol=1e-6,
+        verbose=True,
     )
 
-    with Graph("acos_3d", input_types=(input_type,)) as graph:
-        x = graph.inputs[0]
-        out = ops.acos(x)
-        graph.output(out)
 
-    assert graph is not None
-    assert out.shape == (2, 3, 4)
-
-
-def test_acos_edge_domain_values() -> None:
+def test_acos_edge_domain_values(session: InferenceSession) -> None:
     """Test acos with values near domain boundaries."""
     input_type = TensorType(
-        dtype=DType.float32, shape=(4,), device=DeviceRef.CPU()
+        DType.float32, [6], device=DeviceRef.from_device(session.devices[0])
     )
 
-    with Graph("acos_edge", input_types=(input_type,)) as graph:
-        x = graph.inputs[0]
-        out = ops.acos(x)
+    with Graph("acos_edge", input_types=[input_type]) as graph:
+        out = ops.acos(graph.inputs[0].tensor)
         graph.output(out)
 
-    # Test values very close to -1 and 1
-    assert graph is not None
+    model = session.load(graph)
+
+    # Test values very close to -1 and 1, and at the boundaries
+    input_data = torch.tensor(
+        [-1.0, -0.999, -0.99, 0.99, 0.999, 1.0], dtype=torch.float32
+    )
+
+    output = model(Tensor.from_dlpack(input_data).to(model.input_devices[0]))[0]
+    assert isinstance(output, Tensor)
+    max_result = output.to_numpy()
+
+    torch_result = torch.acos(input_data).cpu().numpy()
+
+    np.testing.assert_allclose(
+        max_result,
+        torch_result,
+        rtol=1e-5,
+        atol=1e-5,
+        verbose=True,
+    )
 
 
-def test_acos_single_element() -> None:
-    """Test acos with single element tensor."""
+def test_acos_clamping(session: InferenceSession) -> None:
+    """Test that acos properly clamps values outside [-1, 1]."""
     input_type = TensorType(
-        dtype=DType.float32, shape=(1,), device=DeviceRef.CPU()
+        DType.float32, [4], device=DeviceRef.from_device(session.devices[0])
     )
 
-    with Graph("acos_single", input_types=(input_type,)) as graph:
-        x = graph.inputs[0]
-        out = ops.acos(x)
+    with Graph("acos_clamp", input_types=[input_type]) as graph:
+        out = ops.acos(graph.inputs[0].tensor)
         graph.output(out)
 
-    assert graph is not None
-    assert out.shape == (1,)
+    model = session.load(graph)
 
+    # Values outside the valid domain should be clamped
+    # acos implementation clamps to [-1, 1] internally
+    input_data = torch.tensor([-1.5, -1.0, 1.0, 1.5], dtype=torch.float32)
 
-def test_acos_dtype_preservation() -> None:
-    """Test that acos preserves input dtype."""
-    for dtype in [DType.float32, DType.float64]:
-        input_type = TensorType(dtype=dtype, shape=(3,), device=DeviceRef.CPU())
+    output = model(Tensor.from_dlpack(input_data).to(model.input_devices[0]))[0]
+    assert isinstance(output, Tensor)
+    max_result = output.to_numpy()
 
-        with Graph(f"acos_dtype_{dtype}", input_types=(input_type,)) as graph:
-            x = graph.inputs[0]
-            out = ops.acos(x)
-            graph.output(out)
+    # Expected: clamped values should give acos(-1) or acos(1)
+    expected = torch.tensor(
+        [np.pi, np.pi, 0.0, 0.0], dtype=torch.float32
+    ).numpy()
 
-        assert out.dtype == dtype
-
-
-def test_acos_zero_dimensional() -> None:
-    """Test acos with zero-dimensional (scalar) tensor."""
-    input_type = TensorType(
-        dtype=DType.float32, shape=(), device=DeviceRef.CPU()
+    np.testing.assert_allclose(
+        max_result,
+        expected,
+        rtol=1e-5,
+        atol=1e-5,
+        verbose=True,
     )
-
-    with Graph("acos_scalar", input_types=(input_type,)) as graph:
-        x = graph.inputs[0]
-        out = ops.acos(x)
-        graph.output(out)
-
-    assert graph is not None
-    assert out.shape == ()
-
-
-if __name__ == "__main__":
-    pytest.main([__file__])
