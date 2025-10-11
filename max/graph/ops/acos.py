@@ -12,11 +12,10 @@
 # ===----------------------------------------------------------------------=== #
 """Arccosine (inverse cosine) operation."""
 
-from max.mlir.dialects import rmo
+from max.mlir.dialects import mo
 
 from ..graph import Graph
 from ..value import TensorValue, TensorValueLike
-from . import dtype_promotion
 
 
 def acos(x: TensorValueLike) -> TensorValue:
@@ -52,5 +51,7 @@ def acos(x: TensorValueLike) -> TensorValue:
         Error: If the symbol doesn't represent a tensor value.
         Error: If the input is not a floating-point dtype.
     """
+    from . import dtype_promotion  # Avoid circular import
+
     x = dtype_promotion._restrict_to_strong_dtypes(x)
-    return Graph.current._add_op(rmo.mo_acos, x._mlir_value.type, x)[0].tensor
+    return Graph.current._add_op(mo.mo_acos, x._mlir_value.type, x)[0].tensor
