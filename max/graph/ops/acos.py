@@ -12,7 +12,7 @@
 # ===----------------------------------------------------------------------=== #
 """Arccosine (inverse cosine) operation."""
 
-from max.graph import DeviceRef, TensorValue
+from .graph import DeviceRef, TensorValue
 
 
 def acos(x: TensorValue) -> TensorValue:
