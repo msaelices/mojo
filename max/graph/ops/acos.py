@@ -12,13 +12,10 @@
 # ===----------------------------------------------------------------------=== #
 """Arccosine (inverse cosine) operation."""
 
-from max.mlir.dialects import mo
-
-from ..graph import Graph
-from ..value import TensorValue, TensorValueLike
+from max.graph import DeviceRef, TensorValue
 
 
-def acos(x: TensorValueLike) -> TensorValue:
+def acos(x: TensorValue) -> TensorValue:
     """Computes the arccosine (inverse cosine) of the input tensor.
 
     Returns values in the range [0, π] for inputs in [-1, 1].
@@ -54,4 +51,14 @@ def acos(x: TensorValueLike) -> TensorValue:
     from . import dtype_promotion  # Avoid circular import
 
     x = dtype_promotion._restrict_to_strong_dtypes(x)
-    return Graph.current._add_op(mo.mo_acos, x._mlir_value.type, x)[0].tensor
+    device = x.device
+    return ops.custom(
+        name="mo.acos",
+        device=device,
+        values=[x],
+        out_types=TensorType(
+            dtype=x.dtype,
+            shape=x.tensor.shape,
+            device=DeviceRef.from_device(device),
+        ),
+    )[0].tensor
