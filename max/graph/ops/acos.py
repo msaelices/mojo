@@ -12,7 +12,7 @@
 # ===----------------------------------------------------------------------=== #
 """Arccosine (inverse cosine) operation."""
 
-from .graph import DeviceRef, TensorValue
+from ..graph import DeviceRef, TensorValue
 
 
 def acos(x: TensorValue) -> TensorValue:
@@ -48,7 +48,7 @@ def acos(x: TensorValue) -> TensorValue:
         Error: If the symbol doesn't represent a tensor value.
         Error: If the input is not a floating-point dtype.
     """
-    from . import dtype_promotion  # Avoid circular import
+    from .. import dtype_promotion  # Avoid circular import
 
     x = dtype_promotion._restrict_to_strong_dtypes(x)
     device = x.device
