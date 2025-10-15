@@ -27,7 +27,7 @@ fn simd_add_kernel[
     c_span: UnsafePointer[Float32],
 ):
     # Calculate the index for this thread's data
-    var idx = (thread_idx.x + block_idx.x * block_dim.x) * width
+    var idx = (thread_idx.x + block_idx.x * block_dim.x) * UInt(width)
 
     var vector_a = a_span.load[width=width](idx)
     var vector_b = b_span.load[width=width](idx)
@@ -43,7 +43,7 @@ fn simd_mult_kernel[
     c_span: UnsafePointer[Float32],
 ):
     # Calculate the index for this thread's data
-    var idx = (thread_idx.x + block_idx.x * block_dim.x) * width
+    var idx = (thread_idx.x + block_idx.x * block_dim.x) * UInt(width)
 
     var vector_a = a_span.load[width=width](idx)
     var vector_b = b_span.load[width=width](idx)
@@ -59,7 +59,7 @@ fn simd_fma_kernel[
     c_span: UnsafePointer[Float32],
 ):
     # Calculate the index for this thread's data
-    var idx = (thread_idx.x + block_idx.x * block_dim.x) * width
+    var idx = (thread_idx.x + block_idx.x * block_dim.x) * UInt(width)
 
     var vector_a = a_span.load[width=width](idx)
     var vector_b = b_span.load[width=width](idx)
@@ -196,8 +196,4 @@ def test_arithmetic_sm100():
 
 
 def main():
-    var suite = TestSuite()
-
-    suite.test[test_arithmetic_sm100]()
-
-    suite^.run()
+    TestSuite.discover_tests[__functions_in_module()]().run()

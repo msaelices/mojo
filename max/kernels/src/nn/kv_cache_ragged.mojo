@@ -30,7 +30,10 @@ from kv_cache.types import (
 from layout import LayoutTensor, Layout, RuntimeLayout, IntTuple, UNKNOWN_VALUE
 from linalg.grouped_matmul import grouped_matmul
 from linalg.matmul import elementwise_epilogue_type, matmul
-from linalg.fp8_quantization import naive_blockwise_scaled_fp8_matmul
+from linalg.fp8_quantization import (
+    naive_blockwise_scaled_fp8_matmul,
+    quantize_dynamic_scaled_fp8,
+)
 from nn._ragged_utils import get_batch_from_row_offsets
 from nn.flash_attention import (
     flash_attention_kv_cache as flash_attention_kv_cache_cpu,
@@ -1089,8 +1092,7 @@ fn _matmul_blockwise_scaled_fp8_common[
 
 fn kv_matmul_ragged_paged[
     dtype: DType,
-    num_heads: Int,
-    head_dim: Int,
+    params: KVCacheStaticParams,
     page_size: Int, //,
     target: StaticString,
 ](
@@ -1099,9 +1101,7 @@ fn kv_matmul_ragged_paged[
     weight: NDBuffer[dtype, 2, _, _],
     kv_collection: PagedKVCacheCollection[
         dtype,
-        KVCacheStaticParams(
-            num_heads=UInt(num_heads), head_size=UInt(head_dim)
-        ),
+        params,
         page_size,
     ],
     layer_idx: UInt32,
@@ -1310,8 +1310,7 @@ fn _matmul_kv_cache_ragged_impl[
 
 fn k_matmul_ragged_paged[
     dtype: DType,
-    num_heads: Int,
-    head_dim: Int,
+    params: KVCacheStaticParams,
     page_size: Int, //,
     target: StaticString,
 ](
@@ -1320,9 +1319,7 @@ fn k_matmul_ragged_paged[
     weight: NDBuffer[dtype, 2, *_],
     kv_collection: PagedKVCacheCollection[
         dtype,
-        KVCacheStaticParams(
-            num_heads=UInt(num_heads), head_size=UInt(head_dim)
-        ),
+        params,
         page_size,
     ],
     layer_idx: UInt32,
@@ -1671,8 +1668,7 @@ fn _matmul_k_cache_ragged_scale_impl[
 
 fn unfused_qkv_matmul_ragged_paged_gguf_quantized[
     dtype: DType,
-    num_heads: Int,
-    head_dim: Int,
+    params: KVCacheStaticParams,
     page_size: Int, //,
     quantization_encoding_q: StaticString,
     quantization_encoding_k: StaticString,
@@ -1685,9 +1681,7 @@ fn unfused_qkv_matmul_ragged_paged_gguf_quantized[
     v_weight: NDBuffer[DType.uint8, 2, _, _],
     kv_collection: PagedKVCacheCollection[
         dtype,
-        KVCacheStaticParams(
-            num_heads=UInt(num_heads), head_size=UInt(head_dim)
-        ),
+        params,
         page_size,
     ],
     layer_idx: UInt32,
@@ -2413,27 +2407,28 @@ fn _flash_attention_dispatch[
     ](mask: mask_t, score_mod: score_mod_t) raises:
         @parameter
         fn call_flash_attention[sink: Bool]() raises:
+            var sink_weights_lt: OptionalReg[
+                LayoutTensor[
+                    dtype,
+                    Layout.row_major(UNKNOWN_VALUE),
+                    MutableAnyOrigin,
+                ]
+            ] = None
+            if sink_weights:
+                var sw = sink_weights.value()
+                sink_weights_lt = sink_weights_lt.T(
+                    sw.data,
+                    RuntimeLayout[Layout.row_major(UNKNOWN_VALUE)].row_major(
+                        IndexList[1](len(sw))
+                    ),
+                )
+
             @parameter
             if is_cpu[target]():
                 alias q_layout = Layout.row_major[q.rank](q.shape)
                 alias output_layout = Layout.row_major[output.rank](
                     output.shape
                 )
-                var sink_weights_lt: OptionalReg[
-                    LayoutTensor[
-                        dtype,
-                        Layout.row_major(UNKNOWN_VALUE),
-                        MutableAnyOrigin,
-                    ]
-                ] = None
-                if sink_weights:
-                    var sw = sink_weights.value()
-                    sink_weights_lt = sink_weights_lt.T(
-                        sw.data,
-                        RuntimeLayout[
-                            Layout.row_major(UNKNOWN_VALUE)
-                        ].row_major(IndexList[1](len(sw))),
-                    )
                 return flash_attention_kv_cache_cpu(
                     LayoutTensor[q.type, q_layout](
                         q.data,
@@ -2462,8 +2457,34 @@ fn _flash_attention_dispatch[
                 gpu_flash_attention[
                     use_score_mod=use_score_mod, ragged=True, sink=sink
                 ](
-                    output,
-                    q,
+                    LayoutTensor[
+                        output.type,
+                        Layout(
+                            IntTuple(output.shape), IntTuple(output.strides)
+                        ),
+                    ](
+                        output.data,
+                        RuntimeLayout[
+                            Layout(
+                                IntTuple(output.shape), IntTuple(output.strides)
+                            )
+                        ](
+                            output.get_shape().canonicalize(),
+                            output.get_strides().canonicalize(),
+                        ),
+                    ),
+                    LayoutTensor[
+                        q.type,
+                        Layout(IntTuple(q.shape), IntTuple(q.strides)),
+                    ](
+                        q.data,
+                        RuntimeLayout[
+                            Layout(IntTuple(q.shape), IntTuple(q.strides))
+                        ](
+                            q.get_shape().canonicalize(),
+                            q.get_strides().canonicalize(),
+                        ),
+                    ),
                     k,
                     v,
                     mask,
@@ -2471,7 +2492,7 @@ fn _flash_attention_dispatch[
                     input_row_offsets,
                     scale,
                     context.get_device_context(),
-                    sink_weights=sink_weights,
+                    sink_weights=sink_weights_lt,
                 )
 
         unswitch[call_flash_attention](Bool(sink_weights))
@@ -3038,8 +3059,30 @@ fn _cross_attention_dispatch[
             gpu_flash_attention[
                 use_score_mod=use_score_mod, ragged=True, sink=False
             ](
-                output,
-                q,
+                LayoutTensor[
+                    output.type,
+                    Layout(IntTuple(output.shape), IntTuple(output.strides)),
+                ](
+                    output.data,
+                    RuntimeLayout[
+                        Layout(IntTuple(output.shape), IntTuple(output.strides))
+                    ](
+                        output.get_shape().canonicalize(),
+                        output.get_strides().canonicalize(),
+                    ),
+                ),
+                LayoutTensor[
+                    q.type,
+                    Layout(IntTuple(q.shape), IntTuple(q.strides)),
+                ](
+                    q.data,
+                    RuntimeLayout[
+                        Layout(IntTuple(q.shape), IntTuple(q.strides))
+                    ](
+                        q.get_shape().canonicalize(),
+                        q.get_strides().canonicalize(),
+                    ),
+                ),
                 k,
                 v,
                 mask,
@@ -3048,8 +3091,15 @@ fn _cross_attention_dispatch[
                 scale,
                 context.get_device_context(),
                 Int(q_max_seq_len),
-                OptionalReg[NDBuffer[DType.uint32, 1, MutableAnyOrigin]](
-                    kv_input_row_offsets
+                LayoutTensor[
+                    kv_input_row_offsets.type,
+                    Layout.row_major(UNKNOWN_VALUE),
+                    MutableAnyOrigin,
+                ](
+                    kv_input_row_offsets.data,
+                    RuntimeLayout[Layout.row_major(UNKNOWN_VALUE)].row_major(
+                        IndexList[1](len(kv_input_row_offsets))
+                    ),
                 ),
                 None,
             )
